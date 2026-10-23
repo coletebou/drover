@@ -64,3 +64,8 @@ self-hosted Mac with the label `drover-mac` once the repository variable `DROVER
 (`gh variable set DROVER_MAC_RUNNER --body on`), unsigned builds on `master` and manual runs only;
 until then they are skipped, not queued. A self-hosted runner is never used on a public repository, so a pull request
 from a fork never runs on one of our machines. Actions are pinned by commit SHA and kept current by Dependabot.
+
+## License
+
+Copyright 2026 Cole Tebou. Licensed under the [Apache License, Version 2.0](LICENSE); see also [NOTICE](NOTICE).
+Contributions are accepted under the same license (section 5).
