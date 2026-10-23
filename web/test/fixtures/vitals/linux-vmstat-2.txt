@@ -1,0 +1,3 @@
+nr_free_pages 88001
+pswpin 1012000
+pswpout 2018000

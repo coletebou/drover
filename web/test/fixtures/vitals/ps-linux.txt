@@ -1,0 +1,15 @@
+      1       0 12000  0.0 00:01:00 8-19:01:42 /sbin/init
+   100       1  4000  0.0 00:00:01 8-19:01:40 /usr/sbin/sshd -D
+   200     100  3000  0.0 00:00:00    02:00:00 -zsh
+   300     200 400000  6.8 00:10:00    01:00:00 claude --dangerously-skip-permissions --settings /home/u/.claude/settings.json /goal secret prompt text
+   301     300 60000  0.0 00:00:30    01:00:00 node /home/u/.local/bin/drover mcp
+   302     300 90000  0.0 00:00:40    01:00:00 node /home/u/playwright-mcp/cli.js
+   303     300  4000  0.0 00:00:00       00:30 /usr/bin/zsh -c source /home/u/.claude/shell-snapshots/snapshot.sh && npm test
+   304     303 250000 90.0 00:00:25       00:30 node /home/u/app/node_modules/.bin/vitest run
+   305     303  3000  0.0 00:00:00       00:20 /usr/bin/zsh -c codex exec run the review
+   306     305 40000  0.0 00:00:01       00:20 node /home/u/.npm-global/bin/codex exec run the review
+   307     306 150000 12.0 00:00:05       00:20 /home/u/.npm-global/lib/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex exec run the review
+   400       1 48900  0.0 00:00:00       00:45 node /home/u/.npm-global/bin/codex app-server
+   401     400 233880  1.9 00:00:01       00:45 /home/u/.npm-global/lib/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex app-server
+   500       1 1400000  3.0 01:00:00  1-00:00:00 openclaw-gateway
+   501       1 600000  2.0 00:30:00  1-00:00:00 /usr/bin/clickhouse-server --config-file=/etc/clickhouse-server/config.xml

@@ -47,8 +47,9 @@ Details as built by core (these refine the bullets above; DroverKit models and `
 - `native.notifications` `{since?, limit?, wait?}`: `items` oldest first, at most `limit` (default 50, max 200).
   `cursor` is opaque: pass it back as `since` to get only newer items. `wait` (seconds, max 25) holds the request
   open on the daemon until an item arrives (long poll). Item `kind` is `decision|question|finished|error|mr|launch|manager`
-  (unknown values must be tolerated) and items also carry `category` (the web UI's alert category:
-  `needs-you|finished|error|held|mr|launch|manager`, used for per-category sounds) and `test: true` for `notify.test`
+  (unknown values must be tolerated; `resource`, a machine short of memory, disk or CPU, arrives as its own kind) and
+  items also carry `category` (the web UI's alert category:
+  `needs-you|finished|error|resource|held|mr|launch|manager`, used for per-category sounds) and `test: true` for `notify.test`
   alerts. Muted alerts are left out.
 - Token files live in the daemon's state dir (`$DROVER_STATE`, default `~/.local/state/drover`): `token` (main) and
   `widget-token`. The widget token is accepted only as `Authorization: Bearer` on `/api/op/native.summary` and

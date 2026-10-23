@@ -25,6 +25,8 @@ import { markDaemon as markSearchDaemon, startService as startSearch } from '../
 import * as plugins from '../core/plugins.js';
 import { OWNER } from '../core/owner.js';
 import * as openclaw from '../core/openclaw.js';
+import * as vitals from '../core/vitals.js';
+import * as placement from '../core/placement.js';
 
 const UI_DIR = path.join(dirname(fileURLToPath(import.meta.url)), '..', 'ui');
 const STATE_DIR = stateDir();
@@ -387,6 +389,9 @@ export function startSnapshots({ everyMs = 15_000 } = {}) {
   stops.push(cache.warm(cache.keyFor('events.state', {}), () => dispatch('events.state', {}), { every: 30_000 }));
   // The search index (core/search): a pass every minute, embeddings backfilled newest first.
   stops.push(startSearch());
+  // This machine's vitals every minute; a sustained shortage becomes a resource alert in the ring (never the truth
+  // file), which front daemons pull with notify.recent. The fleet catalog says whether it runs here (core/vitals.js).
+  stops.push(vitals.startMonitor({ emit: (list) => notifier.emit(list, { record: false }), policy: () => placement.monitorPolicy({ shortName: hosts.localShortName() }) }));
   // Each plugin's own daemon work (core/plugins.js start): its timers and watchers, stopped with the rest.
   stops.push(plugins.startAll({ dispatch, notifier, broadcast, watching: () => sseClients.size, settings: settingsMod }));
   return () => { for (const s of stops) s(); cache.stopWarmers(); };

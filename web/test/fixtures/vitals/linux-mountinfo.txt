@@ -1,0 +1,13 @@
+22 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw,discard,errors=remount-ro
+23 22 0:21 / /proc rw,nosuid,nodev,noexec,relatime shared:12 - proc proc rw
+24 22 0:5 / /dev rw,nosuid,relatime shared:2 - devtmpfs udev rw,size=8158968k
+25 22 0:24 / /run rw,nosuid,nodev,noexec,relatime shared:5 - tmpfs tmpfs rw,size=1598888k
+26 22 8:16 / /mnt/data rw,relatime shared:7 - ext4 /dev/sdb rw,discard
+27 22 8:15 / /boot/efi rw,relatime shared:9 - vfat /dev/sda15 rw
+28 22 7:3 / /snap/core22/2045 ro,nodev,relatime shared:20 - squashfs /dev/loop3 ro
+29 22 0:50 / /var/lib/docker/overlay2/abc/merged rw,relatime - overlay overlay rw,lowerdir=x
+30 22 8:1 /srv/shared /home/web/shared rw,relatime shared:1 - ext4 /dev/sda1 rw
+31 22 0:60 / /mnt/storage\040box ro,nosuid,nodev,relatime shared:30 - fuse.rclone remote{59M9S}: ro,user_id=0
+32 22 8:16 / /var/lib/docker rw,relatime shared:7 - ext4 /dev/sdb rw,discard
+33 22 8:16 / /mnt/data-again rw,relatime shared:7 - ext4 /dev/sdb rw,discard
+34 22 0:70 / /mnt/c rw,noatime - 9p drvfs rw,aname=drvfs;path=C:\

@@ -11,6 +11,7 @@
 export const CATEGORIES = [
   { id: 'needs-you', label: 'Needs you', hint: 'a dialog is on screen, the Notification hook fired, or the agent is waiting for input' },
   { id: 'error', label: 'Error or crash', hint: 'a session died, a headless agent exited non-zero, or a host stopped answering' },
+  { id: 'resource', label: 'Resources', hint: 'a machine is short of memory, disk or CPU, swapping hard, or one agent session is using too much (host vitals)' },
   { id: 'held', label: 'Held peer message', hint: 'a session is holding a message from another session and wants you to accept it' },
   { id: 'manager', label: 'OpenClaw manager', hint: 'the fleet manager replied or wrote to the truth file' },
   { id: 'mr', label: 'Merge requests', hint: 'a comment, review, push, mergeable change or merge on a watched MR' },
@@ -47,6 +48,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   categories: {
     'needs-you': cat(true, 'chime', 0.8, { sticky: true }),
     error: cat(true, 'alarm', 0.6, { sticky: true }),
+    resource: cat(true, 'fall', 0.6, { sticky: true }),
     held: cat(true, 'knock', 0.7, { sticky: true }),
     manager: cat(true, 'rise', 0.6),
     mr: cat(true, 'bell', 0.5),
