@@ -1,0 +1,10 @@
+{
+  "ok": true,
+  "ms": 2,
+  "cache": null,
+  "result": [
+    { "name": "local", "display": "this machine", "source": "local", "inSshConfig": false },
+    { "name": "demo-box", "display": "demo-box", "source": "fleet", "inSshConfig": true },
+    { "name": "demo-lab", "display": "demo-lab", "source": "fleet", "inSshConfig": true }
+  ]
+}

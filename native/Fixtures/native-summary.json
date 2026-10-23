@@ -1,0 +1,72 @@
+{
+  "generatedAt": "2026-10-11T22:00:00.000Z",
+  "hosts": [
+    {
+      "name": "local",
+      "up": true,
+      "waiting": 2,
+      "working": 1,
+      "idle": 2
+    },
+    {
+      "name": "demo-box",
+      "up": true,
+      "waiting": 0,
+      "working": 1,
+      "idle": 1
+    },
+    {
+      "name": "demo-lab",
+      "up": false,
+      "waiting": 0,
+      "working": 0,
+      "idle": 0
+    }
+  ],
+  "waiting": [
+    {
+      "id": "00000000-demo-4000-8000-000000000001",
+      "name": "demo-build",
+      "host": "local",
+      "engine": "claude",
+      "since": "2026-10-11T21:52:10.000Z",
+      "kind": "decision",
+      "headline": "Do you want to proceed? 1. Yes / 2. Yes, and do not ask again / 3. No"
+    },
+    {
+      "id": "00000000-demo-4000-8000-000000000002",
+      "name": "demo-review",
+      "host": "local",
+      "engine": "claude",
+      "since": "2026-10-11T21:58:41.000Z",
+      "kind": "question",
+      "headline": "Push the branch now, or wait for the second review?"
+    }
+  ],
+  "working": [
+    {
+      "id": "00000000-demo-4000-8000-000000000003",
+      "name": "demo-tests",
+      "host": "local",
+      "engine": "codex",
+      "headline": "Running the unit tests"
+    },
+    {
+      "id": "00000000-demo-4000-8000-000000000004",
+      "name": "demo-docs",
+      "host": "demo-box",
+      "engine": "claude",
+      "headline": "Writing the README section"
+    }
+  ],
+  "totals": {
+    "waiting": 2,
+    "working": 2,
+    "idle": 3,
+    "hosts": 3
+  },
+  "manager": {
+    "up": true,
+    "lastNoteAt": "2026-10-11T21:40:00.000Z"
+  }
+}

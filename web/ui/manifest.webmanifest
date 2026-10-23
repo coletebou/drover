@@ -1,0 +1,47 @@
+{
+  "id": "/",
+  "name": "Drover",
+  "short_name": "Drover",
+  "start_url": "/#/board",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": [
+    "window-controls-overlay",
+    "standalone"
+  ],
+  "background_color": "#16191e",
+  "theme_color": "#16191e",
+  "description": "Control plane for the agent fleet: sessions, tmux, launch, alerts, memory.",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Board",
+      "url": "/#/board"
+    },
+    {
+      "name": "Waiting on you",
+      "url": "/#/pip"
+    },
+    {
+      "name": "Settings",
+      "url": "/#/settings"
+    },
+    {
+      "name": "Files",
+      "url": "/#/files"
+    }
+  ]
+}

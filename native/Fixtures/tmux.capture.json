@@ -1,0 +1,6 @@
+{
+  "ok": true,
+  "ms": 9,
+  "cache": null,
+  "result": { "target": "demo:@3", "text": "The build passed.\nDo you want to proceed?\n> 1. Yes\n  2. No\n", "screen": { "state": "dialog", "reason": "selector" } }
+}

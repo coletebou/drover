@@ -1,0 +1,102 @@
+# Build workflow for Drover: the daemon + web UI (web/) and the native clients (native/).
+# Every job runs on GitHub-hosted runners when the repository is public and on our own runners only while it is
+# private (hosted minutes are billed there), so a pull request from a fork never runs on one of our machines.
+# The macOS job needs an Xcode with Swift 6 (Xcode 16+); it selects the newest Xcode on the runner.
+# No secrets and no signing: builds are unsigned (see native/script/ci-build.sh; signed builds: signed.yml).
+# Actions are pinned by commit SHA (Dependabot keeps them current, .github/dependabot.yml).
+name: build
+
+on:
+  push:
+    branches: [master, "feat/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The Drover tests and the extension tests. Drover is written for Node 24 (on Node 22, 9 tests cancel). tmux is
+  # installed so the real-tmux launch tests run instead of skipping. Private: our self-hosted ARM Linux runners (label drover,
+  # user gha, tmux already installed, no sudo).
+  web:
+    runs-on: ${{ github.event.repository.private && fromJSON('["self-hosted", "linux", "arm64", "drover"]') || 'ubuntu-24.04' }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Install tmux
+        run: command -v tmux || { sudo apt-get update -qq && sudo apt-get install -y -qq tmux; }
+
+      - name: Drover tests
+        working-directory: web
+        run: node --test test/*.test.js
+
+      - name: Chrome extension tests
+        working-directory: native/Extensions/chrome
+        run: node --test test/*.test.js
+
+      # Top level only: test/fixtures/chrome-mini/test/ holds a decoy test file the build must not copy.
+      - name: Safari extension tests
+        working-directory: native/Extensions/safari
+        run: node --test test/*.test.mjs
+
+  # The portable native logic only: Apple frameworks, URLProtocol mocking and live streaming need the macOS job below.
+  # Public: the Swift 6.4 container on hosted Ubuntu. Private: our ARM Linux runners, Swift 6.4 in /opt/swift.
+  swift-linux:
+    runs-on: ${{ github.event.repository.private && fromJSON('["self-hosted", "linux", "arm64", "drover"]') || 'ubuntu-24.04' }}
+    container: ${{ !github.event.repository.private && 'swift:6.4.1-noble' || '' }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: DroverKit (portable tests)
+        working-directory: native/Packages/DroverKit
+        run: |
+          export PATH=/opt/swift/usr/bin:$PATH
+          swift --version
+          swift test --skip ClientTests --skip GlueTests
+
+  # Hosted macOS is free on a public repository and billed at 10x on a private one. Public: hosted macos-15 on every
+  # push and pull request. Private: a self-hosted Mac (label drover-mac, repository variable DROVER_MAC_RUNNER "on"),
+  # master and manual runs only; without one the job is skipped rather than queued.
+  apple:
+    if: ${{ !github.event.repository.private || (vars.DROVER_MAC_RUNNER == 'on' && (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/master')) }}
+    runs-on: ${{ github.event.repository.private && fromJSON('["self-hosted", "macOS", "drover-mac"]') || 'macos-15' }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Select newest Xcode
+        run: |
+          newest=$(ls -d /Applications/Xcode_*.app | sort -V | tail -n 1)
+          echo "Using $newest"
+          sudo xcode-select -s "$newest/Contents/Developer"
+          xcodebuild -version
+          swift --version
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Build and test
+        run: native/script/ci-build.sh

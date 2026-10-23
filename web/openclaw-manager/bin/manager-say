@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# manager-say: one message to the manager through the gateway's loopback OpenAI-compatible
+# endpoint, reply on stdout. Same conversation each time (stable `user`), so it continues.
+#
+#   manager-say "what is waiting on me?"
+#   echo "summarize the last sweep" | manager-say
+#   MANAGER_SAY_USER=drover:owner:other manager-say "..."  # a different conversation
+#   manager-say --stream "..."                           # SSE deltas
+set -euo pipefail
+state="${OPENCLAW_STATE_DIR:-$HOME/.openclaw-manager}"
+# The install's port (a profile may move it off 18789), from the manifest setup writes.
+port="${OPENCLAW_GATEWAY_PORT:-$(jq -r '.gateway.port // 18789' "$state/drover-install.json" 2>/dev/null || echo 18789)}"
+stream=0; [ "${1:-}" = "--stream" ] && { stream=1; shift; }
+# The owner's conversation, the one every Drover client shares: drover:<DROVER_OWNER> (web/core/owner.js; default owner).
+# Like Drover itself: the environment first, else the first settings file (~/.config/drover/*.env, in name order) that sets it.
+owner="${DROVER_OWNER-${APXW_OWNER-}}"
+if [ -z "${DROVER_OWNER+x}${APXW_OWNER+x}" ]; then
+  for f in "${DROVER_CONFIG_DIR:-${APXW_CONFIG_DIR:-$HOME/.config/drover}}"/*.env; do
+    [ -f "$f" ] || continue
+    line="$(grep -E '^[[:space:]]*(export[[:space:]]+)?DROVER_OWNER[[:space:]]*=' "$f" | head -1 || true)"
+    [ -n "$line" ] || continue
+    owner="$(printf %s "${line#*=}" | sed -E -e 's/[[:space:]]+#.*$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^"(.*)"$/\1/' -e "s/^'(.*)'\$/\1/")"
+    break
+  done
+fi
+owner="$(printf %s "$owner" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')"
+token="${OPENCLAW_GATEWAY_TOKEN:-}"
+if [ -z "$token" ] && [ -f "$state/.env" ]; then
+  token="$(grep -E '^OPENCLAW_GATEWAY_TOKEN=' "$state/.env" | head -1 | cut -d= -f2-)"
+fi
+[ -n "$token" ] || { echo "manager-say: no OPENCLAW_GATEWAY_TOKEN (env or $state/.env)" >&2; exit 1; }
+text="$*"; [ -n "$text" ] || text="$(cat)"
+[ -n "$text" ] || { echo "manager-say: empty message" >&2; exit 1; }
+body="$(jq -n --arg t "$text" --arg u "${MANAGER_SAY_USER:-drover:${owner:-owner}}" --argjson s "$([ "$stream" = 1 ] && echo true || echo false)" \
+  '{model:"openclaw/default", user:$u, stream:$s, messages:[{role:"user",content:$t}]}')"
+if [ "$stream" = 1 ]; then
+  curl -sS -N "http://127.0.0.1:$port/v1/chat/completions" -H "Authorization: Bearer $token" \
+    -H 'Content-Type: application/json' --data-binary "$body" \
+  | sed -nE 's/^data: (\{.*)$/\1/p' | jq -rj '.choices[0].delta.content // empty'; echo
+else
+  curl -sS "http://127.0.0.1:$port/v1/chat/completions" -H "Authorization: Bearer $token" \
+    -H 'Content-Type: application/json' --data-binary "$body" \
+  | jq -r '.choices[0].message.content // .error.message // .'
+fi

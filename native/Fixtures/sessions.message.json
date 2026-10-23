@@ -1,0 +1,6 @@
+{
+  "ok": true,
+  "ms": 120,
+  "cache": null,
+  "result": { "ok": true, "via": "inbox socket", "queuedBehindTurn": false, "event": "ev-demo-0100", "session": { "id": "00000000-demo-4000-8000-000000000001", "name": "demo-build", "status": "idle" } }
+}

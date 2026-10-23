@@ -1,0 +1,532 @@
+#!/usr/bin/env node
+// drover: Drover CLI. serve | open | status | widget-token | rpc | mcp | op <name> [json] | ops | import-survey | import-legacy
+import path, { dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { readFile, readdir, writeFile, mkdir, chmod } from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { envvar } from '../core/envvars.js';
+import { stateDir, migrateLegacyDirs } from '../core/paths.js';
+
+const ROOT = path.join(dirname(fileURLToPath(import.meta.url)), '..');
+const STATE_DIR = stateDir();
+const argv = process.argv.slice(2);
+const cmd = argv[0] ?? 'help';
+
+// The old name is a symlink to this file until 2026-11-15. stderr only: stdout
+// carries the rpc and mcp protocols.
+if (path.basename(process.argv[1] ?? '') === 'apxw') process.stderr.write('apxw is deprecated and will be removed on 2026-11-15; use drover\n');
+const flag = (name, def) => { const i = argv.indexOf(`--${name}`); return i >= 0 ? argv[i + 1] : def; };
+const has = (name) => argv.includes(`--${name}`);
+
+const help = `drover: browser control plane for the agent fleet
+
+  drover serve [--port 7337] [--bind 127.0.0.1] [--no-snapshots] run the daemon in the foreground (alias: up)
+  drover open                                                 print (and open) the URL with the token
+  drover widget-token [--rotate]                              read-only token for native apps and widgets (printed on a terminal only)
+  drover status                                               is the daemon up? which URL?
+  drover rpc                                                  newline-JSON op server on stdio (used over ssh)
+  drover mcp                                                  MCP server on stdio (register in Claude Code / Codex)
+  drover op <op> ['{"json":"args"}']                           run one op locally and print JSON
+  drover import-survey <dir>                                  import state-survey/*.json as survey events
+  drover import-legacy                                        import claude/feature-log.jsonl as feature events
+  drover ops                                                  list op names
+  drover pair [approve|deny <code>]                           list devices asking to pair, or approve/deny one by its 6-digit code
+  drover clients                                              apps that reached this daemon in the last day (Mac, menu bar, iPhone, watch, browsers)
+  drover tui [--manager] [--thread T] [--from TARGET] [--url URL] [--view NAME]
+                                                            the terminal client: the manager first, the board, sessions and every web UI table
+
+  drover bots                                                 Grok bot gateway: public URL, pending approvals, connections, Routines, bot states
+  drover bots approve <code> [--as <bot>] [--scope read,write,notify]   let a bot in (the code its authorize page shows); a request through /bots/<bot>/mcp needs no --as
+  drover bots approve <code> --shared                         legacy read-only connection (never for native tenants)
+  drover bots approve <code> --as <prefix>-<tenant> --tenant <tenant> --requester <id> --projects <canonical,checkout,paths> --hosts <exact,names> [--scope read,write]
+                                                            explicit native tenant resource delegation; no grant means deny (prefix: DROVER_TENANT_PREFIX, default tenant)
+  drover bots deny <code> | grants [--all] | revoke <grantId>
+  drover bots token --as <bot> [--scope ...] [--days 90] [--note N]   a static bearer token, for a bot that cannot do OAuth (printed on a terminal only)
+  drover bots routine add <bot> --url <webhook-url> [--title T] [--no-test]   the bot's Routine webhook (key read from stdin), then a connection test
+  drover bots routine remove <bot> | routines
+  drover bots send <bot|*> <text...>                          message a bot (its Routine runs it; else it waits in its inbox)
+  drover bots prompt                                          the Routine prompt to paste into Grok Bot
+  drover bots skill                                           the bot-side skill: give it to a bot to save as a skill named drover
+
+  drover search <words...> [--here | --host H] [--limit N] [--mode hybrid|keyword|semantic]
+              [--kinds claude,codex,...] [--days N] [--project P] [--json]
+                                                            search every session on every machine (by meaning and exact words)
+  drover grep <pattern> [--here | --host H] [--regex] [--case] [--limit N] [--roles tool_result,...]
+              [--kinds claude,subagent,codex] [--days N] [--project P] [--json]
+                                                            grep the raw transcripts on every machine (tool output included)
+  drover stacks [--here | --host H] [--project P] [--fresh] [--no-git] [--all] [--json]
+                                                            docker compose stacks on every machine: health, failing services, the code each runs
+                                                            (--all also lists containers outside compose; verbs: drover op docker.restart|start|exec|run)
+  drover embed status                                         this host's search index and embedding runtime
+  drover embed setup [--model-file PATH | --from HOST]         install llama-server + EmbeddingGemma 2 for search (bin/drover-embed-setup)
+
+  drover manager setup [--scope local|all] [--exclude h1,h2] [--digest|--no-digest] [--actor manager-x]
+                       [--profile NAME] [--overlay DIR|none] [--dry-run] [--restart auto|always|never] [--wait SEC] [--node PATH] [--json]
+                                                            install or refresh the OpenClaw manager on this host from web/openclaw-manager.
+                                                            --overlay (default DROVER_OPENCLAW_OVERLAY, then the manifest's): a private directory laid
+                                                            out the same way whose profiles/, roles/ and workspace/ files are used first.
+                                                            --scope is what it covers (this host, or every host it reaches minus --exclude);
+                                                            --digest on the one manager that owns the daily digest and MR watch. The first
+                                                            install needs --scope; later runs reuse the manifest. Idempotent; prints no secret.
+  drover manager roles [--overlay DIR]                        the roles this checkout and the overlay define (and the profile each uses)
+  drover manager profiles [--overlay DIR]                     the profiles this checkout and the overlay define
+  drover manager status                                       the manager here: service, gateway, health, automations, cost, install, checks
+  drover manager check [--live]                               egress check against the install profile (--live adds the gateway's TCP peers)
+  drover manager popup [--independent | --thread T] [--fresh] [--width 85%] [--height 80%] [--client C]
+                                                            float the manager TUI over this tmux window (one shared manager; --independent: this window's own)
+  drover manager keys [--install] [--key M] [--independent-key N] [--force]
+                                                            the tmux binding for the popup (--install writes ~/.config/drover/manager.tmux.conf and loads it)
+  drover manager uninstall [--purge] [--dry-run]               stop and remove it (--purge also deletes its state, memory and secrets)
+
+apxw is the old name of this command; it still works until 2026-11-15.
+`;
+
+async function main() {
+  // Settings (~/.config/drover/*.env, every command: the owner, the overlay, the tenant prefix, ...) and, for the
+  // commands that run ops, secrets (~/.env_secrets: tokens a plugin or the credential pool needs) go into process.env
+  // before any module reads them; values are never logged. Then the plugins (core/plugins.js), whose ops the commands
+  // that dispatch serve like core's (mcp loads its own in mcp/server.js serve); a plugin that failed to load is named
+  // on stderr, and the command goes on without it.
+  const env = await import(path.join(ROOT, 'core', 'env.js'));
+  await env.loadSettings();
+  if (['serve', 'up', 'rpc', 'mcp', 'op', 'search', 'grep', 'stacks'].includes(cmd)) await env.loadEnvFile({ file: env.secretsFile() });
+  if (['serve', 'up', 'rpc', 'op', 'search', 'grep', 'stacks'].includes(cmd)) {
+    const { loadPlugins } = await import(path.join(ROOT, 'core', 'api.js'));
+    await loadPlugins();
+    const plugins = await import(path.join(ROOT, 'core', 'plugins.js'));
+    for (const e of plugins.errors()) console.error(`drover: plugin ${e.dir ?? '?'} not loaded: ${e.error}`);
+  }
+  // Before anything reads state: move ~/.local/state/apx-web and ~/.cache/apx-web to their drover names.
+  migrateLegacyDirs();
+  switch (cmd) {
+    case 'help': case '--help': case '-h': process.stdout.write(help); return;
+    case 'tui': { const { main: tui } = await import(path.join(ROOT, 'tui', 'main.js')); process.exit(await tui(argv.slice(1))); }
+    case 'clients': {
+      const f = path.join(STATE_DIR, 'daemon.json');
+      if (!existsSync(f)) { console.log('Drover is not running (no daemon.json). Start with: drover serve'); process.exitCode = 1; return; }
+      const d = JSON.parse(await readFile(f, 'utf8'));
+      const tok = (await readFile(path.join(STATE_DIR, 'token'), 'utf8')).trim();
+      const res = await fetch(new URL('api/clients', d.url), { headers: { authorization: `Bearer ${tok}` } });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || j.ok === false) throw new Error(j.error ?? `daemon answered HTTP ${res.status}`);
+      if (!j.result.length) { console.log('no clients yet'); return; }
+      const ago = (iso) => { const s = Math.round((Date.now() - Date.parse(iso)) / 1000); return s < 90 ? `${s}s ago` : s < 5400 ? `${Math.round(s / 60)}m ago` : `${Math.round(s / 3600)}h ago`; };
+      for (const c of j.result) console.log(`${ago(c.lastSeen).padEnd(9)} ${c.app.padEnd(18)} ${c.via.padEnd(8)} ${c.scope.padEnd(7)} ${String(c.requests).padStart(6)} req  ${c.extension || c.userAgent}`);
+      return;
+    }
+    case 'pair': {
+      // Talks to the running daemon: pairing requests live in its memory (core/pair.js).
+      const f = path.join(STATE_DIR, 'daemon.json');
+      if (!existsSync(f)) { console.log('Drover is not running (no daemon.json). Start with: drover serve'); process.exitCode = 1; return; }
+      const d = JSON.parse(await readFile(f, 'utf8'));
+      const tok = (await readFile(path.join(STATE_DIR, 'token'), 'utf8')).trim();
+      const call = async (route, body) => {
+        const res = await fetch(new URL(`api/pair/${route}`, d.url), body === undefined
+          ? { headers: { authorization: `Bearer ${tok}` } }
+          : { method: 'POST', headers: { authorization: `Bearer ${tok}`, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok || j.ok === false) throw new Error(j.error ?? `daemon answered HTTP ${res.status}`);
+        return j.result;
+      };
+      const sub = argv[1];
+      if (sub === 'approve' || sub === 'deny') {
+        if (!argv[2]) throw new Error(`usage: drover pair ${sub} <code>`);
+        const r = await call(sub, { code: argv.slice(2).join('') });
+        console.log(`${sub === 'approve' ? 'approved' : 'denied'}: ${r.client}${r.device ? ` on ${r.device}` : ''}`);
+        return;
+      }
+      if (sub && sub !== 'list') throw new Error('usage: drover pair [approve|deny <code>]');
+      const list = await call('pending');
+      if (!list.length) { console.log('no devices are asking to pair'); return; }
+      for (const r of list) console.log(`${r.code.slice(0, 3)} ${r.code.slice(3)}  ${r.client}${r.device ? ` on ${r.device}` : ''}  from ${r.from || '?'}  expires ${r.expiresAt}`);
+      console.log('approve the one whose code the device shows: drover pair approve <code>');
+      return;
+    }
+    case 'bots': return botsCli();
+    case 'ops': { const { OPS } = await import(path.join(ROOT, 'core', 'api.js')); console.log(OPS.join('\n')); return; }
+    case 'serve': case 'up': {
+      // Before anything loads core: the daemon serves codex reads itself, and every other process asks it.
+      const { markDaemon } = await import(path.join(ROOT, 'core', 'daemon-client.js')); markDaemon();
+      const { startServer, startSnapshots } = await import(path.join(ROOT, 'server', 'http.js'));
+      const port = Number(flag('port', envvar('PORT') ?? 7337));
+      const bind = flag('bind', envvar('BIND') ?? '127.0.0.1');
+      const { url, openUrl } = await startServer({ port, bind });
+      if (!has('no-snapshots')) startSnapshots();
+      await mkdir(STATE_DIR, { recursive: true, mode: 0o700 });
+      await startBots();
+      // No token in daemon.json or the log: `drover open` rebuilds the URL from the 0600 token file.
+      await writeFile(path.join(STATE_DIR, 'daemon.json'), JSON.stringify({ pid: process.pid, url, bind, port, startedAt: new Date().toISOString() }) + '\n', { mode: 0o600 });
+      await chmod(path.join(STATE_DIR, 'daemon.json'), 0o600).catch(() => {});
+      console.log(`Drover listening on ${url}${process.stdout.isTTY ? `\nopen: ${openUrl}` : ' (drover open prints the URL with the token)'}`);
+      const shutdown = async () => { const { stopAll } = await import(path.join(ROOT, 'core', 'remote.js')); const t = await import(path.join(ROOT, 'core', 'terminals.js')); const codex = await import(path.join(ROOT, 'core', 'codex.js')); stopAll(); t.closeAll(); codex.stopReadClient(); process.exit(0); };
+      process.on('SIGINT', shutdown); process.on('SIGTERM', shutdown);
+      return;
+    }
+    case 'status': case 'open': {
+      const f = path.join(STATE_DIR, 'daemon.json');
+      if (!existsSync(f)) { console.log('Drover is not running (no daemon.json). Start with: drover serve'); process.exitCode = 1; return; }
+      const d = JSON.parse(await readFile(f, 'utf8'));
+      let alive = true; try { process.kill(d.pid, 0); } catch { alive = false; }
+      if (!alive) { console.log(`Drover daemon pid ${d.pid} is not running. Start with: drover serve`); process.exitCode = 1; return; }
+      const tokenFile = path.join(STATE_DIR, 'token');
+      const openUrl = d.openUrl ?? (existsSync(tokenFile) ? `${d.url}#token=${(await readFile(tokenFile, 'utf8')).trim()}` : d.url);
+      console.log(`${alive ? 'running' : 'stale'} pid ${d.pid} since ${d.startedAt}\n${cmd === 'open' ? openUrl : d.url}`);
+      if (cmd === 'open') { const opener = process.platform === 'darwin' ? 'open' : 'xdg-open'; spawn(opener, [openUrl], { stdio: 'ignore', detached: true }).unref(); }
+      return;
+    }
+    case 'widget-token': {
+      const file = path.join(STATE_DIR, 'widget-token');
+      await mkdir(STATE_DIR, { recursive: true, mode: 0o700 });
+      if (has('rotate') || !existsSync(file)) { await writeFile(file, randomBytes(24).toString('base64url') + '\n', { mode: 0o600 }); await chmod(file, 0o600).catch(() => {}); }
+      if (process.stdout.isTTY) console.log((await readFile(file, 'utf8')).trim());
+      else console.log(`${file}\nstdout is not a terminal; read ${file}`);
+      return;
+    }
+    case 'rpc': {
+      const { dispatchLocal } = await import(path.join(ROOT, 'core', 'api.js'));
+      let buf = '', inFlight = 0, ended = false;
+      const maybeExit = async () => {
+        if (!ended || inFlight > 0) return;
+        // A plugin's work may have answered "running" and still be at work here (no daemon on this host): let it
+        // finish and record how it ended before exiting, or it dies half done (core/plugins.js settle).
+        const { settleAll } = await import(path.join(ROOT, 'core', 'plugins.js'));
+        await settleAll();
+        if (inFlight > 0) return;
+        const { stopAll } = await import(path.join(ROOT, 'core', 'remote.js')); stopAll();
+        const codex = await import(path.join(ROOT, 'core', 'codex.js')); codex.sharedClient().stop(); codex.stopReadClient();
+        process.exit(0);
+      };
+      const answer = async (line) => {
+        let req; try { req = JSON.parse(line); } catch { return { id: null, ok: false, error: 'bad json' }; }
+        if (!req || typeof req !== 'object' || Array.isArray(req)) return { id: null, ok: false, error: 'bad request' };
+        try { return { id: req.id, ok: true, result: await dispatchLocal(req.op, req.args ?? {}) }; }
+        catch (e) { return { id: req.id, ok: false, error: e?.message ?? String(e) }; }
+      };
+      // A request is in flight until its reply is written out, not just computed: process.exit
+      // drops what stdout still buffers (a reply over the 64 KB pipe buffer to a slow ssh link), and
+      // a retired peer (core/remote.js) ends our stdin while it still waits for replies.
+      const handle = async (line) => {
+        inFlight++;
+        try {
+          const msg = await answer(line);
+          let text; try { text = JSON.stringify(msg); } catch (e) { text = JSON.stringify({ id: msg.id, ok: false, error: `reply is not JSON: ${e.message}` }); }
+          await new Promise((resolve) => process.stdout.write(text + '\n', () => resolve()));
+        } finally { inFlight--; maybeExit(); }
+      };
+      // While a call is in flight, a blank line every 30 s (DROVER_RPC_BEAT_MS; callers skip blank lines): an
+      // hour-long files.wait keeps its connection from looking idle, and a caller that has gone away shows up as a
+      // write error. Then the waits it left end at once; everything else in flight still runs to the end, as before.
+      // An ended stdin is no such sign: callers end it and still read their replies (test/rpc-flush.test.js).
+      const { stopWaits } = await import(path.join(ROOT, 'core', 'filewait.js'));
+      process.stdout.on('error', () => stopWaits());
+      setInterval(() => { if (inFlight > 0) process.stdout.write('\n'); }, Number(envvar('RPC_BEAT_MS')) || 30_000).unref();
+      process.stdin.setEncoding('utf8');
+      process.stdin.on('data', (d) => {
+        buf += d; let i;
+        while ((i = buf.indexOf('\n')) >= 0) { const line = buf.slice(0, i); buf = buf.slice(i + 1); if (line.trim()) handle(line); }
+      });
+      process.stdin.on('end', () => { if (buf.trim()) handle(buf); buf = ''; ended = true; maybeExit(); });
+      return;
+    }
+    case 'mcp': { const { serve } = await import(path.join(ROOT, 'mcp', 'server.js')); await serve(); return; }
+    case 'op': {
+      // Reads in process, live and uncached; a write through the daemon when one answers, else here, recorded either way.
+      const { cliOp } = await import(path.join(ROOT, 'core', 'cli-op.js'));
+      const op = argv[1]; if (!op) throw new Error('usage: drover op <op> [json]');
+      const args = argv[2] ? JSON.parse(argv[2]) : {};
+      const r = await cliOp(op, args);
+      console.log(JSON.stringify(r, null, 2));
+      const { stopAll } = await import(path.join(ROOT, 'core', 'remote.js')); stopAll();
+      const codex = await import(path.join(ROOT, 'core', 'codex.js')); codex.sharedClient().stop(); codex.stopReadClient();
+      return;
+    }
+    case 'search': {
+      const words = []; const valued = new Set(['host', 'limit', 'mode', 'kinds', 'days', 'project', 'role', 'session']);
+      for (let i = 1; i < argv.length; i++) { if (argv[i].startsWith('--')) { if (valued.has(argv[i].slice(2))) i++; continue; } words.push(argv[i]); }
+      const query = words.join(' ').trim();
+      if (!query) throw new Error('usage: drover search <words...> [--here | --host H] [--limit N] [--mode M] [--kinds a,b] [--days N] [--project P] [--json]');
+      const { dispatch } = await import(path.join(ROOT, 'core', 'api.js'));
+      const args = { query, limit: Number(flag('limit', 12)) };
+      for (const k of ['mode', 'days', 'project', 'role', 'session']) if (flag(k)) args[k] = k === 'days' ? Number(flag(k)) : flag(k);
+      if (flag('kinds')) args.kinds = flag('kinds').split(',');
+      const one = has('here') || flag('host');
+      const r = one ? await dispatch('search.semantic', { ...args, ...(flag('host') ? { host: flag('host') } : {}) }) : await dispatch('search.fleet', args);
+      if (has('json')) console.log(JSON.stringify(r, null, 2));
+      else {
+        const { formatResults } = await import(path.join(ROOT, 'core', 'search', 'format.js'));
+        process.stdout.write(formatResults(r, { color: process.stdout.isTTY }));
+      }
+      const { stopAll } = await import(path.join(ROOT, 'core', 'remote.js')); stopAll();
+      return;
+    }
+    case 'grep': {
+      const words = []; const valued = new Set(['host', 'limit', 'kinds', 'roles', 'days', 'project', 'per-session']);
+      for (let i = 1; i < argv.length; i++) { if (argv[i].startsWith('--')) { if (valued.has(argv[i].slice(2))) i++; continue; } words.push(argv[i]); }
+      const pattern = words.join(' ').trim();
+      if (!pattern) throw new Error('usage: drover grep <pattern> [--here | --host H] [--regex] [--case] [--limit N] [--kinds claude,subagent,codex] [--roles tool_result,...] [--days N] [--project P] [--json]');
+      const { dispatch } = await import(path.join(ROOT, 'core', 'api.js'));
+      const args = { pattern, limit: Number(flag('limit', 30)), ...(has('regex') ? { regex: true } : {}), ...(has('case') ? { caseSensitive: true } : {}) };
+      if (flag('days')) args.days = Number(flag('days'));
+      if (flag('project')) args.project = flag('project');
+      if (flag('per-session')) args.perSession = Number(flag('per-session'));
+      for (const k of ['kinds', 'roles']) if (flag(k)) args[k] = flag(k).split(',');
+      const one = has('here') || flag('host');
+      const r = one ? await dispatch('search.grep', { ...args, ...(flag('host') ? { host: flag('host') } : {}) }) : await dispatch('search.grepFleet', args);
+      if (has('json')) console.log(JSON.stringify(r, null, 2));
+      else {
+        const { formatGrep } = await import(path.join(ROOT, 'core', 'search', 'format.js'));
+        process.stdout.write(formatGrep(r, { color: process.stdout.isTTY }));
+      }
+      const { stopAll } = await import(path.join(ROOT, 'core', 'remote.js')); stopAll();
+      return;
+    }
+    case 'stacks': {
+      const { dispatch } = await import(path.join(ROOT, 'core', 'api.js'));
+      const args = { ...(flag('project') ? { project: flag('project') } : {}), ...(has('no-git') ? { git: false } : {}), ...(has('fresh') ? { fresh: true } : {}) };
+      // One machine goes through the fleet op too: the same per-host cache, and a host a plugin provides that runs no Drover
+      // read through that plugin.
+      const one = flag('host') ?? (has('here') ? 'local' : null);
+      const r = await dispatch('docker.fleet', { ...args, ...(one ? { hosts: [one] } : {}) });
+      if (has('json')) console.log(JSON.stringify(r, null, 2));
+      else {
+        const { formatStacks } = await import(path.join(ROOT, 'core', 'docker-format.js'));
+        process.stdout.write(formatStacks(r, { color: process.stdout.isTTY, loose: has('all') }));
+      }
+      const { stopAll } = await import(path.join(ROOT, 'core', 'remote.js')); stopAll();
+      return;
+    }
+    case 'embed': {
+      const sub = argv[1] ?? 'status';
+      if (sub === 'setup') {
+        const child = spawn(path.join(ROOT, 'bin', 'drover-embed-setup'), argv.slice(2), { stdio: 'inherit' });
+        process.exitCode = await new Promise((resolve) => child.on('close', (c) => resolve(c ?? 1)));
+        return;
+      }
+      if (sub !== 'status') throw new Error('usage: drover embed status | drover embed setup [--model-file PATH | --from HOST]');
+      await env.loadEnvFile({ file: env.secretsFile() });
+      const { dispatch } = await import(path.join(ROOT, 'core', 'api.js'));
+      console.log(JSON.stringify(await dispatch('search.status', flag('host') ? { host: flag('host') } : {}), null, 2));
+      const { stopAll } = await import(path.join(ROOT, 'core', 'remote.js')); stopAll();
+      return;
+    }
+    case 'manager': {
+      // No secrets here (settings only): the installer and the console hand OpenClaw only the manager's own .env names.
+      const sub = argv[1] ?? 'status';
+      if (sub === 'help' || has('help') || argv.includes('-h')) {   // never let --help fall through to a real setup
+        const lines = help.split('\n'); const from = lines.findIndex((l) => l.startsWith('  drover manager setup')); const to = lines.findIndex((l) => l.startsWith('  drover manager uninstall'));
+        process.stdout.write(lines.slice(from, to + 1).join('\n') + '\n'); return;
+      }
+      if (sub === 'popup' || sub === 'keys') { const { managerCli } = await import(path.join(ROOT, 'tui', 'popup.js')); process.exitCode = await managerCli(sub, argv.slice(2)); return; }
+      const inst = await import(path.join(ROOT, 'core', 'openclaw-install.js'));
+      const oc = await import(path.join(ROOT, 'core', 'openclaw.js'));
+      const print = (r) => console.log(JSON.stringify(r, null, 2));
+      if (sub === 'setup' || sub === 'install') {
+        const json = has('json');
+        const r = await inst.setup({ role: flag('role'), profile: flag('profile'), overlay: flag('overlay'), scope: flag('scope'), exclude: flag('exclude')?.split(','), digest: has('digest') ? true : has('no-digest') ? false : undefined, actor: flag('actor'), dryRun: has('dry-run'), restart: flag('restart', 'auto'), waitSec: Number(flag('wait', 300)), node: flag('node'), log: json ? () => {} : (line) => console.log(`  ${line}`) });
+        if (json) print(r);
+        else console.log(`${r.dryRun ? 'dry run, nothing changed: ' : ''}${r.actor} covers ${r.scope.hosts === 'local' ? 'this host' : `every host it reaches${r.scope.exclude.length ? ` except ${r.scope.exclude.join(', ')}` : ''}`}${r.scope.digest ? ' and owns the digest' : ''} (role ${r.role}, profile ${r.profile}${r.overlay ? `, overlay ${r.overlay}` : ''}), OpenClaw ${r.manifest.openclaw.version}, node ${r.manifest.node.version}${r.dryRun ? '' : `; manifest ${inst.layout().manifest}`}`);
+        if (r.steps.some((s) => s.action === 'not answering' || s.action === 'error' || s.action === 'not ok')) process.exitCode = 1;
+        return;
+      }
+      // roles and profiles read the overlay setup would use (the flag, DROVER_OPENCLAW_OVERLAY, else the manifest's).
+      const overlay = () => inst.resolveOverlay(flag('overlay'), { manifest: inst.readManifest() });
+      if (sub === 'roles') { for (const r of inst.listRoles(inst.SRC, overlay())) console.log(`${r.name.padEnd(10)} profile ${r.profile}${r.from === 'overlay' ? ' (overlay)' : ''}\n${' '.repeat(10)} ${r.summary}`); return; }
+      if (sub === 'profiles') { for (const p of inst.listProfiles(inst.SRC, overlay())) console.log(`${p.name.padEnd(10)} port ${p.port}${p.from === 'overlay' ? ' (overlay)' : ''}\n${' '.repeat(10)} ${p.summary}`); return; }
+      if (sub === 'status') { print(await oc.status()); return; }
+      if (sub === 'check') { const r = await oc.check({ live: has('live') }); print(r); if (r.ok === false) process.exitCode = 1; return; }
+      if (sub === 'uninstall') { print(await inst.uninstall({ purge: has('purge'), dryRun: has('dry-run') })); return; }
+      throw new Error('usage: drover manager setup [--role R] [--profile P] [--overlay DIR] [--dry-run] | roles | profiles | status | check [--live] | uninstall [--purge]');
+    }
+    case 'import-legacy': { const ev = await import(path.join(ROOT, 'core', 'events.js')); console.log(JSON.stringify(await ev.importLegacyFeatureLog())); return; }
+    case 'import-survey': {
+      const dir = argv[1]; if (!dir) throw new Error('usage: drover import-survey <dir>');
+      const ev = await import(path.join(ROOT, 'core', 'events.js'));
+      const existing = await ev.readAll();
+      const done = new Set(existing.filter((e) => e.type === 'survey').map((e) => e.file));
+      let n = 0, files = 0;
+      for (const name of (await readdir(dir)).filter((x) => x.endsWith('.json')).sort()) {
+        const file = path.join(dir, name);
+        if (done.has(file)) { console.log(`skip ${name} (already imported)`); continue; }
+        const rows = JSON.parse(await readFile(file, 'utf8'));
+        if (!Array.isArray(rows)) continue;
+        for (const r of rows) { await ev.append({ type: 'survey-item', surveyFile: file, item: r }, { actor: 'import:survey' }); n++; }
+        await ev.append({ type: 'survey', source: 'state-survey', file, count: rows.length }, { actor: 'import:survey' }); files++;
+      }
+      console.log(JSON.stringify({ files, items: n }));
+      return;
+    }
+    default: process.stderr.write(help); process.exitCode = 2;
+  }
+}
+
+/**
+ * The Grok bot gateway (server/botgate.js), on its own loopback port, when DROVER_BOTS_URL names its public origin.
+ * A bad value keeps the gateway off and the daemon up.
+ */
+async function startBots() {
+  const botAuth = await import(path.join(ROOT, 'core', 'bots', 'oauth.js'));
+  const { isTenantBot } = await import(path.join(ROOT, 'core', 'bots', 'access.js'));
+  let base = null;
+  try { base = botAuth.publicBase(); } catch (e) { console.error(`bot gateway off: ${e.message}`); return; }
+  if (!base) return;
+  const { startBotGateway } = await import(path.join(ROOT, 'server', 'botgate.js'));
+  const { dispatchCached, notifier, OPS } = await import(path.join(ROOT, 'core', 'api.js'));
+  const { broadcast } = await import(path.join(ROOT, 'server', 'http.js'));
+  await mkdir(path.join(STATE_DIR, 'bots'), { recursive: true, mode: 0o700 });   // this host keeps the bots (core/bots/grok.js configured)
+  const onPending = (a) => {
+    broadcast('botauth', { code: a.code, client: a.clientName, scopes: a.scopes, expiresAt: a.expiresAt });
+    // Alerts are deduplicated and throttled per address (core/bots/oauth.js mayAlert); the browser banner shows every request.
+    if (a.alert) notifier.emit([{ category: 'needs-you', kind: 'bot-auth', source: 'bots', name: 'Drover bots', title: `${a.clientName} wants to connect ${a.bot ?? 'a bot'}`, body: `Approve only if the page shows ${botAuth.formatCode(a.code)}: drover bots approve ${a.code}${a.bot ? '' : ' --as <bot>'}${isTenantBot(a.bot) ? ' --tenant <tenant> --requester <id> --projects <canonical,checkout,paths> --hosts <exact,names>' : ''}`, key: `bot-auth|${a.code}` }]).catch(() => {});
+  };
+  try {
+    const gw = await startBotGateway({ base, port: botAuth.gatewayPort(), dispatch: (op, args) => dispatchCached(op, args).then((r) => r.result), hasOp: (op) => OPS.includes(op), log: (...p) => console.error('[bots]', ...p), onPending });
+    console.log(`Bot gateway on ${gw.url} (public ${base}/mcp)`);
+  } catch (e) { console.error(`bot gateway failed to start: ${e.message}`); }
+}
+
+/** A secret from stdin: hidden typing on a terminal, else the first line of a pipe. Never echoed or logged. */
+async function readSecret(prompt) {
+  if (!process.stdin.isTTY) {
+    let data = ''; process.stdin.setEncoding('utf8');
+    for await (const chunk of process.stdin) data += chunk;
+    return data.split('\n')[0].trim();
+  }
+  const { createInterface } = await import('node:readline');
+  process.stdout.write(prompt);
+  const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+  // Nothing readline draws reaches the terminal: every redraw (after a Backspace, say) repeats the typed key.
+  rl._writeToOutput = () => {};
+  const answer = await new Promise((resolve) => rl.question('', resolve));
+  rl.close(); process.stdout.write('\n');
+  return answer.trim();
+}
+
+/** drover bots ...: the gateway's approvals and Routines live in the daemon, behind the main token. */
+async function botsCli() {
+  const f = path.join(STATE_DIR, 'daemon.json');
+  const sub = argv[1] ?? 'status';
+  if (sub === 'prompt') { const { ROUTINE_PROMPT } = await import(path.join(ROOT, 'core', 'bots', 'grok.js')); console.log(ROUTINE_PROMPT); return; }
+  if (sub === 'skill') { process.stdout.write(await readFile(path.join(ROOT, '..', 'integrations', 'grok-bot', 'skills', 'drover', 'SKILL.md'), 'utf8')); return; }
+  if (!existsSync(f)) { console.log('Drover is not running (no daemon.json). Start with: drover serve'); process.exitCode = 1; return; }
+  const d = JSON.parse(await readFile(f, 'utf8'));
+  const tok = (await readFile(path.join(STATE_DIR, 'token'), 'utf8')).trim();
+  const call = async (route, body) => {
+    const res = await fetch(new URL(`api/${route}`, d.url), body === undefined
+      ? { headers: { authorization: `Bearer ${tok}` } }
+      : { method: 'POST', headers: { authorization: `Bearer ${tok}`, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok || j.ok === false) throw new Error(j.error ?? `daemon answered HTTP ${res.status}`);
+    return j.result;
+  };
+  const scopes = () => (flag('scope') ? flag('scope').split(',').map((s) => s.trim()).filter(Boolean) : undefined);
+  // The delegation's bot is the tenant's own: the one --as names, else the one whose URL (/bots/<bot>/mcp) the request
+  // came through, else <prefix>-<tenant> by this shell's DROVER_TENANT_PREFIX. The daemon checks it against its own
+  // prefix (core/bots/access.js), so a shell that lacks the daemon's setting cannot approve under another name.
+  const delegation = async (code) => {
+    const flags = ['tenant', 'requester', 'projects', 'hosts'];
+    if (!flags.some(has)) return {};
+    if (flags.some((f) => !has(f) || !flag(f) || flag(f).startsWith('--'))) throw new Error('native delegation requires --tenant, --requester, --projects and --hosts (nonempty canonical checkout paths and exact hosts, no wildcards)');
+    const tenant = flag('tenant');
+    const through = code ? (await call('bots/pending')).find((p) => p.code === String(code).replace(/[\s-]/g, ''))?.bot : null;
+    const { tenantBot } = await import(path.join(ROOT, 'core', 'bots', 'access.js'));
+    return { resourceAccess: { version: 1, tenant, bot: flag('as') || through || tenantBot(tenant), requester: flag('requester'), projects: flag('projects').split(','), hosts: flag('hosts').split(',') } };
+  };
+  const showDelegation = (g) => g.resourceAccess ? `  tenant ${g.resourceAccess.tenant} requester ${g.resourceAccess.requester} projects [${g.resourceAccess.projects.join(',')}] hosts [${g.resourceAccess.hosts.join(',')}]` : '';
+  const asBot = (bot) => (bot === '*' ? 'shared (read-only, any bot, acts as none)' : bot);
+  // stalled: approved, but its sign-in can no longer finish (the page never collected the code, or it was never exchanged).
+  const lastUsed = (g) => g.lastUsedAt ?? (g.stalled ? 'never: its sign-in did not finish; revoke it and connect again' : 'never');
+  // Every connection belongs to one bot; --shared is the explicit read-only exception.
+  const whose = (cmd) => {
+    if (has('shared')) return { shared: true, ...(flag('as') ? { bot: flag('as') } : {}) };   // both: the daemon refuses
+    if (flag('as')) return { bot: flag('as') };
+    // A request that came through a bot's own URL (/bots/<bot>/mcp) names its bot; the daemon refuses an unnamed one that did not.
+    if (cmd.startsWith('approve')) return {};
+    throw new Error(`name the bot it is for: drover bots ${cmd} --as <bot> (one connection per bot, recorded under its name), or --shared for a read-only connection any bot may use`);
+  };
+  switch (sub) {
+    case 'status': {
+      const s = await call('op/bots.status', {});
+      console.log(s.gateway ? `gateway: ${s.gateway.mcp}  (loopback port ${s.gateway.port})` : `gateway: off${s.configError ? ` (${s.configError})` : ' (set DROVER_BOTS_URL in ~/.local/state/drover/env and restart the daemon)'}`);
+      if (s.pendingApprovals) console.log(`pending approvals: ${s.pendingApprovals} (drover bots pending)`);
+      console.log(`connections: ${s.grants.length ? '' : 'none'}`);
+      for (const g of s.grants) console.log(`  ${g.grantId}  ${g.client}  as ${asBot(g.bot)}  [${g.scopes.join(' ')}]  last used ${lastUsed(g)}${showDelegation(g)}`);
+      console.log(`routines: ${s.routines.length ? '' : 'none'}`);
+      for (const r of s.routines) console.log(`  ${r.bot}${r.title ? ` (${r.title})` : ''}  ${r.routine?.host ?? '?'} ${r.routine?.webhook ?? ''}`);
+      console.log(`bots: ${s.bots.length ? '' : 'none reported yet'}`);
+      for (const b of s.bots) console.log(`  ${b.id.padEnd(16)} ${String(b.stale ? 'stale' : b.state ?? '-').padEnd(10)} ${b.stale ? b.stale.reason : b.summary ?? ''}${b.lastSeenAt ? `  (${b.lastSeenAt})` : ''}`);
+      return;
+    }
+    case 'pending': {
+      const list = await call('bots/pending');
+      if (!list.length) { console.log('no bots are asking to connect'); return; }
+      for (const r of list) console.log(`${r.code.slice(0, 3)} ${r.code.slice(3)}  ${r.client}${r.bot ? ` for ${r.bot}` : ''}  [${r.scopes.join(' ')}]  redirect ${r.redirectHost}  from ${r.from || '?'}  expires ${r.expiresAt}`);
+      console.log('approve the one whose code the authorize page shows: drover bots approve <code> (--as <bot> unless it came through /bots/<bot>/mcp)');
+      return;
+    }
+    case 'approve': case 'deny': {
+      const code = argv.slice(2).filter((a, i, all) => !a.startsWith('--') && !(i > 0 && ['--as', '--scope', '--tenant', '--requester', '--projects', '--hosts'].includes(all[i - 1]))).join('');
+      if (!code) throw new Error(`usage: drover bots ${sub} <code>${sub === 'approve' ? ' --as <bot> [--scope read,write,notify]  (or --shared)' : ''}`);
+      if (sub === 'deny') { const r = await call('bots/deny', { code }); console.log(`denied: ${r.client}`); return; }
+      const r = await call('bots/approve', { code, ...whose('approve <code>'), scopes: scopes(), ...(await delegation(code)) });
+      console.log(`approved: ${r.client} as ${asBot(r.bot)} [${r.scopes.join(' ')}]  grant ${r.grantId}${showDelegation(r)}`);
+      return;
+    }
+    case 'grants': {
+      const list = await call(`bots/grants${has('all') ? '?all=true' : ''}`);
+      if (!list.length) { console.log('no bot connections'); return; }
+      for (const g of list) console.log(`${g.grantId}  ${g.client}  as ${asBot(g.bot)}  [${g.scopes.join(' ')}]  created ${g.createdAt}  last used ${lastUsed(g)}${showDelegation(g)}${g.revokedAt ? `  REVOKED ${g.revokedAt} (${g.revokedWhy ?? ''})` : ''}`);
+      return;
+    }
+    case 'token': {
+      // The static-header fallback for a bot that cannot do OAuth. Printed on a terminal only (like widget-token):
+      // anything else gets a 0600 file, so the token never lands in a captured log or an agent's transcript.
+      const r = await call('bots/token', { ...whose('token'), scopes: scopes(), note: flag('note'), days: flag('days') ? Number(flag('days')) : 90, ...(await delegation()) });
+      const who = asBot(r.bot);
+      if (process.stdout.isTTY) console.log(`${r.token}\n\ngrant ${r.grantId}: ${who} [${r.scopes.join(' ')}], expires ${r.expiresAt}. Revoke with drover bots revoke ${r.grantId}.`);
+      else {
+        const file = path.join(STATE_DIR, 'bots', `token-${r.grantId}.txt`);
+        await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+        await writeFile(file, r.token + '\n', { mode: 0o600 });
+        console.log(`grant ${r.grantId}: ${who} [${r.scopes.join(' ')}], expires ${r.expiresAt}\nstdout is not a terminal; the token is in ${file} (0600). Delete the file once it is handed over.`);
+      }
+      return;
+    }
+    case 'revoke': {
+      if (!argv[2]) throw new Error('usage: drover bots revoke <grantId> (drover bots grants lists them)');
+      const r = await call('bots/revoke', { grantId: argv[2] });
+      console.log(`revoked ${r.grantId}: ${r.client} as ${asBot(r.bot)}`);
+      return;
+    }
+    case 'routines': {
+      const list = await call('bots/routines');
+      if (!list.length) { console.log('no Routines; add one with drover bots routine add <bot> --url <webhook-url>'); return; }
+      for (const r of list) console.log(`${r.bot}${r.title ? ` (${r.title})` : ''}  ${r.routine?.host ?? '?'} ${r.routine?.webhook ?? ''}  updated ${r.routine?.updatedAt ?? '?'}`);
+      return;
+    }
+    case 'routine': {
+      const action = argv[2]; const bot = argv[3];
+      if (action === 'remove' && bot) { await call('bots/routine/remove', { bot }); console.log(`removed the Routine for ${bot}`); return; }
+      if (action !== 'add' || !bot || !flag('url')) throw new Error('usage: drover bots routine add <bot> --url <webhook-url> [--title T]  (the key comes from stdin)\n       drover bots routine remove <bot>');
+      const key = await readSecret(`Routine key for ${bot} (crsr_..., not shown): `);
+      const r = await call('bots/routine', { bot, url: flag('url'), key, title: flag('title') });
+      console.log(`Routine set for ${r.bot}: ${r.routine.host} ${r.routine.webhook ?? ''}`);
+      if (has('no-test')) return;
+      const t = await call('bots/routine/test', { bot: r.bot });
+      console.log(t.ok ? `sent a connection test (run ${t.runUuid ?? 'started'}); ${r.bot} should answer "connected" within a minute: drover bots status` : `the connection test failed: ${t.error}`);
+      if (!t.ok) process.exitCode = 1;
+      return;
+    }
+    case 'send': {
+      const bot = argv[2]; const text = argv.slice(3).join(' ').trim();
+      if (!bot || !text) throw new Error('usage: drover bots send <bot|*> <text...>');
+      const r = await call('op/sessions.message', { id: `grok:${bot.replace(/^grok:/, '')}`, text });
+      console.log(r.queued ? `queued for ${bot}'s inbox (${r.via})` : `delivered to ${bot} via ${r.via} (HTTP ${r.status}); it answers with ref ${r.ref}`);
+      return;
+    }
+    default: throw new Error('usage: drover bots [status|pending|approve|deny|grants|token|revoke|routines|routine|send|prompt|skill]  (drover help)');
+  }
+}
+
+main().catch((e) => { console.error(e.stack ?? e.message); process.exit(1); });

@@ -1,0 +1,81 @@
+{
+  "generatedAt": "2026-10-11T18:00:00.000Z",
+  "hosts": [
+    {
+      "name": "local",
+      "up": true,
+      "waiting": 2,
+      "working": 1,
+      "idle": 3
+    },
+    {
+      "name": "demo-box",
+      "up": true,
+      "waiting": 1,
+      "working": 1,
+      "idle": 0
+    },
+    {
+      "name": "demo-offline",
+      "up": false,
+      "waiting": 0,
+      "working": 0,
+      "idle": 0
+    }
+  ],
+  "waiting": [
+    {
+      "id": "11111111-aaaa-4bbb-8ccc-000000000001",
+      "name": "demo-build",
+      "host": "local",
+      "engine": "claude",
+      "since": "2026-10-11T17:52:00.000Z",
+      "kind": "decision",
+      "headline": "Pick a cache strategy: in-memory map or on-disk store?"
+    },
+    {
+      "id": "11111111-aaaa-4bbb-8ccc-000000000002",
+      "name": "demo-review",
+      "host": "local",
+      "engine": "codex",
+      "since": "2026-10-11T17:40:00.000Z",
+      "kind": "question",
+      "headline": "Should the retry limit be three or five?"
+    },
+    {
+      "id": "11111111-aaaa-4bbb-8ccc-000000000003",
+      "name": "demo-docs",
+      "host": "demo-box",
+      "engine": "claude",
+      "since": "2026-10-11T17:58:30.000Z",
+      "kind": "question",
+      "headline": "Ready to merge the README rewrite?"
+    }
+  ],
+  "working": [
+    {
+      "id": "11111111-aaaa-4bbb-8ccc-000000000004",
+      "name": "demo-tests",
+      "host": "local",
+      "engine": "claude",
+      "headline": "Running the unit tests"
+    },
+    {
+      "id": "thread-demo-0005",
+      "name": "demo-refactor",
+      "host": "demo-box",
+      "engine": "headless",
+      "headline": "Renaming modules"
+    }
+  ],
+  "totals": {
+    "waiting": 3,
+    "working": 2,
+    "idle": 3,
+    "hosts": 3
+  },
+  "manager": {
+    "up": true,
+    "lastNoteAt": "2026-10-11T17:30:00.000Z"
+  }
+}

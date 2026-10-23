@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Drover options</title>
+  <link rel="stylesheet" href="ui/theme.css">
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <main class="page">
+    <h1>Drover options</h1>
+
+    <section aria-labelledby="h-server">
+      <h2 id="h-server">Server</h2>
+      <div class="field">
+        <label for="url">Server URL</label>
+        <input id="url" class="mono" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="http://127.0.0.1:7337">
+      </div>
+      <div class="field">
+        <div class="row">
+          <button id="pair" type="button" class="primary">Pair with Drover</button>
+        </div>
+        <p class="help">Shows a code to approve on your Mac. Drover then hands this browser its token, so there is nothing to copy.</p>
+        <div id="pairing" class="pairing" hidden>
+          <p id="pair-code" class="pair-code" hidden></p>
+          <p id="pair-msg" role="status" aria-live="polite"></p>
+          <p id="pair-timer" class="help" hidden></p>
+          <div id="pair-actions" class="row">
+            <button id="pair-copy" type="button" hidden>Copy command</button>
+            <button id="pair-cancel" type="button" hidden>Cancel</button>
+            <button id="pair-retry" type="button" hidden>Try again</button>
+          </div>
+        </div>
+      </div>
+      <p class="or">Or paste the token</p>
+      <div class="field">
+        <label for="token">Token</label>
+        <div class="row">
+          <input id="token" class="mono grow" type="password" autocomplete="off" spellcheck="false">
+          <button id="show" type="button" aria-pressed="false">Show</button>
+          <button id="forget" type="button" hidden>Forget token</button>
+        </div>
+        <p class="help">The token is kept in this browser profile only (chrome.storage.local). It is never synced.</p>
+        <p class="help">Find it on the daemon machine in ~/.local/state/drover/token.</p>
+      </div>
+      <div class="field">
+        <label for="actor">Sender name</label>
+        <input id="actor" type="text" maxlength="40" autocomplete="off">
+        <p class="help">Recorded with each message you send.</p>
+      </div>
+      <div class="row">
+        <button id="save" type="button" class="primary">Save and connect</button>
+      </div>
+    </section>
+
+    <section aria-labelledby="h-conn">
+      <h2 id="h-conn">Connection</h2>
+      <div id="status" class="notice" role="status" aria-live="polite">Not connected yet.</div>
+      <div id="origin-hint" class="hint" hidden>
+        <p>The daemon must allow this extension. Add it to DROVER_ALLOW_ORIGINS on the daemon:</p>
+        <div class="row">
+          <input id="origin-hint-field" class="mono grow" type="text" readonly aria-label="Extension origin">
+          <button id="origin-hint-copy" type="button">Copy</button>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="h-setup">
+      <h2 id="h-setup">Daemon setup</h2>
+      <p class="help">Allow this extension's origin when you start the daemon:</p>
+      <div class="row">
+        <input id="origin-field" class="mono grow" type="text" readonly aria-label="Extension origin">
+        <button id="origin-copy" type="button">Copy</button>
+      </div>
+      <p class="help">Example:</p>
+      <pre><code id="example"></code></pre>
+    </section>
+
+    <section aria-labelledby="h-notif">
+      <h2 id="h-notif">Notifications</h2>
+      <div class="checks">
+        <label><input id="n-enabled" type="checkbox"> Enabled</label>
+        <label><input id="n-decision" type="checkbox"> Needs a decision</label>
+        <label><input id="n-question" type="checkbox"> Asked a question</label>
+        <label><input id="n-finished" type="checkbox"> Finished</label>
+      </div>
+      <div class="field">
+        <label for="poll">Check for updates</label>
+        <select id="poll"></select>
+      </div>
+      <p id="saved" class="help" role="status" aria-live="polite"></p>
+    </section>
+
+    <section aria-labelledby="h-access">
+      <h2 id="h-access">Access</h2>
+      <p class="help">Servers this extension can reach:</p>
+      <ul id="origins" class="plain"></ul>
+      <p class="help">Permissions in the manifest:</p>
+      <ul class="plain perms">
+        <li><code>storage</code> · settings and token</li>
+        <li><code>alarms</code> · background refresh</li>
+        <li><code>notifications</code> · alerts</li>
+        <li><code>contextMenus</code> · send selection or page URL</li>
+        <li><code>sidePanel</code> · chat panel</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="h-omni">
+      <h2 id="h-omni">Omnibox</h2>
+      <p>Type <code>drover</code> then a space in the address bar, then <code>&lt;session&gt; &lt;message&gt;</code>.</p>
+    </section>
+  </main>
+  <script type="module" src="options.js"></script>
+</body>
+</html>

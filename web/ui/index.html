@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#16191e" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#eef0f2" media="(prefers-color-scheme: light)">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Drover">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<title>Drover</title>
+<link rel="stylesheet" href="/style.css">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+</head>
+<body>
+<div id="app">
+  <header class="topbar">
+    <div class="wordmark">Drover</div>
+    <nav class="hoststrip" id="hoststrip" aria-label="Hosts"></nav>
+    <select class="host-select" id="hostSelect" aria-label="Host"></select>
+    <div class="cmd" id="cmd" role="button" tabindex="0" aria-label="Search or run a command">
+      <span aria-hidden="true">/</span>
+      <input id="q" type="search" placeholder="Search this view, or jump to a session, window, host" autocomplete="off" spellcheck="false">
+      <kbd>⌘K</kbd>
+    </div>
+    <div class="topbar-right">
+      <button class="theme" id="theme" type="button" title="Color scheme: auto, light or dark">auto</button>
+      <button class="btn sm quiet mgr-btn" id="mgrBtn" type="button" aria-pressed="false" title="The fleet manager (m)">Manager</button>
+      <button class="btn sm quiet" id="palBtn" type="button" aria-label="Search" title="Search and commands">⌕</button>
+      <button class="btn sm quiet" id="bell" type="button" aria-haspopup="menu" title="Alerts and window menu">alerts</button>
+      <div class="live" id="live"><span class="dot" aria-hidden="true"></span><span id="liveText">connecting</span></div>
+    </div>
+  </header>
+  <nav class="tabs" id="tabs" aria-label="Views"></nav>
+  <div class="stage" id="stage">
+    <main class="main" id="main" tabindex="-1"></main>
+    <aside class="drawer" id="drawer" aria-label="Details"></aside>
+  </div>
+</div>
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<script type="module" src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,33 @@
+{
+  "$comment": "Launch profiles for Drover (launch.start, the Launch view, drover_launch). argv is appended after the engine binary (a leading ~/ in an argument is the launching host's home); env is merged into the child env. The profile marked default is used when a launch names none. Models are aliases the claude and codex CLIs accept. tmuxSession is where a tmux launch opens its window when it names no session; tmuxSessions and cwdSuggestions fill the Launch form's suggestions. To change any of this, copy the file and point DROVER_PROFILES at the copy (a leading ~/ is your home).",
+  "claude": {
+    "models": [
+      { "id": "opus", "label": "Opus" },
+      { "id": "sonnet", "label": "Sonnet" },
+      { "id": "haiku", "label": "Haiku" }
+    ],
+    "profiles": [
+      { "id": "claude-default", "label": "default permissions (the agent asks before it acts; Drover shows the dialog)", "argv": [], "env": {}, "default": true },
+      { "id": "claude-plan", "label": "plan mode (reads and plans, asks before it changes anything)", "argv": ["--permission-mode", "plan"], "env": {} },
+      { "id": "claude-yolo", "label": "skip permission prompts (only where you trust the agent with the machine)", "argv": ["--dangerously-skip-permissions"], "env": {} }
+    ]
+  },
+  "codex": {
+    "models": [],
+    "profiles": [
+      { "id": "codex-default", "label": "codex (your config.toml defaults)", "argv": [], "env": {}, "default": true },
+      { "id": "codex-read-only", "label": "read-only sandbox (reads and plans, changes nothing)", "argv": ["--sandbox", "read-only"], "env": {} },
+      { "id": "codex-workspace", "label": "workspace-write sandbox, asks when it needs more", "argv": ["--sandbox", "workspace-write", "--ask-for-approval", "on-request"], "env": {} },
+      { "id": "codex-yolo", "label": "codex without approvals or sandbox (only where you trust the agent with the machine)", "argv": ["--dangerously-bypass-approvals-and-sandbox"], "env": {} }
+    ]
+  },
+  "tmuxSession": "agents",
+  "tmuxSessions": ["agents", "main"],
+  "cwdSuggestions": ["~/code", "~/.dotfiles"],
+  "credentials": {
+    "$comment": "Credential pool for Claude launches (core/credpool.js). Each entry maps child env vars to $NAME references resolved from the daemon's process.env at launch time; a value is never written here, and an entry whose variables are unset is reported available:false and never picked. default: auto | none | a pool id. auto picks the lowest active/weight ratio under maxConcurrent, skips entries throttled in the last 2 minutes, round robin on ties. Empty, every launch inherits the daemon environment. Example of two accounts with separate quotas: [{ \"id\": \"main\", \"label\": \"main account\", \"env\": { \"ANTHROPIC_API_KEY\": \"$ANTHROPIC_API_KEY_MAIN\" }, \"weight\": 2, \"maxConcurrent\": 12 }, { \"id\": \"second\", \"label\": \"second account\", \"env\": { \"ANTHROPIC_API_KEY\": \"$ANTHROPIC_API_KEY_SECOND\" }, \"weight\": 1 }]",
+    "pool": [],
+    "default": "auto",
+    "appliesTo": ["claude"]
+  }
+}

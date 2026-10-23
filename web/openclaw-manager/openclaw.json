@@ -1,0 +1,270 @@
+{
+  "gateway": {
+    "mode": "local",
+    "port": "{{PORT}}",
+    "bind": "loopback",
+    "auth": { "mode": "token" },
+    "controlUi": { "enabled": true },
+    "http": {
+      "endpoints": {
+        "chatCompletions": { "enabled": true },
+        "responses": { "enabled": false }
+      }
+    },
+    "reload": { "mode": "hybrid" }
+  },
+
+  "hooks": {
+    "enabled": true,
+    "token": "${OPENCLAW_HOOKS_TOKEN}",
+    "path": "/hooks",
+    "allowedAgentIds": ["main"],
+    "allowRequestSessionKey": false
+  },
+
+  "update": { "checkOnStart": false, "auto": { "enabled": false } },
+  "telemetry": { "enabled": false },
+
+  "env": { "shellEnv": { "enabled": false } },
+
+  "models": {
+    "mode": "replace",
+    "providers": {
+      "cliproxy": {
+        "baseUrl": "http://127.0.0.1:8317/v1",
+        "api": "openai-responses",
+        "auth": "api-key",
+        "apiKey": "{{CLIPROXY_API_KEY}}",
+        "models": [
+          {
+            "id": "gpt-6.1-sol-ultrafast-br",
+            "name": "GPT-6.1 Sol UltraFast (openai.gpt-6.1-sol on Bedrock Mantle us-east-1, service_tier ultrafast, via loopback CLIProxyAPI; primary)",
+            "reasoning": true,
+            "input": ["text", "image"],
+            "cost": {
+              "input": 13.2, "output": 66, "cacheRead": 0.66, "cacheWrite": 16.5,
+              "tieredPricing": [
+                { "input": 13.2, "output": 66, "cacheRead": 0.66, "cacheWrite": 16.5, "range": [0, 272001] },
+                { "input": 26.4, "output": 99, "cacheRead": 1.32, "cacheWrite": 33, "range": [272001] }
+              ]
+            },
+            "contextWindow": 272000,
+            "maxTokens": 64000,
+            "compat": {
+              "supportsReasoningEffort": true,
+              "supportedReasoningEfforts": ["low", "medium", "high", "xhigh", "max"],
+              "supportsStore": false,
+              "supportsPromptCacheKey": false,
+              "supportsInstructions": false
+            }
+          },
+          {
+            "id": "gpt-6-astra-ultrafast-br",
+            "name": "GPT-6 Astra UltraFast (openai.gpt-6-astra on Bedrock Mantle us-east-1, service_tier ultrafast, via loopback CLIProxyAPI; on-demand /model)",
+            "reasoning": true,
+            "input": ["text", "image"],
+            "cost": {
+              "input": 66, "output": 330, "cacheRead": 6.6, "cacheWrite": 82.5,
+              "tieredPricing": [
+                { "input": 66, "output": 330, "cacheRead": 6.6, "cacheWrite": 82.5, "range": [0, 272001] },
+                { "input": 132, "output": 495, "cacheRead": 13.2, "cacheWrite": 165, "range": [272001] }
+              ]
+            },
+            "contextWindow": 278528,
+            "maxTokens": 64000,
+            "compat": {
+              "supportsReasoningEffort": true,
+              "supportedReasoningEfforts": ["low", "medium", "high", "xhigh"],
+              "supportsStore": false,
+              "supportsPromptCacheKey": false,
+              "supportsInstructions": false
+            }
+          }
+        ]
+      },
+      "amazon-bedrock-mantle": {
+        "baseUrl": "https://bedrock-mantle.us-east-1.api.aws/openai/v1",
+        "api": "openai-responses",
+        "auth": "api-key",
+        "apiKey": "${AWS_BEARER_TOKEN_BEDROCK}",
+        "models": [
+          {
+            "id": "openai.gpt-6-luna",
+            "name": "GPT-6 Luna (Bedrock Mantle us-east-1; compaction, memory flush, heartbeat, dreaming)",
+            "reasoning": true,
+            "input": ["text"],
+            "cost": {
+              "input": 0.11, "output": 0.55, "cacheRead": 0.011, "cacheWrite": 0.1375,
+              "tieredPricing": [
+                { "input": 0.11, "output": 0.55, "cacheRead": 0.011, "cacheWrite": 0.1375, "range": [0, 272001] },
+                { "input": 0.22, "output": 0.825, "cacheRead": 0.022, "cacheWrite": 0.275, "range": [272001] }
+              ]
+            },
+            "contextWindow": 200000,
+            "maxTokens": 32000,
+            "compat": { "supportsReasoningEffort": true, "supportedReasoningEfforts": ["low", "medium", "high"] }
+          },
+          {
+            "id": "openai.gpt-6-astra",
+            "name": "GPT-6 Astra standard tier (Bedrock Mantle us-east-1; the daily digest, and the fallback when the loopback proxy is down)",
+            "reasoning": true,
+            "input": ["text", "image"],
+            "cost": {
+              "input": 11, "output": 55, "cacheRead": 1.1, "cacheWrite": 13.75,
+              "tieredPricing": [
+                { "input": 11, "output": 55, "cacheRead": 1.1, "cacheWrite": 13.75, "range": [0, 272001] },
+                { "input": 22, "output": 82.5, "cacheRead": 2.2, "cacheWrite": 27.5, "range": [272001] }
+              ]
+            },
+            "contextWindow": 278528,
+            "maxTokens": 64000,
+            "compat": { "supportsReasoningEffort": true, "supportedReasoningEfforts": ["low", "medium", "high", "xhigh", "max"] }
+          }
+        ]
+      },
+      "amazon-bedrock": {
+        "baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+        "api": "bedrock-converse-stream",
+        "auth": "aws-sdk",
+        "models": [
+          {
+            "id": "us.anthropic.claude-sonnet-5-5",
+            "name": "Claude Sonnet 5.5 (Bedrock Converse, commercial bearer; second fallback)",
+            "reasoning": true,
+            "input": ["text", "image"],
+            "cost": { "input": 2.2, "output": 11, "cacheRead": 0.11, "cacheWrite": 2.75 },
+            "contextWindow": 200000,
+            "maxTokens": 32000
+          },
+          {
+            "id": "us.anthropic.claude-opus-5-5",
+            "name": "Claude Opus 5.5 (Bedrock Converse, commercial bearer; on demand only)",
+            "reasoning": true,
+            "input": ["text", "image"],
+            "cost": { "input": 4.4, "output": 22, "cacheRead": 0.22, "cacheWrite": 5.5 },
+            "contextWindow": 200000,
+            "maxTokens": 32000
+          }
+        ]
+      }
+    }
+  },
+
+  "agents": {
+    "defaults": {
+      "workspace": "~/.openclaw-manager/workspace",
+      "model": {
+        "primary": "cliproxy/gpt-6.1-sol-ultrafast-br",
+        "fallbacks": [
+          "amazon-bedrock-mantle/openai.gpt-6-astra",
+          "amazon-bedrock/us.anthropic.claude-sonnet-5-5"
+        ]
+      },
+      "thinkingDefault": "max",
+      "timeoutSeconds": 900,
+      "compaction": {
+        "mode": "safeguard",
+        "model": "amazon-bedrock-mantle/openai.gpt-6-luna",
+        "thinkingLevel": "low",
+        "memoryFlush": { "enabled": true, "model": "amazon-bedrock-mantle/openai.gpt-6-luna" }
+      },
+      "heartbeat": {
+        "every": "5m",
+        "target": "none",
+        "directPolicy": "block",
+        "isolatedSession": true,
+        "lightContext": false,
+        "model": "amazon-bedrock-mantle/openai.gpt-6-luna",
+        "timeoutSeconds": 1200,
+        "prompt": "{{HEARTBEAT_PROMPT}}"
+      }
+    }
+  },
+
+  "memory": {
+    "search": {
+      "enabled": true,
+      "provider": "bedrock",
+      "model": "amazon.nova-2-multimodal-embeddings-v1:0",
+      "outputDimensionality": 1024,
+      "fallback": "none",
+      "sources": ["memory"]
+    }
+  },
+
+  "plugins": {
+    "enabled": true,
+    "slots": { "memory": "memory-core" },
+    "entries": {
+      "amazon-bedrock": { "enabled": true, "config": { "discovery": { "enabled": false } } },
+      "amazon-bedrock-mantle": { "enabled": true, "config": { "discovery": { "enabled": false } } },
+      "exa": {
+        "enabled": true,
+        "config": { "webSearch": { "apiKey": "${EXA_API_KEY}", "baseUrl": "https://api.exa.ai" } }
+      },
+      "memory-core": {
+        "enabled": true,
+        "subagent": { "allowModelOverride": true },
+        "config": {
+          "dreaming": {
+            "enabled": true,
+            "frequency": "0 3 * * *",
+            "timezone": "UTC",
+            "model": "amazon-bedrock-mantle/openai.gpt-6-luna"
+          }
+        }
+      },
+      "diagnostics-otel": { "enabled": true }
+    }
+  },
+
+  "diagnostics": {
+    "enabled": true,
+    "otel": {
+      "enabled": true,
+      "endpoint": "{{OTEL_ENDPOINT}}",
+      "protocol": "http/protobuf",
+      "serviceName": "openclaw-manager",
+      "traces": true,
+      "metrics": false,
+      "logs": false,
+      "sampleRate": 1
+    }
+  },
+
+  "mcp": {
+    "servers": {
+      "drover": {
+        "enabled": true,
+        "transport": "stdio",
+        "command": "{{NODE}}",
+        "args": ["{{DROVER_BIN}}", "mcp"],
+        "cwd": "{{HOME}}",
+        "env": { "HOME": "{{HOME}}", "DROVER_MCP_ACTOR": "{{ACTOR}}" },
+        "connectionTimeoutMs": 10000,
+        "requestTimeoutMs": 130000
+      }
+    }
+  },
+
+  "tools": {
+    "profile": "full",
+    "exec": {
+      "security": "full",
+      "ask": "off",
+      "host": "gateway",
+      "timeoutSeconds": 600,
+      "notifyOnExit": false
+    },
+    "web": {
+      "search": { "enabled": true, "provider": "exa", "maxResults": 5, "timeoutSeconds": 30 },
+      "fetch": { "enabled": true }
+    }
+  },
+
+  "cron": { "enabled": true },
+
+  "skills": {
+    "workshop": { "autonomous": { "mode": "off" } }
+  }
+}

@@ -1,0 +1,20 @@
+event: hello
+data: {"host":"local","ts":1791757200000}
+
+: ping
+
+event: mutation
+data: {"op":"sessions.message","args":{"id":"00000000-demo-4000-8000-000000000001"},"ms":120}
+
+event: notify
+data: {"type":"notify","id":"ev-demo-0002","ts":"2026-10-11T21:58:41.000Z","sessionId":"00000000-demo-4000-8000-000000000002","sessionName":"demo-review","category":"needs-you","ask":{"kind":"question","label":"asked you a question","text":"Push the branch now?","options":[]}}
+
+event: alerts
+data: {"items":[{"id":"ev-demo-0003","ts":"2026-10-11T21:59:30.000Z","category":"finished","kind":"busy-idle","host":"demo-box","sessionId":"00000000-demo-4000-8000-000000000004","name":"demo-docs","title":"demo-docs finished","body":"Done: 12 tests pass."}],"ts":1791757170000}
+
+event: future-thing
+data: {"anything":true}
+
+data: {"multi":
+data: "line"}
+

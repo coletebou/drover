@@ -1,0 +1,17 @@
+{
+  "generatedAt": "2026-10-11T22:40:00.123Z",
+  "hosts": [
+    { "name": "demo-mac", "up": true, "waiting": 2, "working": 1, "idle": 3 },
+    { "name": "demo-box", "up": false, "waiting": 0, "working": 0, "idle": 0 }
+  ],
+  "waiting": [
+    { "id": "s-demo-build", "name": "demo-build", "host": "demo-mac", "engine": "claude", "since": "2026-10-11T22:36:00Z", "kind": "decision", "headline": "Run the migration on the staging copy first?" },
+    { "id": "s-demo-review", "name": "demo-review", "host": "demo-mac", "engine": "codex", "since": 1791758100000, "kind": "question", "headline": "Retry limit 3 or 5?" },
+    { "id": "s-demo-odd", "name": "demo-odd", "host": "demo-mac", "engine": "headless", "kind": "something-new", "headline": "Unknown kind decodes as other", "extra": { "ignored": true } }
+  ],
+  "working": [
+    { "id": "s-demo-lint", "name": "demo-lint", "host": "demo-mac", "engine": "claude", "headline": "Fixing lint warnings" }
+  ],
+  "totals": { "waiting": 3, "working": 1, "idle": 3, "hosts": 2 },
+  "manager": { "up": true, "lastNoteAt": null }
+}

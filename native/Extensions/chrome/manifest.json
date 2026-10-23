@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAiyfaDCN8G6WPIhTo0ND6YuwKrv1c+nSZD9YRZfIVnie/7ck2C2R9XTd0OHZf9fPe9YG2EuSNe/1M25cuzxnIZ/zIxa9OJk2IxzgeTWzy9sLIdX1ogMdIptPfBdvOBvXSUtSkLPoZCU2e/khzov0/K+b9+Mgdr8fhD5EWfYsOKwcPETL80CwiqzBeH0jwJLf+3FaIBg89Bqi2xLJYY7CJ2sb/vboJTKIE9Hy03WjRGMp5eIO2IqhWvWn6/FhSGh18NECcWzw0sbtFnHXGiLPxidlrX7qEphuz21gh8hqeFviN3C8St/RpnhIIqgydFb7XFPrwC4pdIzfv7R2cLAW3MwIDAQAB",
+  "name": "Drover",
+  "short_name": "Drover",
+  "description": "Watch and answer your Drover agent sessions from the toolbar.",
+  "version": "0.1.0",
+  "minimum_chrome_version": "116",
+  "icons": { "16": "icons/icon-16.png", "32": "icons/icon-32.png", "48": "icons/icon-48.png", "128": "icons/icon-128.png" },
+  "action": {
+    "default_title": "Drover",
+    "default_popup": "popup.html",
+    "default_icon": { "16": "icons/icon-16.png", "32": "icons/icon-32.png" }
+  },
+  "background": { "service_worker": "background.js", "type": "module" },
+  "options_ui": { "page": "options.html", "open_in_tab": true },
+  "side_panel": { "default_path": "sidepanel.html" },
+  "omnibox": { "keyword": "drover" },
+  "permissions": ["storage", "alarms", "notifications", "contextMenus", "sidePanel"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "content_security_policy": {
+    "extension_pages": "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src http: https:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'"
+  }
+}

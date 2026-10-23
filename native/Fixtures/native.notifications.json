@@ -1,0 +1,14 @@
+{
+  "ok": true,
+  "ms": 3,
+  "cache": null,
+  "result": {
+    "cursor": "2026-10-11T21:59:30.000Z",
+    "items": [
+      { "id": "ev-demo-0001", "at": "2026-10-11T21:52:10.000Z", "kind": "decision", "category": "needs-you", "title": "demo-build needs a decision", "body": "Do you want to proceed? 1. Yes / 2. Yes, and do not ask again / 3. No", "sessionId": "00000000-demo-4000-8000-000000000001", "host": "local" },
+      { "id": "ev-demo-0002", "at": "2026-10-11T21:58:41.000Z", "kind": "question", "category": "needs-you", "title": "demo-review asked you a question", "body": "Push the branch now, or wait for the second review?", "sessionId": "00000000-demo-4000-8000-000000000002", "host": "local" },
+      { "id": "ev-demo-0003", "at": "2026-10-11T21:59:30.000Z", "kind": "finished", "category": "finished", "title": "demo-docs finished", "body": "Done: 12 tests pass, README section written.", "sessionId": "00000000-demo-4000-8000-000000000004", "host": "demo-box" },
+      { "id": "ev-demo-0004", "at": "2026-10-11T21:59:30.000Z", "kind": "error", "category": "error", "title": "demo-lab stopped answering", "body": "ssh rpc failed", "sessionId": null, "host": "demo-lab" }
+    ]
+  }
+}

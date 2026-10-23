@@ -1,0 +1,22 @@
+{
+  "summary": "A fleet manager: sweeps the hosts in its scope (this host only, or every host it can reach), pins what waits on the owner and nudges stalled sessions; the one that owns the digest also writes the daily digest and watches merge requests.",
+  "profile": "default",
+  "heartbeatThinking": "high",
+  "heartbeatPrompt": "Execute the program 'Sweep and drive' in AGENTS.md for the hosts in your scope ({{SCOPE_SHORT}}). Start from drover_native_summary, never the full fleet summary; compare with memory/state/last-sweep.md; drive stopped sessions forward under the drive rules (the drive message to a session that stopped mid-task; a dialog or permission prompt answered the way {{OWNER_NAME}} would, except what 'What needs {{OWNER_NAME}}' lists); fix what you can yourself; pin what only {{OWNER_NAME}} can answer; write a Drover WAL note event (actor {{ACTOR}}) only for what AGENTS.md says earns a note, never for lane counts, lane moves or headline changes (those go in memory/state/last-sweep.md); update memory/state/last-sweep.md. Never sweep a host outside your scope. If the sweep wrote no note, no pin and drove nothing, reply NO_REPLY.",
+  "duties": {
+    "digest": {
+      "summary": "the daily digest and the merge-request watch",
+      "automations": [
+        {
+          "name": "fleet-digest",
+          "cron": "0 7 * * *",
+          "tz": "UTC",
+          "session": "isolated",
+          "message": "Execute Program 2 'Daily digest' in AGENTS.md for yesterday 07:00 UTC to now.",
+          "model": "amazon-bedrock-mantle/openai.gpt-6-astra",
+          "thinking": "max"
+        }
+      ]
+    }
+  }
+}

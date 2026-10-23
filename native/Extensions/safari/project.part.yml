@@ -1,0 +1,87 @@
+# Safari Web Extension targets. Included by the root project.yml (targets only).
+# There is no separate host app: the main Drover apps embed the extension (Apps/macOS and Apps/iOS list it as a
+# dependency), so its bundle IDs sit under theirs (dev.drover.macos.safari, dev.drover.app.safari). The Mac app's
+# Settings has the extension's on/off state; both apps register the notification categories the extension posts.
+# Source paths are relative to this file; build settings (INFOPLIST_FILE, entitlements, DROVER_SAFARI_DIR) are not rewritten by XcodeGen, so they use $(SRCROOT). DROVER_SAFARI_DIR assumes the root project.yml sits at the repo root.
+
+targets:
+  DroverSafariExtension-macOS:
+    type: app-extension
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Native/Shared
+      - path: Native/Extension
+    dependencies:
+      - sdk: SafariServices.framework
+    # postCompileScripts run after "Compile Sources" and before "Copy Bundle Resources" in the
+    # generated phase order, so the bundle's Resources folder is filled before it is sealed and signed.
+    postCompileScripts:
+      - name: Build and copy web extension resources
+        script: |
+          "${DROVER_SAFARI_DIR}/build/xcode-copy-resources.sh"
+        basedOnDependencyAnalysis: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.drover.macos.safari
+        PRODUCT_NAME: DroverSafariExtension
+        DROVER_SAFARI_DIR: $(SRCROOT)/Extensions/safari
+        INFOPLIST_FILE: $(SRCROOT)/Extensions/safari/Native/Support/macOS/Extension/Info.plist
+        CODE_SIGN_ENTITLEMENTS: $(SRCROOT)/Extensions/safari/Native/Support/macOS/Extension/DroverExtension.entitlements
+        GENERATE_INFOPLIST_FILE: NO
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 1
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+        APPLICATION_EXTENSION_API_ONLY: YES
+
+  DroverSafariExtension-iOS:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: Native/Shared
+      - path: Native/Extension
+    dependencies:
+      - sdk: SafariServices.framework
+    postCompileScripts:
+      - name: Build and copy web extension resources
+        script: |
+          "${DROVER_SAFARI_DIR}/build/xcode-copy-resources.sh"
+        basedOnDependencyAnalysis: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.drover.app.safari
+        PRODUCT_NAME: DroverSafariExtension
+        DROVER_SAFARI_DIR: $(SRCROOT)/Extensions/safari
+        INFOPLIST_FILE: $(SRCROOT)/Extensions/safari/Native/Support/iOS/Extension/Info.plist
+        CODE_SIGN_ENTITLEMENTS: $(SRCROOT)/Extensions/safari/Native/Support/iOS/Extension/DroverExtension.entitlements
+        GENERATE_INFOPLIST_FILE: NO
+        TARGETED_DEVICE_FAMILY: "1,2"
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 1
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+        APPLICATION_EXTENSION_API_ONLY: YES
+
+  DroverSafariNativeTests-macOS:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Native/Shared
+      - path: Native/Tests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.drover.safari.tests
+        # No host app: the tests compile Native/Shared directly. Info.plist is generated for the bundle.
+        GENERATE_INFOPLIST_FILE: YES
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 1
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        CODE_SIGN_STYLE: Automatic
