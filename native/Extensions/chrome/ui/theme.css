@@ -1,0 +1,58 @@
+/* Drover extension pages: the Drover graphite palette. Colour encodes state only
+   (amber waiting, steel working, moss idle, brick error, lilac manager). Values
+   copied from Drover ui/style.css, which tests them for WCAG AA. System fonts
+   only: no remote fonts. */
+:root {
+  color-scheme: dark;
+  --bg: #16191e; --bg-2: #1c2026; --bg-3: #242931; --bg-4: #2c323b;
+  --line: #2e343d; --line-2: #3a414c;
+  --ink: #e9e5db; --ink-2: #c8c6bf; --ink-3: #abaaa5; --ink-4: #9c9c95;
+  --amber: #e2a73e; --steel: #8db6df; --moss: #8ebd87; --brick: #de8c82; --lilac: #b2a1db;
+  --amber-bg: rgba(226,167,62,.14); --steel-bg: rgba(141,182,223,.14); --moss-bg: rgba(142,189,135,.14);
+  --brick-bg: rgba(222,140,130,.16); --lilac-bg: rgba(178,161,219,.16);
+  --serif: Charter, "Iowan Old Style", "Palatino Linotype", Georgia, "Noto Serif", serif;
+  --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "SF Mono", Menlo, "JetBrains Mono", "DejaVu Sans Mono", Consolas, monospace;
+  --fs-0: 12px; --fs-1: 13px; --fs-2: 14px; --fs-3: 16px; --fs-4: 20px;
+  --r: 4px;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+    --bg: #eef0f2; --bg-2: #f6f7f8; --bg-3: #e5e8ec; --bg-4: #dde1e6;
+    --line: #d5d9df; --line-2: #c2c8d0;
+    --ink: #1f2328; --ink-2: #3d444c; --ink-3: #52575e; --ink-4: #5b626c;
+    --amber: #855a08; --steel: #296092; --moss: #336f2f; --brick: #a33a2a; --lilac: #5f479c;
+    --amber-bg: rgba(133,90,8,.12); --steel-bg: rgba(41,96,146,.10); --moss-bg: rgba(51,111,47,.10);
+    --brick-bg: rgba(163,58,42,.10); --lilac-bg: rgba(95,71,156,.10);
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: var(--fs-2)/1.45 var(--sans); -webkit-font-smoothing: antialiased; }
+h1, h2, h3, .title { font-family: var(--serif); font-weight: 600; margin: 0; }
+h1 { font-size: var(--fs-4); } h2 { font-size: var(--fs-3); } h3 { font-size: var(--fs-2); }
+.mono, code, .id, time { font-family: var(--mono); font-size: var(--fs-0); font-feature-settings: "tnum"; }
+.muted { color: var(--ink-3); }
+.faint { color: var(--ink-4); }
+a { color: var(--steel); }
+:focus-visible { outline: 2px solid var(--steel); outline-offset: 1px; border-radius: var(--r); }
+button, .btn { font: inherit; font-size: var(--fs-1); color: var(--ink); background: var(--bg-3); border: 1px solid var(--line-2); border-radius: var(--r); padding: 4px 10px; cursor: pointer; }
+button:hover, .btn:hover { background: var(--bg-4); }
+button:disabled { opacity: .55; cursor: default; }
+button.primary { border-color: var(--steel); color: var(--steel); }
+button.ghost { background: transparent; border-color: transparent; color: var(--ink-2); }
+input, textarea, select { font: inherit; color: var(--ink); background: var(--bg-4); border: 1px solid var(--line-2); border-radius: var(--r); padding: 6px 8px; }
+textarea { resize: vertical; width: 100%; }
+/* State colours */
+.state-waiting { color: var(--amber); } .bg-waiting { background: var(--amber-bg); }
+.state-working { color: var(--steel); } .bg-working { background: var(--steel-bg); }
+.state-idle { color: var(--moss); } .bg-idle { background: var(--moss-bg); }
+.state-error { color: var(--brick); } .bg-error { background: var(--brick-bg); }
+.state-manager { color: var(--lilac); } .bg-manager { background: var(--lilac-bg); }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--ink-4); flex: none; }
+.dot.waiting { background: var(--amber); } .dot.working { background: var(--steel); } .dot.idle { background: var(--moss); }
+.dot.error { background: var(--brick); } .dot.manager { background: var(--lilac); }
+.notice { padding: 8px 10px; border-radius: var(--r); border: 1px solid var(--line-2); background: var(--bg-2); color: var(--ink-2); }
+.notice.error { border-color: var(--brick); background: var(--brick-bg); color: var(--ink); }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }

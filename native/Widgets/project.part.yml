@@ -1,0 +1,169 @@
+# XcodeGen part for the Drover widget extensions. A root project.yml pulls it in with `include:`.
+# Paths below resolve relative to this file. Host apps embed an extension by listing it under dependencies:
+#   iOS app target:    dependencies: [ { target: DroverWidgets-iOS } ]
+#   macOS app target:  dependencies: [ { target: DroverWidgets-macOS } ]
+#   watch app target:  dependencies: [ { target: DroverWidgets-watchOS } ]
+# Info.plist and entitlements are GENERATED from the `properties:` below on every `xcodegen generate`
+# (XcodeGen rewrites those files): edit them here, never the plist files.
+# No DEVELOPMENT_TEAM here: the root project.yml sets it (${DROVER_TEAM_ID}); a target-level value would override it.
+
+targets:
+  DroverWidgets-iOS:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: Core
+      - path: UI
+      - path: Bundles/iOS
+        excludes:
+          - Info.plist
+          - DroverWidgets.entitlements
+    info:
+      path: Bundles/iOS/Info.plist
+      properties:
+        CFBundleDisplayName: Drover
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+          NSExceptionDomains:
+            ts.net:
+              NSIncludesSubdomains: true
+              NSExceptionAllowsInsecureHTTPLoads: true
+    entitlements:
+      path: Bundles/iOS/DroverWidgets.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.dev.drover
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)dev.drover.shared
+    dependencies:
+      - sdk: WidgetKit.framework
+      - sdk: SwiftUI.framework
+      - sdk: AppIntents.framework
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.drover.app.widgets
+        PRODUCT_NAME: DroverWidgets
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        CODE_SIGN_STYLE: Automatic
+        SKIP_INSTALL: YES
+        APPLICATION_EXTENSION_API_ONLY: YES
+        GENERATE_INFOPLIST_FILE: NO
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks"
+
+  DroverWidgets-macOS:
+    type: app-extension
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Core
+      - path: UI
+      - path: Bundles/macOS
+        excludes:
+          - Info.plist
+          - DroverWidgets.entitlements
+    info:
+      path: Bundles/macOS/Info.plist
+      properties:
+        CFBundleDisplayName: Drover
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+          NSExceptionDomains:
+            ts.net:
+              NSIncludesSubdomains: true
+              NSExceptionAllowsInsecureHTTPLoads: true
+    entitlements:
+      path: Bundles/macOS/DroverWidgets.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.dev.drover
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)dev.drover.shared
+        com.apple.security.app-sandbox: true
+        com.apple.security.network.client: true
+    dependencies:
+      - sdk: WidgetKit.framework
+      - sdk: SwiftUI.framework
+      - sdk: AppIntents.framework
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.drover.macos.widgets
+        PRODUCT_NAME: DroverWidgets
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        CODE_SIGN_STYLE: Automatic
+        SKIP_INSTALL: YES
+        APPLICATION_EXTENSION_API_ONLY: YES
+        GENERATE_INFOPLIST_FILE: NO
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks @executable_path/../../../../Frameworks"
+
+  DroverWidgets-watchOS:
+    type: app-extension
+    platform: watchOS
+    deploymentTarget: "10.0"
+    sources:
+      - path: Core
+      - path: UI
+      - path: Bundles/watchOS
+        excludes:
+          - Info.plist
+          - DroverWidgets.entitlements
+    info:
+      path: Bundles/watchOS/Info.plist
+      properties:
+        CFBundleDisplayName: Drover
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+          NSExceptionDomains:
+            ts.net:
+              NSIncludesSubdomains: true
+              NSExceptionAllowsInsecureHTTPLoads: true
+    entitlements:
+      path: Bundles/watchOS/DroverWidgets.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.dev.drover
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)dev.drover.shared
+    dependencies:
+      - sdk: WidgetKit.framework
+      - sdk: SwiftUI.framework
+      - sdk: AppIntents.framework
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.drover.app.watchkitapp.widgets
+        PRODUCT_NAME: DroverWidgets
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        CODE_SIGN_STYLE: Automatic
+        SKIP_INSTALL: YES
+        APPLICATION_EXTENSION_API_ONLY: YES
+        GENERATE_INFOPLIST_FILE: NO
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks"
+
+# An explicit scheme for the watch complications: the implicit per-target scheme xcodebuild invents for a
+# watchOS app extension has no watchOS destination, so `-destination generic/platform=watchOS` is refused.
+schemes:
+  DroverWidgets-watchOS:
+    build:
+      targets:
+        DroverWidgets-watchOS: all

@@ -1,0 +1,69 @@
+# XcodeGen fragment for the iOS app, included by the root project.yml (paths are relative to this file).
+# Signing: the root project.yml sets DEVELOPMENT_TEAM from DROVER_TEAM_ID (docs/xcodegen.md); never set it here.
+targets:
+  DroveriOS:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: Sources
+      # AppIcon (script/app-icons.py writes it). App Store export rejects a build without it.
+      - path: Resources
+    info:
+      path: Config/Info.plist
+      properties:
+        CFBundleDisplayName: Drover
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        CFBundleIconName: AppIcon
+        # Only HTTPS and the OS's own crypto (exempt), so TestFlight never asks for export compliance per build.
+        ITSAppUsesNonExemptEncryption: false
+        UILaunchScreen: {}
+        UIApplicationSupportsIndirectInputEvents: true
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        UISupportedInterfaceOrientations~ipad: [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        CFBundleURLTypes:
+          - CFBundleURLName: dev.drover.app
+            CFBundleURLSchemes: [drover]
+        UIBackgroundModes: [fetch]
+        BGTaskSchedulerPermittedIdentifiers: [dev.drover.app.refresh]
+        # Expanded at build time; read by DroverIDs.keychainAccessGroup so the team prefix is never hardcoded.
+        DroverKeychainAccessGroup: $(AppIdentifierPrefix)dev.drover.shared
+        NSSpeechRecognitionUsageDescription: Dictation turns your voice into a message on this device. Audio never leaves the phone.
+        NSMicrophoneUsageDescription: The microphone is used only while you hold the dictation button.
+        NSLocalNetworkUsageDescription: This app connects to your Drover daemon on your local network or tailnet.
+        NSAppTransportSecurity:
+          # The daemon speaks plain http on loopback, LAN and Tailscale (WireGuard encrypts the tailnet).
+          NSAllowsLocalNetworking: true
+          NSExceptionDomains:
+            ts.net:
+              NSIncludesSubdomains: true
+              NSExceptionAllowsInsecureHTTPLoads: true
+    entitlements:
+      path: Config/DroveriOS.entitlements
+      properties:
+        com.apple.security.application-groups: [group.dev.drover]
+        keychain-access-groups: [$(AppIdentifierPrefix)dev.drover.shared]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.drover.app
+        PRODUCT_NAME: Drover
+        TARGETED_DEVICE_FAMILY: "1,2"
+        GENERATE_INFOPLIST_FILE: NO
+        ENABLE_PREVIEWS: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    dependencies:
+      # Home and lock screen widgets (Widgets/project.part.yml, window 05). Embedded as an app extension.
+      - target: DroverWidgets-iOS
+        embed: true
+        codeSign: true
+      # Companion watch app (Apps/watchOS/project.part.yml, window 04), embedded into the iOS app's Watch folder.
+      - target: DroverWatch
+      # Safari web extension (Extensions/safari/project.part.yml). It reads this app's server and token (App Group,
+      # shared Keychain) and posts drover.session / drover.info alerts this app's NotificationManager answers.
+      - target: DroverSafariExtension-iOS
+        embed: true
+        codeSign: true
+      # Pair with Mac (PairingClient, PairingController). Only UI files import it; Tests/run-logic-tests.sh does not.
+      - package: DroverKit
+    scheme: {}

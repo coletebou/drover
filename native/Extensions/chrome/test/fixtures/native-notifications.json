@@ -1,0 +1,45 @@
+{
+  "cursor": "c-0004",
+  "items": [
+    {
+      "id": "n-0001",
+      "at": "2026-10-11T17:40:00.000Z",
+      "kind": "question",
+      "title": "demo-review asked a question",
+      "body": "Should the retry limit be three or five?",
+      "sessionId": "11111111-aaaa-4bbb-8ccc-000000000002",
+      "host": "local",
+      "category": "needs-you"
+    },
+    {
+      "id": "n-0002",
+      "at": "2026-10-11T17:52:00.000Z",
+      "kind": "decision",
+      "title": "demo-build needs a decision",
+      "body": "Pick a cache strategy: in-memory map or on-disk store?",
+      "sessionId": "11111111-aaaa-4bbb-8ccc-000000000001",
+      "host": "local",
+      "category": "needs-you"
+    },
+    {
+      "id": "n-0003",
+      "at": "2026-10-11T17:58:30.000Z",
+      "kind": "finished",
+      "title": "demo-docs finished",
+      "body": "Finished the README rewrite. Two sections need your review.",
+      "sessionId": "11111111-aaaa-4bbb-8ccc-000000000003",
+      "host": "demo-box",
+      "category": "finished"
+    },
+    {
+      "id": "n-0004",
+      "at": "2026-10-11T17:59:00.000Z",
+      "kind": "mr",
+      "category": "mr",
+      "title": "demo-repo merge request updated",
+      "body": "Pipeline passed.",
+      "sessionId": null,
+      "host": "local"
+    }
+  ]
+}

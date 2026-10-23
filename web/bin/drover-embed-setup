@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+# drover-embed-setup: install the local embedding runtime that Drover search uses on this host.
+#   llama.cpp's llama-server, built here at a pinned tag and commit with one patch (skip the logits
+#   buffer an embedding model never fills), and EmbeddingGemma 2 (text model, Q8_0 GGUF, sha256-pinned).
+#   Everything goes under ~/.local/share/drover/embed (DROVER_EMBED_HOME, or the legacy APXW_EMBED_HOME); no sudo,
+#   nothing system-wide. Run it as `drover embed setup`, which first moves a pre-rename ~/.local/share/apx-web here.
+#   The Drover daemon starts the server itself when it has text to embed or a query to answer.
+#
+# usage: drover-embed-setup [--model-file PATH] [--from HOST] [--force] [--jobs N]
+#   --model-file PATH  use a GGUF already on this machine (its sha256 is checked)
+#   --from HOST        copy the GGUF from another fleet host's install over scp (sha256 checked);
+#                      for a machine whose network blocks huggingface.co
+#   --force            rebuild llama-server and fetch the model again even when both are present
+#   --jobs N           build parallelism (default: half the cores, at most 8)
+set -euo pipefail
+
+TAG=b11461                                          # first tags with EmbeddingGemma 2 are b11452+
+COMMIT=4d756bc72bf00a4aacf410ae15a2d315f3db400d     # the tag's commit: a tag can move, a commit cannot
+MODEL_FILE=embeddinggemma-2-Q8_0.gguf
+MODEL_SHA256=2188ac1deca4b77dffefd603c2776a9d76d9d74ec01841392982ebb840b09135
+MODEL_URL="https://huggingface.co/ggml-org/embeddinggemma-2-GGUF/resolve/main/$MODEL_FILE"
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PATCH="$HERE/llama.cpp-no-logits.patch"
+DEST="${DROVER_EMBED_HOME:-${APXW_EMBED_HOME:-${DROVER_SHARE:-${APXW_SHARE:-$HOME/.local/share/drover}}/embed}}"
+SRC="$DEST/src/llama.cpp"
+BUILD="$DEST/build"
+
+model_file="" from_host="" force=0 jobs=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --model-file) model_file="${2:?--model-file needs a path}"; shift 2 ;;
+    --from) from_host="${2:?--from needs a host}"; shift 2 ;;
+    --force) force=1; shift ;;
+    --jobs) jobs="${2:?--jobs needs a number}"; shift 2 ;;
+    -h|--help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) printf 'drover-embed-setup: unknown argument %s\n' "$1" >&2; exit 2 ;;
+  esac
+done
+if [[ -n "$from_host" && ! "$from_host" =~ ^[A-Za-z0-9_.-]{1,80}$ ]]; then printf 'drover-embed-setup: bad host %s\n' "$from_host" >&2; exit 2; fi
+if [[ -n "$jobs" && ! "$jobs" =~ ^[0-9]{1,3}$ ]]; then printf 'drover-embed-setup: --jobs must be a number\n' >&2; exit 2; fi
+
+say() { printf '[embed-setup] %s\n' "$*"; }
+sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
+cores="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
+[[ -n "$jobs" ]] || jobs=$(( cores / 2 > 8 ? 8 : (cores / 2 < 1 ? 1 : cores / 2) ))
+mkdir -p "$DEST/bin" "$DEST/models" "$DEST/src"
+chmod 700 "$DEST"
+
+# ---------------------------------------------------------------- llama-server
+os="$(uname -s)"
+stamp="$TAG $(sha256 "$PATCH" | cut -c1-12) $os"
+if [[ "$force" -eq 0 && -x "$DEST/bin/llama-server" && "$(cat "$DEST/bin/BUILD" 2>/dev/null)" == "$stamp" ]]; then
+  say "llama-server $TAG already built ($DEST/bin/llama-server)"
+else
+  if [[ ! -d "$SRC/.git" ]]; then
+    say "cloning llama.cpp $TAG"
+    git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$TAG" https://github.com/ggml-org/llama.cpp "$SRC"
+  elif [[ "$(git -C "$SRC" describe --tags --exact-match 2>/dev/null)" != "$TAG" ]]; then
+    git -C "$SRC" fetch --quiet --depth 1 origin tag "$TAG"
+    git -C "$SRC" checkout --quiet --force "$TAG"
+  fi
+  if [[ "$(git -C "$SRC" rev-parse HEAD)" != "$COMMIT" ]]; then say "llama.cpp $TAG is not commit $COMMIT here: refusing to build"; exit 1; fi
+  if git -C "$SRC" apply --check "$PATCH" 2>/dev/null; then git -C "$SRC" apply "$PATCH"
+  elif ! git -C "$SRC" apply --reverse --check "$PATCH" 2>/dev/null; then say "the patch neither applies nor is applied: refusing to build"; exit 1; fi
+
+  CMAKE=cmake
+  if ! command -v cmake >/dev/null 2>&1; then
+    if [[ ! -x "$DEST/tools/bin/cmake" ]]; then
+      say "no cmake on PATH: installing cmake + ninja into $DEST/tools (python venv)"
+      python3 -m venv "$DEST/tools"
+      "$DEST/tools/bin/pip" install --quiet cmake==4.4.4 ninja==1.13.2
+    fi
+    CMAKE="$DEST/tools/bin/cmake"
+    export PATH="$DEST/tools/bin:$PATH"
+  fi
+  gen=()
+  if command -v ninja >/dev/null 2>&1; then gen=(-G Ninja); fi
+  flags=(-DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DLLAMA_CURL=OFF -DLLAMA_OPENSSL=OFF
+         -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON)
+  if [[ "$os" == Darwin ]]; then flags+=(-DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0)
+  else flags+=(-DGGML_NATIVE=ON); fi
+  say "building llama-server (-j $jobs; a few minutes)"
+  "$CMAKE" -S "$SRC" -B "$BUILD" ${gen[@]+"${gen[@]}"} "${flags[@]}" >/dev/null
+  "$CMAKE" --build "$BUILD" --config Release -j "$jobs" --target llama-server >/dev/null
+  cp "$BUILD/bin/llama-server" "$DEST/bin/llama-server.tmp"
+  mv -f "$DEST/bin/llama-server.tmp" "$DEST/bin/llama-server"
+  printf '%s\n' "$stamp" > "$DEST/bin/BUILD"
+  say "built $DEST/bin/llama-server"
+fi
+
+# ---------------------------------------------------------------- model
+target="$DEST/models/$MODEL_FILE"
+if [[ "$force" -eq 0 && -f "$target" && "$(sha256 "$target")" == "$MODEL_SHA256" ]]; then
+  say "model present and verified ($target)"
+else
+  tmp="$target.part"
+  rm -f "$tmp"
+  if [[ -n "$model_file" ]]; then
+    say "copying the model from $model_file"
+    cp "$model_file" "$tmp"
+  elif [[ -n "$from_host" ]]; then
+    say "copying the model from $from_host"
+    # A peer not yet on Drover keeps the model under its pre-rename path (removed with the apxw shim on 2026-11-15).
+    scp -q -o BatchMode=yes -o ConnectTimeout=15 "$from_host:.local/share/drover/embed/models/$MODEL_FILE" "$tmp" 2>/dev/null \
+      || scp -q -o BatchMode=yes -o ConnectTimeout=15 "$from_host:.local/share/apx-web/embed/models/$MODEL_FILE" "$tmp"
+  else
+    say "downloading the model (310 MB)"
+    curl -fL --retry 3 --retry-delay 5 -sS -o "$tmp" "$MODEL_URL"
+  fi
+  got="$(sha256 "$tmp")"
+  if [[ "$got" != "$MODEL_SHA256" ]]; then
+    rm -f "$tmp"
+    say "model sha256 mismatch: got $got, want $MODEL_SHA256 (on a network that blocks huggingface.co use --from HOST)"
+    exit 1
+  fi
+  mv -f "$tmp" "$target"
+  say "model verified ($target)"
+fi
+
+cat > "$DEST/MANIFEST.json" <<JSON
+{"llama_cpp": {"tag": "$TAG", "commit": "$COMMIT", "patch_sha256": "$(sha256 "$PATCH")"}, "model": {"file": "$MODEL_FILE", "sha256": "$MODEL_SHA256"}, "os": "$os", "installed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+JSON
+
+# ---------------------------------------------------------------- smoke test: one real embedding
+say "smoke test: embedding one sentence"
+DROVER_EMBED_HOME="$DEST" DROVER_SETUP_EMBED_JS="$HERE/../core/search/embed.js" node --input-type=module -e "
+const { pathToFileURL } = await import('node:url');
+const { Embedder, docText } = await import(pathToFileURL(process.env.DROVER_SETUP_EMBED_JS).href);
+const e = new Embedder({ idleMs: 1000 });
+const t0 = Date.now();
+const [v] = await e.embed([docText('none', 'a dog on the beach')]);
+let n = 0; for (const x of v) n += x * x;
+console.log('[embed-setup] ok: ' + v.length + ' dims, norm ' + Math.sqrt(n).toFixed(3) + ', ' + (Date.now() - t0) + ' ms including server start');
+e.stop(); process.exit(0);
+"
+say "done. The Drover daemon will index this host's sessions and embed them in the background (drover embed status)."

@@ -1,0 +1,9 @@
+[
+  {
+    "name": "heartbeat-thinking",
+    "why": "OpenClaw's heartbeat config takes a model but no thinking level, so a sweep ran at the chat's default. The heartbeat runner passes OPENCLAW_HEARTBEAT_THINKING (the launcher sets it from the role's heartbeatThinking) as the run's thinking level, the way it passes heartbeat.model.",
+    "file": "dist/heartbeat-runner-run-*.mjs",
+    "find": "heartbeatModelOverride: heartbeat?.model?.trim(),",
+    "replace": "heartbeatModelOverride: heartbeat?.model?.trim(), thinkingLevelOverride: process.env.OPENCLAW_HEARTBEAT_THINKING || void 0,"
+  }
+]

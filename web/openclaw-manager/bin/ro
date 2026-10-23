@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# ro: the ONLY executable the manager's `exec` tool may run (exec-approvals allowlist).
+# A read-only verb table. argv only, no shell, paths confined to $HOME.
+#
+#   ro git status|log|diff|show|branch|rev-parse|describe|shortlog|blame|ls-files|cherry|reflog|remote -v  [args]
+#   ro ls|cat|head|tail|wc|stat|file  <paths under $HOME>
+#   ro rg|fd  [args]                     (no --pre/--exec; absolute paths must be under $HOME)
+#   ro df|uptime|free|date|hostname|id|ps|pgrep|ss
+#   ro systemctl status|list-units|list-timers|is-active|show|cat [unit]   (always --user)
+#   ro journalctl -u <unit> [-n N] [--since ...]                            (always --user --no-pager)
+#   ro tmux list-sessions|list-windows|list-panes|display-message [args]
+#   ro docker ps|images|inspect|logs --tail N <id>
+# macOS:
+#   ro vm_stat | sw_vers | top [-n N] [-o key]                              (top: one sample)
+#   ro sysctl [-n|-h|-a] <name>...                                          (reads only, never name=value)
+#   ro launchctl print|list|print-disabled|blame|version|hostinfo [target]
+#   ro pmset -g [what] | diskutil list|info|apfs list [disk] | ifconfig [iface]
+#   ro log show --last <N>[s|m|h] [--predicate ...]                         (at most 60 minutes)
+#   ro lsof [args] | netstat [args] | scutil --nc list|status|show, --dns, --proxy, --get
+# ro help: this list
+set -euo pipefail
+
+deny() { printf 'ro: refused: %s\n' "$*" >&2; exit 2; }
+verb="${1:-help}"; shift || true
+
+abs() { python3 -I -c 'import os,sys; print(os.path.realpath(os.path.expanduser(sys.argv[1])))' "$1"; }
+inhome() {
+  local p; p="$(abs "$1")"
+  case "$p" in "$HOME"|"$HOME"/*) ;; *) deny "path outside \$HOME: $1";; esac
+}
+# Every non-flag argument that looks like a path must resolve under $HOME.
+# Both helpers end with `return 0`: under `set -e` a function whose last command is a
+# failed `[[ ]] &&` list would otherwise return 1 and abort every allowed command.
+check_paths() { local a; for a in "$@"; do case "$a" in -*) ;; */*|.|..|~*) inhome "$a";; esac; done; return 0; }
+no_flags() { local a f; for a in "$@"; do for f in "${DENY_FLAGS[@]}"; do if [[ "$a" == "$f" || "$a" == "$f="* ]]; then deny "flag $a"; fi; done; done; return 0; }
+
+case "$verb" in
+  help|-h|--help) sed -n '2,/^# ro help/p' "$0"; exit 0;;
+
+  git)
+    sub="${1:-}"; shift || true
+    case "$sub" in
+      status|log|diff|show|rev-parse|describe|shortlog|blame|ls-files|cherry) ;;
+      branch)  DENY_FLAGS=(-d -D -m -M -c -C -f --force -u --set-upstream --set-upstream-to --unset-upstream --edit-description --delete --move --copy); no_flags "$@";;
+      reflog)  case "${1:-show}" in show) ;; *) deny "git reflog $1";; esac;;
+      remote)  case "${1:--v}" in -v|show|get-url) ;; *) deny "git remote $1";; esac;;
+      *) deny "git $sub (read-only git verbs only; never push/commit/fetch/pull/checkout/reset/rebase/merge/stash)";;
+    esac
+    DENY_FLAGS=(--exec-path -c -C --git-dir --work-tree -o --output --ext-diff --textconv); no_flags "$@"
+    exec git --no-pager -c core.pager=cat -c diff.external= "$sub" "$@";;
+
+  ls|cat|head|tail|wc|stat|file)
+    check_paths "$@"; exec "$verb" "$@";;
+
+  rg)
+    DENY_FLAGS=(--pre --pre-glob --search-zip -z); no_flags "$@"; check_paths "$@"
+    cd "$HOME" && exec rg --no-config --max-count 500 --max-columns 400 "$@";;
+  fd)
+    DENY_FLAGS=(-x --exec -X --exec-batch); no_flags "$@"; check_paths "$@"
+    cd "$HOME" && exec fd --no-ignore-vcs --max-results 500 "$@";;
+
+  df|uptime|free|date|hostname|id|ps|pgrep|ss) exec "$verb" "$@";;
+
+  systemctl)
+    sub="${1:-list-units}"; shift || true
+    case "$sub" in status|list-units|list-timers|is-active|is-enabled|show|cat|list-unit-files) ;; *) deny "systemctl $sub";; esac
+    exec systemctl --user --no-pager "$sub" "$@";;
+  journalctl)
+    DENY_FLAGS=(--vacuum-size --vacuum-time --vacuum-files --rotate --flush --relinquish-var --setup-keys --verify --sync); no_flags "$@"
+    exec journalctl --user --no-pager "$@";;
+
+  tmux)
+    sub="${1:-list-sessions}"; shift || true
+    case "$sub" in list-sessions|ls|list-windows|lsw|list-panes|lsp|display-message|display|show-options|show-environment) ;; *) deny "tmux $sub (read-only; use Drover tools to type)";; esac
+    exec tmux "$sub" "$@";;
+
+  docker)
+    sub="${1:-ps}"; shift || true
+    case "$sub" in ps|images|inspect|stats|version|info) ;; logs) set -- --tail "${RO_DOCKER_TAIL:-200}" "$@";; *) deny "docker $sub";; esac
+    [ "$sub" = stats ] && set -- --no-stream "$@"
+    exec docker "$sub" "$@";;
+
+  # macOS system facts (read-only subcommands and flags only).
+  vm_stat|sw_vers) [ $# -eq 0 ] || deny "$verb takes no arguments"; exec "$verb";;
+  top) DENY_FLAGS=(-l -s); no_flags "$@"; exec top -l 1 "$@";;
+  sysctl)
+    for a in "$@"; do
+      case "$a" in -n|-h|-a) ;; -*) deny "sysctl $a (reads only: -n, -h, -a and names)";; *=*) deny "sysctl $a (no writes)";; *) [[ "$a" =~ ^[a-z][a-z0-9_.-]*$ ]] || deny "sysctl $a";; esac
+    done
+    exec sysctl "$@";;
+  launchctl)
+    sub="${1:-list}"; shift || true
+    case "$sub" in print|list|print-disabled|blame|version|hostinfo) ;; *) deny "launchctl $sub (read-only: print, list, print-disabled, blame, version, hostinfo)";; esac
+    exec launchctl "$sub" "$@";;
+  pmset) [ "${1:-}" = -g ] || deny "pmset ${1:-} (read-only: pmset -g [what])"; exec pmset "$@";;
+  diskutil)
+    sub="${1:-list}"; shift || true
+    case "$sub" in list|info) ;; apfs) [ "${1:-}" = list ] || deny "diskutil apfs ${1:-} (read-only: apfs list)";; *) deny "diskutil $sub (read-only: list, info, apfs list)";; esac
+    exec diskutil "$sub" "$@";;
+  ifconfig) [ $# -le 1 ] || deny "ifconfig takes at most an interface name"; exec ifconfig "$@";;
+  log)
+    [ "${1:-}" = show ] || deny "log ${1:-} (read-only: log show --last <N>[s|m|h])"; shift
+    DENY_FLAGS=(--start --end --archive --file); no_flags "$@"
+    last=""; prev=""; for a in "$@"; do if [ "$prev" = --last ]; then last="$a"; fi; prev="$a"; done
+    [[ "$last" =~ ^[0-9]+[smh]?$ ]] || deny "log show needs --last <N>[s|m|h] (at most 60 minutes)"
+    n="${last%[smh]}"; case "$last" in *s) m=$(( n / 60 ));; *h) m=$(( n * 60 ));; *) m=$n;; esac
+    [ "$m" -le 60 ] || deny "log show --last $last is more than 60 minutes"
+    exec log show "$@";;
+  lsof) DENY_FLAGS=(-r +r); no_flags "$@"; exec lsof "$@";;
+  netstat) DENY_FLAGS=(-w); no_flags "$@"; exec netstat "$@";;
+  scutil)
+    case "${1:-}" in
+      --nc) case "${2:-}" in list|status|show) ;; *) deny "scutil --nc ${2:-} (read-only: list, status, show)";; esac;;
+      --dns|--proxy|--get) ;;
+      *) deny "scutil ${1:-} (read-only: --nc list|status|show, --dns, --proxy, --get)";;
+    esac
+    exec scutil "$@";;
+
+  *) deny "unknown verb '$verb' (ro help)";;
+esac

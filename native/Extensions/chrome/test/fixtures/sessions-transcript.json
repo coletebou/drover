@@ -1,0 +1,11 @@
+{
+  "engine": "claude",
+  "offset": 4096,
+  "turns": [
+    { "role": "user", "ts": "2026-10-11T17:45:00.000Z", "text": "Add a cache in front of the summary loader." },
+    { "role": "assistant", "ts": "2026-10-11T17:46:10.000Z", "text": "Reading the loader first.", "tools": [{ "name": "Read" }] },
+    { "role": "tool_result", "ts": "2026-10-11T17:46:12.000Z", "text": "export async function load() { ... }" },
+    { "role": "thinking", "ts": "2026-10-11T17:46:20.000Z", "text": "Two options here." },
+    { "role": "assistant", "ts": "2026-10-11T17:52:00.000Z", "text": "Pick a cache strategy: in-memory map or on-disk store?" }
+  ]
+}

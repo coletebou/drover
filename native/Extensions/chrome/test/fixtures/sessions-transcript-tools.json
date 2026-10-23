@@ -1,0 +1,21 @@
+{
+  "engine": "claude",
+  "offset": 9000,
+  "turns": [
+    { "role": "user", "ts": "2026-10-20T17:45:00.000Z", "uuid": "u-1", "text": "Make the parser keep line numbers in its errors.", "meta": false },
+    { "role": "thinking", "ts": "2026-10-20T17:45:05.000Z", "uuid": "u-2" },
+    { "role": "assistant", "ts": "2026-10-20T17:45:10.000Z", "uuid": "u-3", "text": "I will read the parser first.\n\n1. Read `src/parser.js`\n2. Find every **throw**", "tools": [] },
+    { "role": "assistant", "ts": "2026-10-20T17:45:12.000Z", "uuid": "u-4", "text": "", "tools": [{ "id": "toolu_1", "name": "Read", "input": { "file_path": "/home/demo/src/parser.js" }, "summary": "~/src/parser.js" }] },
+    { "role": "tool_result", "ts": "2026-10-20T17:45:13.000Z", "uuid": "u-5", "count": 1, "text": "export function parse() {}", "results": [{ "toolUseId": "toolu_1", "isError": false, "text": "1\texport function parse(text) {\n2\t  const tokens = tokenize(text);\n3\t}", "chars": 60 }] },
+    { "role": "assistant", "ts": "2026-10-20T17:45:14.000Z", "uuid": "u-6", "text": " ", "tools": [{ "id": "toolu_2", "name": "Grep", "input": { "pattern": "throw new Error", "path": "src" }, "summary": "\"throw new Error\" in src" }] },
+    { "role": "tool_result", "ts": "2026-10-20T17:45:15.000Z", "uuid": "u-7", "count": 1, "text": "src/parser.js:3", "results": [{ "toolUseId": "toolu_2", "isError": false, "text": "src/parser.js:3:  throw new Error(\"empty input\");", "chars": 48 }] },
+    { "role": "assistant", "ts": "2026-10-20T17:45:16.000Z", "uuid": "u-8", "text": "", "tools": [{ "id": "toolu_3", "name": "Bash", "input": { "command": "npm test", "description": "Run the unit tests" }, "summary": "npm test", "description": "Run the unit tests" }] },
+    { "role": "tool_result", "ts": "2026-10-20T17:45:20.000Z", "uuid": "u-9", "count": 1, "text": "[error] 1 failing", "results": [{ "toolUseId": "toolu_3", "isError": true, "text": "✖ lexer reports the line\nℹ tests 2\nℹ fail 1", "chars": 44 }] },
+    { "role": "assistant", "ts": "2026-10-20T17:45:30.000Z", "uuid": "u-10", "text": "One test fails: the lexer counts lines from 0.", "tools": [{ "id": "toolu_4", "name": "Edit", "input": { "file_path": "/home/demo/src/lexer.js" }, "summary": "~/src/lexer.js" }] },
+    { "role": "tool_result", "ts": "2026-10-20T17:45:31.000Z", "uuid": "u-11", "count": 1, "text": "updated", "results": [{ "toolUseId": "toolu_4", "isError": false, "text": "The file src/lexer.js has been updated successfully.", "chars": 51 }] },
+    { "role": "user", "ts": "2026-10-20T17:46:00.000Z", "uuid": "u-12", "text": "Caveat: hook output", "meta": true },
+    { "role": "user", "ts": "2026-10-20T17:47:00.000Z", "uuid": "u-13", "text": "please add a changelog entry", "via": "drover", "actor": "owner" },
+    { "role": "user", "ts": "2026-10-20T17:48:00.000Z", "uuid": "u-14", "text": "the review is done", "via": "peer", "from": "demo-review" },
+    { "role": "user", "ts": "2026-10-20T17:49:00.000Z", "uuid": "u-15", "text": "launch the docs agent", "via": "drover", "actor": "mcp" }
+  ]
+}

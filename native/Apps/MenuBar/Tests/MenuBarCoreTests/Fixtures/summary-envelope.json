@@ -1,0 +1,77 @@
+{
+  "ok": true,
+  "result": {
+    "generatedAt": "2026-10-11T18:00:00.000Z",
+    "hosts": [
+      {
+        "name": "local",
+        "up": true,
+        "waiting": 2,
+        "working": 1,
+        "idle": 3
+      },
+      {
+        "name": "demo-box",
+        "up": true,
+        "waiting": 0,
+        "working": 1,
+        "idle": 1
+      },
+      {
+        "name": "demo-spare",
+        "up": false,
+        "waiting": 0,
+        "working": 0,
+        "idle": 0
+      }
+    ],
+    "waiting": [
+      {
+        "id": "s-demo-build",
+        "name": "demo-build",
+        "host": "local",
+        "engine": "claude",
+        "since": "2026-10-11T17:52:00.000Z",
+        "kind": "decision",
+        "headline": "Apply the migration to the demo database? 1 Yes 2 No"
+      },
+      {
+        "id": "s-demo-review",
+        "name": "demo-review",
+        "host": "local",
+        "engine": "codex",
+        "since": "2026-10-11T17:40:00Z",
+        "kind": "question",
+        "headline": "Should the review cover the test fixtures too?"
+      }
+    ],
+    "working": [
+      {
+        "id": "s-demo-docs",
+        "name": "demo-docs",
+        "host": "local",
+        "engine": "claude",
+        "headline": "Writing the README section"
+      },
+      {
+        "id": "s-demo-lint",
+        "name": "demo-lint",
+        "host": "demo-box",
+        "engine": "codex",
+        "headline": "Running the linter"
+      }
+    ],
+    "totals": {
+      "waiting": 2,
+      "working": 2,
+      "idle": 4,
+      "hosts": 3
+    },
+    "manager": {
+      "up": true,
+      "lastNoteAt": "2026-10-11T17:58:00.000Z"
+    }
+  },
+  "ms": 3,
+  "cache": "miss"
+}

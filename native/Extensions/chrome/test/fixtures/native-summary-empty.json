@@ -1,0 +1,8 @@
+{
+  "generatedAt": "2026-10-11T18:00:00.000Z",
+  "hosts": [{ "name": "local", "up": true, "waiting": 0, "working": 0, "idle": 4 }],
+  "waiting": [],
+  "working": [],
+  "totals": { "waiting": 0, "working": 0, "idle": 4, "hosts": 1 },
+  "manager": { "up": false, "lastNoteAt": null }
+}

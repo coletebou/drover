@@ -1,0 +1,3 @@
+# Foundation-only files of the manager slice, one per line, relative to Apps/iOS/Sources
+Manager/ManagerStatusParser.swift
+Settings/SettingsLogic.swift

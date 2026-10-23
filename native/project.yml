@@ -1,0 +1,46 @@
+# Drover root XcodeGen spec. Generates Drover.xcodeproj (git-ignored) at the repo root.
+#
+# Part convention (details in docs/xcodegen.md): each window owns one project.part.yml and
+# adds its targets there. This file only holds shared settings, the DroverKit package and the
+# include list. Paths inside a part resolve relative to the part file (relativePaths: true).
+# A part that does not exist yet is skipped by script/generate.sh, so always generate with
+# script/generate.sh, not with a bare `xcodegen generate`.
+#
+# Signing: DEVELOPMENT_TEAM comes from the DROVER_TEAM_ID environment variable. Set it for
+# signed builds; leave it unset for unsigned CI builds.
+name: Drover
+options:
+  bundleIdPrefix: dev.drover
+  deploymentTarget:
+    iOS: "17.0"
+    macOS: "14.0"
+    watchOS: "10.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+  groupSortPosition: top
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: "${DROVER_TEAM_ID}"
+    MARKETING_VERSION: 0.1.0
+    CURRENT_PROJECT_VERSION: 1
+    DEAD_CODE_STRIPPING: YES
+packages:
+  DroverKit:
+    path: Packages/DroverKit
+include:
+  - path: Apps/macOS/project.part.yml
+    relativePaths: true
+  - path: Apps/MenuBar/project.part.yml
+    relativePaths: true
+  - path: Apps/iOS/project.part.yml
+    relativePaths: true
+  - path: Apps/watchOS/project.part.yml
+    relativePaths: true
+  - path: Widgets/project.part.yml
+    relativePaths: true
+  - path: Extensions/safari/project.part.yml
+    relativePaths: true

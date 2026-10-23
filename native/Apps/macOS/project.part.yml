@@ -1,0 +1,75 @@
+# XcodeGen fragment for the macOS app, included by the root project.yml (paths are relative to this file).
+# Info.plist and the entitlements are GENERATED from the `properties:` below on every `xcodegen generate`
+# (XcodeGen rewrites those files): edit them here. The committed copies match the generated output so
+# tools/build-app.sh can use them without XcodeGen.
+# Signing: DEVELOPMENT_TEAM comes from the root spec (DROVER_TEAM_ID); CI builds with CODE_SIGNING_ALLOWED=NO.
+# Without Xcode: tools/build-app.sh (unsandboxed dev .app), tools/test.sh (logic harness), tools/snapshot.sh (PNGs).
+targets:
+  DroverMac:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Sources
+      - path: Resources
+        buildPhase: none
+        excludes:
+          - Info.plist
+          - DroverMac.entitlements
+      # AppIcon (script/app-icons.py writes it).
+      - path: Assets.xcassets
+    # A shared scheme, so script/ci-build.sh (xcodebuild -list) builds this target. Its test action runs the
+    # Safari extension's native tests (Extensions/safari/project.part.yml).
+    scheme:
+      testTargets: [DroverSafariNativeTests-macOS]
+    dependencies:
+      # Embeds the macOS widgets (Widgets/project.part.yml). They read the summary this app writes.
+      - target: DroverWidgets-macOS
+      # Embeds the Safari web extension (Extensions/safari/project.part.yml). It reads this app's server and token
+      # (App Group, shared Keychain) and posts drover.session / drover.info alerts this app's NotificationCoordinator answers.
+      - target: DroverSafariExtension-macOS
+      # SFSafariExtensionManager / SFSafariApplication for the Safari settings tab.
+      - sdk: SafariServices.framework
+      # Pairing (PairingClient, PairingController). tools/*.sh build it as a static module (tools/env.sh).
+      - package: DroverKit
+    info:
+      path: Resources/Info.plist
+      properties:
+        CFBundleDisplayName: Drover
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleIconName: AppIcon
+        # The embedded Safari extension (DroverSafariExtension-macOS); SafariSettingsView asks Safari for its state.
+        DroverSafariExtensionBundleID: dev.drover.macos.safari
+        LSApplicationCategoryType: public.app-category.developer-tools
+        LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
+        CFBundleURLTypes:
+          - CFBundleURLName: dev.drover.macos
+            CFBundleURLSchemes: [drover]
+        # Expanded at build time; read by KeychainTokenStore so the team prefix is never hardcoded.
+        DroverKeychainAccessGroup: $(AppIdentifierPrefix)dev.drover.shared
+        NSAppTransportSecurity:
+          # The daemon speaks plain http on loopback, LAN and Tailscale (WireGuard encrypts the tailnet).
+          NSAllowsLocalNetworking: true
+          NSExceptionDomains:
+            ts.net:
+              NSIncludesSubdomains: true
+              NSExceptionAllowsInsecureHTTPLoads: true
+    entitlements:
+      path: Resources/DroverMac.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.network.client: true
+        com.apple.security.files.user-selected.read-only: true
+        com.apple.security.application-groups: [group.dev.drover]
+        keychain-access-groups: [$(AppIdentifierPrefix)dev.drover.shared]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.drover.macos
+        PRODUCT_NAME: Drover
+        GENERATE_INFOPLIST_FILE: NO
+        ENABLE_HARDENED_RUNTIME: YES
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        COMBINE_HIDPI_IMAGES: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

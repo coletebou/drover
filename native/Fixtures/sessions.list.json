@@ -1,0 +1,16 @@
+{
+  "ok": true,
+  "ms": 41,
+  "cache": { "age": 1200, "stale": false },
+  "result": {
+    "host": "local",
+    "codexError": null,
+    "sessions": [
+      { "id": "00000000-demo-4000-8000-000000000001", "sessionId": "00000000-demo-4000-8000-000000000001", "engine": "claude", "kind": "interactive", "name": "demo-build", "status": "idle", "live": true, "alive": true, "cwd": "/Users/demo/code/demo-app", "tmux": "demo:@3.%7", "startedAt": 1791750000000, "updatedAt": 1791756730000, "statusUpdatedAt": 1791756730000 },
+      { "id": "00000000-demo-4000-8000-000000000002", "sessionId": "00000000-demo-4000-8000-000000000002", "engine": "claude", "kind": "interactive", "name": "demo-review", "status": "idle", "live": true, "alive": true, "cwd": "/Users/demo/code/demo-app", "tmux": "demo:@4.%9", "startedAt": 1791751000000, "updatedAt": 1791757121000, "statusUpdatedAt": 1791757121000 },
+      { "id": "00000000-demo-4000-8000-000000000003", "threadId": "00000000-demo-4000-8000-000000000003", "engine": "codex", "name": "demo-tests", "status": "active", "live": true, "loaded": true, "cwd": "/Users/demo/code/demo-app", "model": "demo-model", "createdAt": 1791752000, "updatedAt": 1791757000 },
+      { "id": "hl-demo-1", "kind": "headless", "engine": "claude", "name": "demo-headless", "status": "exited", "live": false, "cwd": "/Users/demo/code/demo-app" },
+      { "id": "manager", "engine": "openclaw", "name": "manager", "status": "idle", "live": true }
+    ]
+  }
+}

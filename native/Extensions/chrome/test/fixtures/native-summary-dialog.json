@@ -1,0 +1,43 @@
+{
+  "generatedAt": "2026-10-20T18:00:00.000Z",
+  "hosts": [
+    { "name": "local", "up": true, "waiting": 2, "working": 1, "idle": 1 }
+  ],
+  "waiting": [
+    {
+      "id": "22222222-aaaa-4bbb-8ccc-000000000001",
+      "name": "demo-build",
+      "host": "local",
+      "engine": "claude",
+      "since": "2026-10-20T17:52:00.000Z",
+      "kind": "decision",
+      "headline": "Do you want to proceed?",
+      "answer": "keys",
+      "dialog": {
+        "question": "Do you want to proceed?",
+        "options": [
+          { "n": 1, "label": "Yes", "selected": true },
+          { "n": 2, "label": "Yes, and don't ask again for npm test commands in demo-app" },
+          { "n": 3, "label": "No, and tell Claude what to do differently (esc)" }
+        ]
+      },
+      "hash": "3f2a9c1e5b7d2a46",
+      "keys": ["1", "2", "3", "Enter", "Escape"]
+    },
+    {
+      "id": "22222222-aaaa-4bbb-8ccc-000000000002",
+      "name": "demo-review",
+      "host": "local",
+      "engine": "codex",
+      "since": "2026-10-20T17:40:00.000Z",
+      "kind": "question",
+      "headline": "Should the retry limit be three or five?",
+      "answer": "reply"
+    }
+  ],
+  "working": [
+    { "id": "22222222-aaaa-4bbb-8ccc-000000000003", "name": "demo-work", "host": "local", "engine": "claude", "headline": "Compiling the parser" }
+  ],
+  "totals": { "waiting": 2, "working": 1, "idle": 1, "hosts": 1 },
+  "manager": { "up": true, "lastNoteAt": "2026-10-20T17:30:00.000Z" }
+}

@@ -1,0 +1,18 @@
+{
+  "ok": true,
+  "ms": 18,
+  "cache": null,
+  "result": {
+    "engine": "claude",
+    "offset": 20480,
+    "exists": true,
+    "summary": { "title": "Demo build", "firstPrompt": "Build the demo app", "lastReply": "Do you want to proceed?", "lastTs": "2026-10-11T21:52:10.000Z" },
+    "turns": [
+      { "role": "user", "ts": "2026-10-11T21:40:00.000Z", "uuid": "u-demo-1", "text": "Build the demo app and run its tests.", "meta": false },
+      { "role": "thinking", "ts": "2026-10-11T21:40:02.000Z", "uuid": "t-demo-1" },
+      { "role": "assistant", "ts": "2026-10-11T21:40:05.000Z", "uuid": "a-demo-1", "text": "Building now.", "tools": [ { "name": "Bash" } ], "model": "demo-model" },
+      { "role": "tool_result", "ts": "2026-10-11T21:41:00.000Z", "uuid": "r-demo-1", "count": 1, "text": "Build succeeded" },
+      { "role": "assistant", "ts": "2026-10-11T21:52:10.000Z", "uuid": "a-demo-2", "text": "The build passed. Do you want to proceed with the release step?", "tools": [] }
+    ]
+  }
+}

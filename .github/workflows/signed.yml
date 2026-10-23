@@ -1,0 +1,95 @@
+# Signed builds: Developer ID + notarized Mac apps as a downloadable artifact, and/or a TestFlight upload.
+# Manual only. On hosted macOS when the repository is public; while it is private (hosted macOS is billed at 10x), on a
+# self-hosted Mac only (label drover-mac, repository variable DROVER_MAC_RUNNER "on"), else skipped. Runs in the
+# environment "signing" (on a public repository give it a required reviewer and limit it to master), which falls back
+# to repository-level values for anything it does not set itself. Needs the variable DROVER_TEAM_ID and the secrets ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_P8 (contents of the
+# AuthKey_*.p8 file), and per target the signing certificate as a base64 .p12:
+#     mac:        DROVER_DEVID_P12 + DROVER_DEVID_P12_PASSWORD  ("Developer ID Application")
+#     testflight: DROVER_DIST_P12  + DROVER_DIST_P12_PASSWORD   ("Apple Distribution")
+# Each secret reaches only the step that needs it, never brew or setup-node.
+# Signing is manual: nothing here uses -allowProvisioningUpdates, so runs never create certificates. The ASC key
+# (Admin role) is used for profiles, notarization and the TestFlight upload. See native/script/ci-sign.sh.
+name: signed
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: What to build
+        type: choice
+        options: [mac, testflight, both]
+        default: mac
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signed-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  signed:
+    if: ${{ !github.event.repository.private || vars.DROVER_MAC_RUNNER == 'on' }}
+    runs-on: ${{ github.event.repository.private && fromJSON('["self-hosted", "macOS", "drover-mac"]') || 'macos-15' }}
+    environment: signing
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Select newest Xcode
+        run: |
+          newest=$(ls -d /Applications/Xcode_*.app | sort -V | tail -n 1)
+          echo "Using $newest"
+          sudo xcode-select -s "$newest/Contents/Developer"
+          xcodebuild -version
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Write the App Store Connect key
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          [ -n "$ASC_KEY_P8" ] || { echo "secret ASC_KEY_P8 is not set"; exit 1; }
+          key="$RUNNER_TEMP/AuthKey.p8"
+          printf '%s\n' "$ASC_KEY_P8" > "$key"
+          chmod 600 "$key"
+          echo "ASC_KEY_PATH=$key" >> "$GITHUB_ENV"
+
+      - name: Mac apps (Developer ID, notarized)
+        if: inputs.target == 'mac' || inputs.target == 'both'
+        env:
+          DROVER_TEAM_ID: ${{ vars.DROVER_TEAM_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          DROVER_DEVID_P12: ${{ secrets.DROVER_DEVID_P12 }}
+          DROVER_DEVID_P12_PASSWORD: ${{ secrets.DROVER_DEVID_P12_PASSWORD }}
+        run: native/script/ci-sign.sh mac
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: inputs.target == 'mac' || inputs.target == 'both'
+        with:
+          name: drover-mac-${{ github.sha }}
+          path: native/dist/*.zip
+          if-no-files-found: error
+
+      - name: TestFlight upload
+        if: inputs.target == 'testflight' || inputs.target == 'both'
+        env:
+          DROVER_TEAM_ID: ${{ vars.DROVER_TEAM_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          DROVER_DIST_P12: ${{ secrets.DROVER_DIST_P12 }}
+          DROVER_DIST_P12_PASSWORD: ${{ secrets.DROVER_DIST_P12_PASSWORD }}
+        run: native/script/ci-sign.sh testflight
+
+      - name: Remove the key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/AuthKey.p8"

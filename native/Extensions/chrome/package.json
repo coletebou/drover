@@ -1,0 +1,7 @@
+{
+  "name": "drover-chrome",
+  "private": true,
+  "type": "module",
+  "description": "Chrome extension for Drover. No dependencies; the package file only marks lib/*.js as ES modules for node --test.",
+  "scripts": { "test": "node --test test/*.test.js" }
+}

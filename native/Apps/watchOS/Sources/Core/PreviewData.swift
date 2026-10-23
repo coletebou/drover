@@ -1,0 +1,37 @@
+import Foundation
+
+/// Synthetic data for previews and tests (CONTRACT.md: invented names only).
+enum PreviewData {
+    static let now = Date(timeIntervalSince1970: 1_791_000_000)
+
+    static let summary = NativeSummary(
+        generatedAt: FlexibleDate(now),
+        hosts: [
+            HostSummary(name: "demo-mac", up: true, waiting: 2, working: 1, idle: 3),
+            HostSummary(name: "demo-box", up: true, waiting: 1, working: 1, idle: 0),
+        ],
+        waiting: [
+            WaitingItem(id: "s-demo-build", name: "demo-build", host: "demo-mac", engine: "claude",
+                        since: FlexibleDate(now.addingTimeInterval(-240)), kind: .decision,
+                        headline: "Run the migration on the staging copy first, or go straight to the full set?"),
+            WaitingItem(id: "s-demo-review", name: "demo-review", host: "demo-mac", engine: "codex",
+                        since: FlexibleDate(now.addingTimeInterval(-900)), kind: .question,
+                        headline: "Should the retry limit be 3 or 5?"),
+            WaitingItem(id: "s-demo-docs", name: "demo-docs", host: "demo-box", engine: "claude",
+                        since: FlexibleDate(now.addingTimeInterval(-3600)), kind: .finished,
+                        headline: "Finished: README updated and tests pass."),
+        ],
+        working: [
+            WorkingItem(id: "s-demo-lint", name: "demo-lint", host: "demo-mac", engine: "claude", headline: "Fixing lint warnings"),
+            WorkingItem(id: "s-demo-sync", name: "demo-sync", host: "demo-box", engine: "codex", headline: "Syncing fixtures"),
+        ],
+        totals: Totals(waiting: 3, working: 2, idle: 3, hosts: 2),
+        manager: ManagerStatus(up: true, lastNoteAt: FlexibleDate(now.addingTimeInterval(-600)))
+    )
+
+    static func lastReply(for item: WaitingItem) -> LastReply {
+        LastReply(id: item.id, name: item.name, engine: item.engine,
+                  text: "I compared both options.\n\n\(item.headline)",
+                  line: item.headline, ts: item.since)
+    }
+}

@@ -1,0 +1,56 @@
+{
+  "summary": "A starting point that works as is: commercial Bedrock in us-east-1 (Mantle and runtime, one bearer), a loopback CLIProxyAPI, Exa search, traces to a Langfuse on this host; every secret from ~/.env_secrets. For your own fleet, copy it into an overlay (DROVER_OPENCLAW_OVERLAY) as profiles/<name>.json and change what differs.",
+  "config": "openclaw.json",
+  "port": 18789,
+  "vars": {
+    "OTEL_ENDPOINT": "http://127.0.0.1:3000/api/public/otel",
+    "CLIPROXY_API_KEY": "${CLIPROXY_API_KEY}"
+  },
+  "env": {
+    "AWS_REGION": "us-east-1"
+  },
+  "secrets": {
+    "AWS_BEARER_TOKEN_BEDROCK": {
+      "from": "~/.env_secrets"
+    },
+    "CLIPROXY_API_KEY": {
+      "from": "~/.env_secrets"
+    },
+    "EXA_API_KEY": {
+      "from": "~/.env_secrets"
+    },
+    "OPENCLAW_GATEWAY_TOKEN": {
+      "generate": true
+    },
+    "OPENCLAW_HOOKS_TOKEN": {
+      "generate": true
+    },
+    "OTEL_EXPORTER_OTLP_HEADERS": {
+      "from": "~/.env_secrets",
+      "basicAuth": [
+        "LANGFUSE_PUBLIC_KEY",
+        "LANGFUSE_SECRET_KEY"
+      ],
+      "format": "Authorization=Basic%20{}",
+      "optional": true
+    }
+  },
+  "egress": {
+    "allow": [
+      "bedrock-mantle.us-east-1.api.aws",
+      "bedrock-runtime.us-east-1.amazonaws.com",
+      "api.exa.ai",
+      "127.0.0.1",
+      "localhost"
+    ],
+    "cliproxy": {
+      "config": "~/.cli-proxy-api/config.yaml",
+      "allow": [
+        "bedrock-mantle.us-east-1.api.aws"
+      ],
+      "unused": [
+        "bedrock-mantle.us-west-2.api.aws"
+      ]
+    }
+  }
+}

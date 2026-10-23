@@ -1,0 +1,10 @@
+{
+  "name": "drover-openclaw-manager",
+  "version": "1.0.0",
+  "private": true,
+  "description": "The pinned OpenClaw build the manager gateway runs. drover manager setup installs it with npm ci from package-lock.json into ~/.local/share/drover/openclaw/<version>-<lock hash>/.",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "openclaw": "2026.10.1"
+  }
+}

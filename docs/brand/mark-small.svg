@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#20242e"/><stop offset="1" stop-color="#11141a"/></linearGradient>
+    <linearGradient id="amber" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f6c25a"/><stop offset="1" stop-color="#df8b25"/></linearGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="224" fill="url(#bg)"/>
+  <!-- 32 px and smaller: a heavier stroke, a wider gate and one dot, so it still reads as the mark. -->
+  <g transform="translate(-60 0)">
+    <path d="M548 772 H572 C724 772 820 656 820 512 C820 368 724 252 572 252 H430 C384 252 352 284 352 330 V772" fill="none" stroke="url(#amber)" stroke-width="136" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="600" cy="524" r="74" fill="#f3ead6"/>
+  </g>
+</svg>

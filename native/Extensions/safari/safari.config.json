@@ -1,0 +1,10 @@
+{
+  "chromeDir": "../chrome",
+  "outDir": "Resources",
+  "background": "service_worker",
+  "proxyApi": true,
+  "storage": { "key": "settings", "baseUrlField": "baseUrl", "tokenField": "token", "actorField": "actor", "actor": "safari", "chromeActor": "chrome" },
+  "notificationIdPattern": "^drover\\|(?<host>[^|]*)\\|(?<session>[^|]*)\\|[^|]*$",
+  "strictMinVersion": "17.0",
+  "exclude": ["test/", "tests/", "tools/", "node_modules/", "*.test.js", "*.test.mjs", "*.md", "package.json", "package-lock.json", ".*"]
+}

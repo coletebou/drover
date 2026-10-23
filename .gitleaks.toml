@@ -1,0 +1,15 @@
+title = "drover"
+[extend]
+useDefault = true
+# Test and fixture files use invented tokens ("tok-SECRET...", "EXAMPLE_...") to prove
+# redaction and Keychain handling. Real code and configs stay scanned.
+[[allowlists]]
+description = "synthetic tokens in tests and fixtures"
+paths = ['''(^|/)Tests/''', '''(^|/)Fixtures/''', '''(^|/)test/''']
+# A JSON "key" holding an RSA-2048 SubjectPublicKeyInfo is a public key (the Chrome extension manifest
+# pins its id with one). Scoped by line content, not path: gitleaks 8.30 exempts a whole file once a path
+# allowlist matches, even under condition = "AND", which would hide a real secret added to the manifest.
+[[allowlists]]
+description = "RSA public key in a JSON key field"
+regexTarget = "line"
+regexes = ['''"key":\s*"MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA[A-Za-z0-9+/]+=*"''']

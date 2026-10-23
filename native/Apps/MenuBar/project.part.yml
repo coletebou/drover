@@ -1,0 +1,69 @@
+# XcodeGen part for the menu bar app, included by the root project.yml.
+# Paths are relative to this file (XcodeGen resolves included specs relative to themselves).
+# MenuBarCore sources are compiled straight into the app (same module); the SwiftPM package in this
+# folder exists only so `swift test` can run the logic tests without Xcode.
+packages:
+  MenuBarCore:
+    path: .
+
+targets:
+  DroverMenuBar:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: App
+      - path: Sources/MenuBarCore
+      # AppIcon (script/app-icons.py writes it); shown on notifications and in Finder.
+      - path: Assets.xcassets
+    info:
+      path: Generated/Info.plist
+      properties:
+        CFBundleDisplayName: Drover Menu Bar
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleIconName: AppIcon
+        LSUIElement: true
+        LSApplicationCategoryType: public.app-category.developer-tools
+        LSMinimumSystemVersion: "14.0"
+        # Read at runtime by KeychainTokenStore; expanded with the signing team prefix at build time.
+        DroverKeychainAccessGroup: $(AppIdentifierPrefix)dev.drover.shared
+        NSAppTransportSecurity:
+          # Plain http to the daemon on loopback, LAN or a Tailscale IP. Use https for *.ts.net names.
+          NSAllowsLocalNetworking: true
+    entitlements:
+      path: Generated/DroverMenuBar.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.network.client: true
+        com.apple.security.application-groups:
+          - group.dev.drover
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)dev.drover.shared
+        # Waiting-on-you alerts are time sensitive (they break through Focus when the user allows it).
+        com.apple.developer.usernotifications.time-sensitive: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.drover.menubar
+        PRODUCT_NAME: DroverMenuBar
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 1
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_STYLE: Automatic
+        # DEVELOPMENT_TEAM is inherited from the root project (or xcodebuild DEVELOPMENT_TEAM=...).
+        COMBINE_HIDPI_IMAGES: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+
+schemes:
+  DroverMenuBar:
+    build:
+      targets:
+        DroverMenuBar: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - package: MenuBarCore/MenuBarCoreTests

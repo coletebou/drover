@@ -1,0 +1,33 @@
+[Unit]
+Description=OpenClaw manager gateway (the Drover fleet manager: Bedrock + loopback cliproxy + Exa only)
+Documentation=file:%h/code/drover/web/openclaw-manager/README.md
+After=network-online.target drover.service cli-proxy-api.service
+Wants=network-online.target drover.service cli-proxy-api.service
+# Backstop against restart loops (same pattern as drover.service / cli-proxy-api.service).
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+# Installed by `drover manager setup` (web/core/openclaw-install.js); re-run it instead of editing.
+# Everything host-specific (the pinned node, the OpenClaw install, the secrets, the egress
+# switches) lives in the generated launcher, so this unit is the same on every Linux host.
+[Service]
+Type=simple
+WorkingDirectory=%h
+# Skip cleanly (no restart loop) when the install or config is absent.
+ExecCondition=/usr/bin/env sh -c 'test -x %h/.openclaw-manager/bin/run-gateway && test -f %h/.openclaw-manager/.env && test -f %h/.openclaw-manager/openclaw.json'
+ExecStartPre=/usr/bin/env mkdir -p %h/.local/state/logs
+ExecStart=%h/.openclaw-manager/bin/run-gateway
+Restart=always
+RestartSec=5
+# OpenClaw exits 78 (EX_CONFIG) on invalid config; do not loop on it.
+RestartPreventExitStatus=78
+TimeoutStopSec=330
+TimeoutStartSec=30
+SuccessExitStatus=0 143
+OOMPolicy=continue
+KillMode=mixed
+StandardOutput=append:%h/.local/state/logs/openclaw-manager.log
+StandardError=append:%h/.local/state/logs/openclaw-manager.log
+
+[Install]
+WantedBy=default.target
