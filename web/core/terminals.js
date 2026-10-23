@@ -29,7 +29,10 @@ export async function open(target, { bind = '127.0.0.1', readOnly = false } = {}
   if (!(await ttydAvailable())) throw new Error('ttyd is not installed on this host');
   const port = await freePort();
   const id = uuidv7();
-  const argv = ['-p', String(port), '-i', bind, '-t', 'disableLeaveAlert=true', '-t', 'macOptionIsMeta=true', '-o', ...(readOnly ? [] : ['-W']), 'tmux', 'attach-session', '-t', target];
+  // -O (check origin): the terminal's websocket takes only its own page. Without it any web page the browser opens
+  // could connect to 127.0.0.1:<port>/ws and type into the tmux session (browsers let any origin open a websocket to
+  // loopback). The iframe Drover shows loads ttyd's own page, so its Origin matches.
+  const argv = ['-p', String(port), '-i', bind, '-O', '-t', 'disableLeaveAlert=true', '-t', 'macOptionIsMeta=true', '-o', ...(readOnly ? [] : ['-W']), 'tmux', 'attach-session', '-t', target];
   const child = spawn('ttyd', argv, { stdio: ['ignore', 'pipe', 'pipe'] });
   const entry = { id, target, port, bind, pid: child.pid, startedAt: new Date().toISOString(), child, readOnly, lastSeen: Date.now() };
   child.on('close', () => { entry.exited = true; setTimeout(() => terms.delete(id), 30_000).unref(); });
