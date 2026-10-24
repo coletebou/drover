@@ -193,6 +193,7 @@ export default {
         case 'launch': return `${e.engine} ${e.mode} ${e.profile} ${e.result?.tmux ?? ''}`;
         case 'feature': return `${e.fid} ${e.state ?? ''} ${e.title ?? ''}`;
         case 'note': return `${e.about}: ${e.text}`;
+        case 'status': return `${e.name ?? e.agent} ${e.state}${e.summary ? `: ${e.summary}` : ''}`;
         case 'survey': return `${e.count} items from ${e.file?.split('/').pop()}`;
         case 'survey-item': return e.item?.title ?? e.item?.id ?? '';
         case 'pin': case 'unpin': return e.target;
