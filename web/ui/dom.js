@@ -1,5 +1,6 @@
 // DOM helpers. No framework, no innerHTML with data: h() builds elements and
 // every string becomes a text node.
+import { homeList, tildeWith } from './paths.js';
 
 export function h(tag, attrs, ...children) {
   const el = document.createElement(tag);
@@ -68,12 +69,8 @@ export function debounce(fn, ms) { let t = null; return (...a) => { clearTimeout
 export function short(s, n = 8) { return s ? String(s).slice(0, n) : ''; }
 // Homes written as ~: the front daemon's own (host.list names it, app.js sets it), then any /Users/<name> or /home/<name>.
 let homes = [];
-export function setHomes(list) { homes = [...new Set((list ?? []).filter((x) => typeof x === 'string' && x.length > 1).map((x) => x.replace(/\/+$/, '')))].sort((a, b) => b.length - a.length); }
-export function tildePath(p) {
-  const s = String(p ?? '');
-  for (const home of homes) if (s === home || s.startsWith(`${home}/`)) return `~${s.slice(home.length)}`;
-  return s.replace(/^\/Users\/[^/]+|^\/home\/[^/]+/, '~');
-}
+export function setHomes(list) { homes = homeList(list); }
+export function tildePath(p) { return tildeWith(homes, p); }
 export function shortPath(p, max = 44) { if (!p) return ''; const s = tildePath(p); return s.length > max ? '…' + s.slice(-(max - 1)) : s; }
 export function plural(n, one, many = one + 's') { return `${n} ${n === 1 ? one : many}`; }
 

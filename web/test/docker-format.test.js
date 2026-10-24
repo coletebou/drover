@@ -30,6 +30,12 @@ describe('formatStacks', () => {
     assert.match(formatStacks(host, { loose: true }), /^ {6}1 container carries compose labels from its image/m);
     assert.match(formatStacks(host, { color: true }), /\x1b\[33mdegraded\x1b\[0m/);
   });
+
+  test('homes: a checkout under one of them reads ~, as one under /home/<name> does', () => {
+    const t = formatStacks(host, { homes: ['/srv/'] });
+    assert.match(t, /^ {6}code ~\/webapp-review {2}\(worktree of ~\/src\/webapp\) {2}detached @ b7c3d91e2f/m);
+    assert.match(t, /^ {6}code ~\/src\/webapp {2}report-fixes/m);
+  });
   test('the fleet: a host without docker, one that did not answer, and the hosts not reached', () => {
     const t = formatStacks({ hosts: [host, { host: 'laptop', ok: true, docker: { available: false, reason: 'no docker daemon is answering: Cannot connect' }, stacks: [] }, { host: 'oldbox', ok: false, error: 'oldbox runs Drover code from before docker stacks' }],
       coverage: { notCovered: [{ host: 'oldbox', reason: 'x' }, { host: 'box-c', reason: 'down at the last probe' }], partial: [] } });

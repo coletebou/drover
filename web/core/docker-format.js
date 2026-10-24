@@ -1,14 +1,14 @@
 // Plain-text rendering of docker.stacks and docker.fleet for `drover stacks`. Pure; tests in test/docker-format.test.js.
 import { countsLine, kindsLine, isWarning } from '../ui/stacks-text.js';
+import { homeList, tildeWith } from '../ui/paths.js';
 
 const C = { dim: '\x1b[2m', bold: '\x1b[1m', red: '\x1b[31m', green: '\x1b[32m', yellow: '\x1b[33m', cyan: '\x1b[36m', off: '\x1b[0m' };
 const VERDICT = { ok: 'green', starting: 'cyan', degraded: 'yellow', down: 'red', empty: 'dim' };
-const home = (p) => String(p ?? '').replace(/^\/(?:home|Users)\/[^/]+/, '~');
 /** s cut to n characters, the last one an ellipsis when s was longer. */
 const cut = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
 /** One git state as a line: path, worktree, branch or detached HEAD, subject, dirty files, ahead/behind. */
-function gitText(g) {
+function gitText(g, home) {
   const parts = [home(g.toplevel)];
   if (g.worktree) parts.push(`(worktree of ${home(g.mainRepo ?? '?')})`);
   parts.push(g.detached ? `detached @ ${g.short}` : `${g.branch ?? '?'} @ ${g.short}`);
@@ -19,7 +19,7 @@ function gitText(g) {
 }
 
 /** One host's stacks (a docker.stacks answer, or one entry of docker.fleet's hosts). loose: also list containers outside compose. */
-function hostText(x, { c, loose }) {
+function hostText(x, { c, loose, home }) {
   const d = x.docker;
   if (x.ok === false) return [`${c('bold', x.host)}  ${c('red', `no answer: ${x.error}`)}`];
   if (d?.available === false) return [`${c('bold', x.host)}  ${c('dim', `docker unavailable: ${d.reason}`)}`];
@@ -35,9 +35,9 @@ function hostText(x, { c, loose }) {
     if (s.kinds) out.push(`      ${c('dim', kindsLine(s.kinds))}`);
     for (const f of s.failing ?? []) out.push(`      ${c('red', '✗')} ${f.service} ${f.state}${f.detail ? `: ${cut(f.detail, 110)}` : ''}`);
     const code = s.code;
-    if (code?.dir?.git) out.push(`      code ${gitText(code.dir.git)}`);
+    if (code?.dir?.git) out.push(`      code ${gitText(code.dir.git, home)}`);
     else if (code?.dir) out.push(`      code ${home(code.dir.path)}  ${c('dim', code.dir.exists ? 'not a git repo' : 'missing')}`);
-    for (const src of code?.sources ?? []) out.push(`      bind mounts (${src.services} service${src.services === 1 ? '' : 's'}): ${gitText(src)}`);
+    for (const src of code?.sources ?? []) out.push(`      bind mounts (${src.services} service${src.services === 1 ? '' : 's'}): ${gitText(src, home)}`);
     for (const n of [...(code?.notes ?? []), ...(s.loose ? [] : s.notes ?? [])]) out.push(`      ${c(isWarning(n) ? 'yellow' : 'dim', n)}`);
     if (loose && s.loose) for (const n of s.notes ?? []) out.push(`      ${c('dim', n)}`);
   }
@@ -45,12 +45,14 @@ function hostText(x, { c, loose }) {
   return out;
 }
 
-/** docker.stacks (one host) or docker.fleet (several) as text. */
-export function formatStacks(res, { color = false, loose = false } = {}) {
+/** docker.stacks (one host) or docker.fleet (several) as text. homes: folders written as ~ (the CLI passes its own HOME). */
+export function formatStacks(res, { color = false, loose = false, homes = [] } = {}) {
   const c = (k, s) => (color ? `${C[k]}${s}${C.off}` : s);
+  const known = homeList(homes);
+  const home = (p) => tildeWith(known, p);
   const lines = [];
   const hosts = Array.isArray(res?.hosts) ? res.hosts : [res];
-  for (const x of hosts) lines.push(...hostText(x, { c, loose }), '');
+  for (const x of hosts) lines.push(...hostText(x, { c, loose, home }), '');
   if (res?.hosts) {
     const asked = new Set(res.hosts.map((x) => x.host));
     const miss = [...(res.coverage?.notCovered ?? []).filter((m) => !asked.has(m.host)), ...(res.coverage?.partial ?? [])];
