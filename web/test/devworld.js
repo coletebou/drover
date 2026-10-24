@@ -38,6 +38,12 @@ const MANAGER = SHOWCASE ? path.join(SHOW_HOME, '.openclaw-manager') : path.join
 const socketOf = (tmuxDir) => path.join(tmuxDir, `tmux-${process.getuid()}`, 'default');
 const tmuxAt = (tmuxDir, args, env = process.env) => { const e = { ...env }; delete e.TMUX; delete e.TMUX_PANE; return spawnSync('tmux', ['-S', socketOf(tmuxDir), ...args], { env: e, encoding: 'utf8' }); };
 const killTmux = (tmuxDir) => { if (tmuxDir && existsSync(socketOf(tmuxDir))) tmuxAt(tmuxDir, ['kill-server']); };
+// A dev world still running in this folder is left alone: removing its tmux folders under its live daemon would send
+// that daemon to the owner's default server (it picks its server by TMUX_TMPDIR), still serving the copied token.
+const alive = (pid) => { try { return Number.isInteger(pid) && pid > 0 && (process.kill(pid, 0), true); } catch { return false; } };
+const running = [path.join(DIR, 'devworld.json'), path.join(DIR, 'state', 'daemon.json')]
+  .map((f) => { try { const j = JSON.parse(readFileSync(f, 'utf8')); return j.daemonPid ?? j.pid; } catch { return null; } }).find(alive);
+if (running) { console.error(`[devworld] a dev world is still running in ${DIR} (daemon pid ${running}): stop it first (Ctrl-C, or kill -TERM its devworld.js), or use another --dir or --port`); process.exit(1); }
 // A dev world left from an earlier run: stop its tmux servers (and so its agents) before its directory goes, the
 // showcase's other hosts' too (devworld.json names them; their sockets live under /tmp, see showcase/world.js).
 killTmux(path.join(DIR, 'tmux'));
@@ -161,9 +167,10 @@ const env = {
   OPENCLAW_MANAGER_STATE_DIR: MANAGER, OPENCLAW_GATEWAY_URL: `http://127.0.0.1:${gateway.port}`, OPENCLAW_GATEWAY_TOKEN: 'dev',
 };
 // What a shell needs to use the CLI and the TUI here (`. <dir>/env.sh`): the settings the daemon got on top of the
-// shell's own environment, and no $TMUX (inside the owner's tmux it would beat TMUX_TMPDIR and reach the real server).
+// shell's own environment, no $TMUX (inside the owner's tmux it would beat TMUX_TMPDIR and reach the real server) and no
+// GIT_* (a GIT_DIR would point the CLI's look at a stack's code at the shell's own repository).
 const shq = (v) => `'${String(v).replaceAll("'", "'\\''")}'`;
-writeFileSync(path.join(DIR, 'env.sh'), 'unset TMUX TMUX_PANE\n' + Object.entries(env).filter(([k, v]) => inherited[k] !== v).map(([k, v]) => `export ${k}=${shq(v)}`).join('\n') + '\n', { mode: 0o600 });
+writeFileSync(path.join(DIR, 'env.sh'), 'unset TMUX TMUX_PANE\nfor v in $(env | awk -F= \'/^GIT_/ { print $1 }\'); do unset "$v"; done\n' + Object.entries(env).filter(([k, v]) => inherited[k] !== v).map(([k, v]) => `export ${k}=${shq(v)}`).join('\n') + '\n', { mode: 0o600 });
 const daemon = spawn(process.execPath, [path.join(ROOT, 'bin', 'drover'), 'serve', '--port', String(PORT)], { env, stdio: ['ignore', 'pipe', 'pipe'] });
 daemon.stdout.on('data', (d) => process.stdout.write(`[daemon] ${d}`));
 daemon.stderr.on('data', (d) => process.stderr.write(`[daemon] ${d}`));

@@ -166,7 +166,8 @@ const TMUX_DIR = path.join('/tmp', `${path.basename(DIR)}-shots`);
 // An explicit socket, never TMUX_TMPDIR alone: when TMUX_TMPDIR names a missing directory, tmux falls back to
 // the user's default server, and this script's kill-server took down every real tmux session on the Mac.
 const TMUX_SOCK = path.join(TMUX_DIR, 'sock');
-const tmux = (...a) => { const e = { ...process.env }; delete e.TMUX; delete e.TMUX_PANE; delete e.TMUX_TMPDIR; const r = spawnSync('tmux', ['-S', TMUX_SOCK, ...a], { env: e, encoding: 'utf8' }); if (r.status !== 0) throw new Error(`tmux ${a.join(' ')}: ${r.stderr}`); return r.stdout; };
+// No GIT_* either: a GIT_DIR from the caller would put its own repository in the CLI's picture.
+const tmux = (...a) => { const e = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_'))); delete e.TMUX; delete e.TMUX_PANE; delete e.TMUX_TMPDIR; const r = spawnSync('tmux', ['-S', TMUX_SOCK, ...a], { env: e, encoding: 'utf8' }); if (r.status !== 0) throw new Error(`tmux ${a.join(' ')}: ${r.stderr}`); return r.stdout; };
 const ENV_SH = path.join(DIR, 'env.sh');
 const PROMPT = "PS1='\\[\\e[38;5;245m\\]studio ~\\[\\e[0m\\] \\$ '";
 
