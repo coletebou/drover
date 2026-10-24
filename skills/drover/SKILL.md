@@ -45,8 +45,9 @@ act there; omit for the machine the daemon runs on. Hosts and reachability:
 ## Search and the brain
 
 Where a plugin serves it, `drover_search_fleet` and `drover_search_semantic` also return Badland brain entries (kind
-`brain`, `host: "brain"`, with `slug` for `drover_brain_get`): the daemon that answers asks the brain once per query,
-beside the index, and fuses the two lists by rank (`score` is the fused score, `sourceScore` the hit's own).
+`brain`, `host: "brain"`, with `slug` for `drover_brain_get`): the process that answers asks the brain once per query,
+beside the index (only for calls that say `remote: true`, which these tools, `drover search`, `drover op` and the UI
+add; a host reached over rpc never asks), and fuses the two lists by rank (`score` is the fused score, `sourceScore` the hit's own).
 `kinds: ["brain"]` asks only the brain; kinds without it skip it. `remote.brain` says whether it was searched, or why
 not: nothing is sent when the machine's identity is work or the query, project, host or your session's checkout looks
 like work (`work identity`, `work context`), with `DROVER_SEARCH_BRAIN=off` (`disabled`), and a timeout or an error

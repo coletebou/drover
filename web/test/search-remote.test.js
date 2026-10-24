@@ -118,7 +118,7 @@ describe('fusion by rank', () => {
 // ---------------------------------------------------------------- search.semantic at the front
 describe('search.semantic with the brain', () => {
   test('one brain call beside the index search; hits fused by rank in the result shape; remote.brain says it was included', async () => {
-    const r = await api.dispatch('search.semantic', { query: 'drover search index', limit: 4, callerCwd: '/Users/c/code/drover' });
+    const r = await api.dispatch('search.semantic', { remote: true, query: 'drover search index', limit: 4, callerCwd: '/Users/c/code/drover' });
     assert.equal(brainCalls.length, 1);
     const { signal, ...asked } = brainCalls[0];
     assert.deepEqual(asked, { query: 'drover search index', limit: 4 });
@@ -138,7 +138,7 @@ describe('search.semantic with the brain', () => {
     assert.equal(r.host, 'mac'); assert.equal(r.vector, 'ok');
   });
   test('kinds ["brain"] only: no index search at all', async () => {
-    const r = await api.dispatch('search.semantic', { query: 'drover search index', kinds: ['brain'] });
+    const r = await api.dispatch('search.semantic', { remote: true, query: 'drover search index', kinds: ['brain'] });
     assert.equal(indexCalls.length, 0);
     assert.equal(brainCalls.length, 1);
     assert.deepEqual(r.results.map((x) => x.kind), ['brain', 'brain']);
@@ -146,14 +146,14 @@ describe('search.semantic with the brain', () => {
     assert.equal(r.remote.brain.included, true);
   });
   test('kinds without brain: the brain is not asked and the answer is the index\'s, with no remote field', async () => {
-    const r = await api.dispatch('search.semantic', { query: 'drover search index', kinds: ['claude', 'wal'] });
+    const r = await api.dispatch('search.semantic', { remote: true, query: 'drover search index', kinds: ['claude', 'wal'] });
     assert.equal(brainCalls.length, 0);
     assert.deepEqual(indexCalls[0].kinds, ['claude', 'wal']);
     assert.equal(r.remote, undefined);
     assert.deepEqual(r.results.map((x) => [x.hash, x.score, x.sourceScore]), indexHits().map((x) => [x.hash, x.score, undefined]), 'scores untouched, nothing fused');
   });
   test('kinds with brain and others: the index gets the others, the brain is asked', async () => {
-    await api.dispatch('search.semantic', { query: 'q', kinds: ['brain', 'reflection'] });
+    await api.dispatch('search.semantic', { remote: true, query: 'q', kinds: ['brain', 'reflection'] });
     assert.deepEqual(indexCalls[0].kinds, ['reflection']);
     assert.equal(brainCalls.length, 1);
     assert.deepEqual(brainCalls[0].kinds, ['brain', 'reflection'], 'the source sees the kinds asked for');
@@ -162,7 +162,7 @@ describe('search.semantic with the brain', () => {
     rs._deps.env = { DROVER_SEARCH_REMOTE_TIMEOUT_MS: '40' };
     brainImpl = () => new Promise(() => {});   // never answers
     const t0 = Date.now();
-    const r = await api.dispatch('search.semantic', { query: 'q' });
+    const r = await api.dispatch('search.semantic', { remote: true, query: 'q' });
     assert.ok(Date.now() - t0 < 2000, 'the front waits the timeout, not forever');
     assert.deepEqual(r.results.map((x) => [x.hash, x.score]), indexHits().map((x) => [x.hash, x.score]));
     assert.equal(r.remote.brain.included, false); assert.equal(r.remote.brain.reason, 'timeout');
@@ -171,30 +171,30 @@ describe('search.semantic with the brain', () => {
   });
   test('a brain that fails leaves the index\'s answer as it was, with the error as the reason', async () => {
     brainImpl = async () => { throw new Error('the brain is unavailable (HTTP 503 brain_unavailable)'); };
-    const r = await api.dispatch('search.semantic', { query: 'q' });
+    const r = await api.dispatch('search.semantic', { remote: true, query: 'q' });
     assert.deepEqual(r.results.map((x) => x.hash), indexHits().map((x) => x.hash));
     assert.deepEqual({ included: r.remote.brain.included, reason: r.remote.brain.reason }, { included: false, reason: 'the brain is unavailable (HTTP 503 brain_unavailable)' });
   });
   test('no plugin serves the brain: no remote field, unless the call names the kind (then "no source")', async () => {
     plugins._reset();
     try {
-      const all = await api.dispatch('search.semantic', { query: 'q' });
+      const all = await api.dispatch('search.semantic', { remote: true, query: 'q' });
       assert.equal(all.remote, undefined);
       assert.equal(all.results.length, 3);
-      const named = await api.dispatch('search.semantic', { query: 'q', kinds: ['brain'] });
+      const named = await api.dispatch('search.semantic', { remote: true, query: 'q', kinds: ['brain'] });
       assert.deepEqual(named.remote, { brain: { included: false, reason: 'no source' } });
       assert.deepEqual(named.results, []);
       assert.equal(indexCalls.length, 1, 'kinds ["brain"] searched no index');
     } finally { plugins.register({ name: 'brainfake', search: { remote: { brain: (q) => { brainCalls.push(q); return brainImpl(q); } } } }); }
   });
   test('days and role filter remote hits too; hits are checked and cut to one line', async () => {
-    const r = await api.dispatch('search.semantic', { query: 'q', days: 30 });
+    const r = await api.dispatch('search.semantic', { remote: true, query: 'q', days: 30 });
     assert.deepEqual(r.results.filter((x) => x.kind === 'brain').map((x) => x.slug), ['drover-search-index-1'], 'the 400-day-old entry is out');
     assert.equal(r.remote.brain.hits, 1);
-    const byRole = await api.dispatch('search.semantic', { query: 'q', role: 'memory' });
+    const byRole = await api.dispatch('search.semantic', { remote: true, query: 'q', role: 'memory' });
     assert.deepEqual(byRole.results.filter((x) => x.kind === 'brain').map((x) => x.slug), ['older-note-2']);
     brainImpl = async () => ({ hits: [null, 'text', { title: 'x'.repeat(500), snippet: 's', ts: 'not a date', score: 'high', kind: 'claude', host: 'mac' }], note: 'stale index' });
-    const odd = await api.dispatch('search.semantic', { query: 'q', kinds: ['brain'] });
+    const odd = await api.dispatch('search.semantic', { remote: true, query: 'q', kinds: ['brain'] });
     assert.equal(odd.results.length, 1);
     const h = odd.results[0];
     assert.deepEqual({ kind: h.kind, host: h.host, ts: h.ts, sourceScore: h.sourceScore, titleLength: h.title.length }, { kind: 'brain', host: 'brain', ts: null, sourceScore: null, titleLength: 200 });
@@ -223,7 +223,7 @@ describe('search.semantic with the brain', () => {
 describe('the work guard keeps the query from the brain', () => {
   const blockedBy = async (args, env = {}) => {
     rs._deps.env = env;
-    const r = await api.dispatch('search.semantic', { query: 'how does the search index work', ...args });
+    const r = await api.dispatch('search.semantic', { remote: true, query: 'how does the search index work', ...args });
     assert.equal(brainCalls.length, 0, `the brain was asked for ${JSON.stringify(args)}`);
     assert.equal(r.remote.brain.included, false);
     assert.equal(r.results.length, 3, 'the index still answers');
@@ -233,7 +233,7 @@ describe('the work guard keeps the query from the brain', () => {
   test('control: a personal machine, query and checkout reach the brain', async () => {
     await writeFile(path.join(HOME, '.df-profile'), 'export DF_MACHINE=mac\nexport DF_IDENTITY=personal\n');
     try {
-      const r = await api.dispatch('search.semantic', { query: 'how does the search index work', project: 'drover', callerCwd: '/Users/c/code/drover' });
+      const r = await api.dispatch('search.semantic', { remote: true, query: 'how does the search index work', project: 'drover', callerCwd: '/Users/c/code/drover' });
       assert.equal(brainCalls.length, 1); assert.equal(r.remote.brain.included, true);
     } finally { await rm(path.join(HOME, '.df-profile'), { force: true }); }
   });
@@ -253,7 +253,7 @@ describe('the work guard keeps the query from the brain', () => {
   });
   test('a work host named: search.semantic host, search.fleet hosts', async () => {
     assert.deepEqual(await blockedBy({ host: 'cpt-dev' }), { included: false, reason: 'work context', field: 'host' });
-    const f = await api.dispatch('search.fleet', { query: 'q', hosts: ['local', 'cpt-dev'] });
+    const f = await api.dispatch('search.fleet', { remote: true, query: 'q', hosts: ['local', 'cpt-dev'] });
     assert.equal(brainCalls.length, 0);
     assert.deepEqual(f.remote.brain, { included: false, reason: 'work context', field: 'hosts' });
   });
@@ -275,7 +275,7 @@ describe('the work guard keeps the query from the brain', () => {
 // ---------------------------------------------------------------- exactly one brain call per query
 describe('forwarded and fleet searches ask the brain once, at the front', () => {
   test('search.semantic on another host: the brain is asked here once; the host gets remote: false and no callerCwd', async () => {
-    const r = await api.dispatch('search.semantic', { host: 'boxa', query: 'drover search index', callerCwd: '/Users/c/code/drover' });
+    const r = await api.dispatch('search.semantic', { remote: true, host: 'boxa', query: 'drover search index', callerCwd: '/Users/c/code/drover' });
     assert.equal(brainCalls.length, 1, 'one brain call for the query');
     assert.deepEqual(rpcCalls.map((c) => [c.host, c.op]), [['boxa', 'search.semantic']]);
     assert.equal(rpcCalls[0].args.remote, false);
@@ -286,7 +286,7 @@ describe('forwarded and fleet searches ask the brain once, at the front', () => 
     assert.deepEqual(r.results.map((x) => x.host ?? 'index'), ['index', 'brain', 'index', 'brain', 'index']);
   });
   test('search.fleet: one brain call for every host searched; each host gets remote: false and no callerCwd', async () => {
-    const r = await api.dispatch('search.fleet', { query: 'drover search index', hosts: ['local', 'boxa'], limit: 5, callerCwd: '/Users/c/code/drover' });
+    const r = await api.dispatch('search.fleet', { remote: true, query: 'drover search index', hosts: ['local', 'boxa'], limit: 5, callerCwd: '/Users/c/code/drover' });
     assert.equal(brainCalls.length, 1);
     assert.equal(indexCalls.length, 2, 'here and on boxa');
     for (const a of indexCalls) { assert.equal(a.remote, false); assert.equal('callerCwd' in a, false); }
@@ -298,15 +298,15 @@ describe('forwarded and fleet searches ask the brain once, at the front', () => 
     assert.deepEqual(r.coverage.searched.length, 2);
   });
   test('search.fleet for kinds ["brain"] asks no host', async () => {
-    const r = await api.dispatch('search.fleet', { query: 'drover search index', kinds: ['brain'] });
+    const r = await api.dispatch('search.fleet', { remote: true, query: 'drover search index', kinds: ['brain'] });
     assert.equal(rpcCalls.length, 0); assert.equal(indexCalls.length, 0);
     assert.equal(brainCalls.length, 1);
     assert.deepEqual(r.perHost, []); assert.deepEqual(r.coverage, { searched: [], notCovered: [], partial: [] });
     assert.deepEqual(r.results.map((x) => x.slug), ['drover-search-index-1', 'older-note-2']);
-    await assert.rejects(api.dispatch('search.fleet', { query: 'q', kinds: ['brain'], hosts: ['nosuchhost'] }), /not in fleet-hosts\.txt/);
+    await assert.rejects(api.dispatch('search.fleet', { remote: true, query: 'q', kinds: ['brain'], hosts: ['nosuchhost'] }), /not in fleet-hosts\.txt/);
   });
   test('search.fleet with kinds without brain (the bots\' drover_search): no brain call, no remote field', async () => {
-    const r = await api.dispatch('search.fleet', { query: 'q', hosts: ['local'], kinds: ['claude', 'codex', 'subagent', 'wal', 'memory', 'reflection'] });
+    const r = await api.dispatch('search.fleet', { remote: true, query: 'q', hosts: ['local'], kinds: ['claude', 'codex', 'subagent', 'wal', 'memory', 'reflection'] });
     assert.equal(brainCalls.length, 0);
     assert.equal(r.remote, undefined);
     assert.deepEqual(indexCalls[0].kinds, ['claude', 'codex', 'subagent', 'wal', 'memory', 'reflection']);
@@ -315,6 +315,34 @@ describe('forwarded and fleet searches ask the brain once, at the front', () => 
     await api.dispatch('search.semantic', { host: 'boxa', query: 'q', remote: false, callerCwd: '/Users/c/code/drover' });
     assert.equal(brainCalls.length, 0);
     assert.equal('callerCwd' in rpcCalls[0].args, false);
+  });
+});
+
+// ---------------------------------------------------------------- opt-in: only a front that says so asks
+describe('a search that does not say remote: true asks no remote source', () => {
+  test('a host over rpc or an older client (no remote: true): the index alone, callerCwd dropped, no remote field', async () => {
+    const r = await api.dispatch('search.semantic', { query: 'drover search index', callerCwd: '/Users/c/code/drover' });
+    assert.equal(brainCalls.length, 0);
+    assert.equal(r.remote, undefined);
+    assert.equal(indexCalls.length, 1);
+    assert.equal('callerCwd' in indexCalls[0], false);
+    const f = await api.dispatch('search.fleet', { query: 'drover search index', hosts: ['local'] });
+    assert.equal(brainCalls.length, 0);
+    assert.equal(f.remote, undefined);
+  });
+  test('naming kind brain without remote: true asks nothing; search.fleet says why', async () => {
+    const r = await api.dispatch('search.semantic', { query: 'drover search index', kinds: ['brain'] });
+    assert.equal(brainCalls.length, 0);
+    assert.equal(r.remote, undefined, 'an index search, nothing more');
+    const f = await api.dispatch('search.fleet', { query: 'drover search index', kinds: ['brain'] });
+    assert.equal(brainCalls.length, 0);
+    assert.equal(f.remote.brain.included, false);
+    assert.match(f.remote.brain.reason, /remote: true/);
+  });
+  test('search.fleet naming a work host with host (not hosts) is refused too', async () => {
+    const f = await api.dispatch('search.fleet', { remote: true, query: 'release rollout plan', host: 'cpt-dev', hosts: ['local'] });
+    assert.equal(brainCalls.length, 0);
+    assert.deepEqual(f.remote.brain, { included: false, reason: 'work context', field: 'host' });
   });
 });
 
@@ -329,6 +357,7 @@ describe('CLI', () => {
       await cli.cliOp('search.semantic', { query: 'q' });
       await cli.cliOp('search.status', {});
       assert.deepEqual(seen.map((s) => s.args.callerCwd), [process.cwd(), process.cwd(), undefined]);
+      assert.deepEqual(seen.map((s) => s.args.remote), [true, true, undefined], 'the CLI is a front');
     } finally { cli._deps.dispatchRecorded = real; }
   });
   test('formatResults names a brain hit\'s slug and how the brain went', () => {

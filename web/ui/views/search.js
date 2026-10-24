@@ -54,7 +54,8 @@ export default {
       const mine = ++seq;
       clear(list); list.append(loading(prefs.scope === 'fleet' ? 'Searching every machine' : 'Searching'));
       clear(status);
-      const args = { query, limit: 30, mode: prefs.mode, ...(prefs.days ? { days: prefs.days } : {}), ...(prefs.kinds.length ? { kinds: prefs.kinds } : {}) };
+      // remote: true: this view is a front, so the daemon asks the brain beside the index (core/search/remote.js).
+      const args = { query, limit: 30, mode: prefs.mode, remote: true, ...(prefs.days ? { days: prefs.days } : {}), ...(prefs.kinds.length ? { kinds: prefs.kinds } : {}) };
       try {
         const r = prefs.scope === 'fleet' ? await ctx.callQuiet('search.fleet', args, { host: 'local' }) : await ctx.callQuiet('search.semantic', args, { host: ctx.host() });
         if (!alive || mine !== seq) return;

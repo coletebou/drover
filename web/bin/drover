@@ -248,8 +248,9 @@ async function main() {
       const query = words.join(' ').trim();
       if (!query) throw new Error('usage: drover search <words...> [--here | --host H] [--limit N] [--mode M] [--kinds a,b] [--days N] [--project P] [--json]');
       const { dispatch } = await import(path.join(ROOT, 'core', 'api.js'));
-      // callerCwd: the work guard of the search's remote sources reads it here, at the front (core/search/remote.js).
-      const args = { query, limit: Number(flag('limit', 12)), callerCwd: process.cwd() };
+      // remote and callerCwd: this command is a front, and the work guard of the search's remote sources reads the
+      // checkout it runs in (core/search/remote.js).
+      const args = { query, limit: Number(flag('limit', 12)), remote: true, callerCwd: process.cwd() };
       for (const k of ['mode', 'days', 'project', 'role', 'session']) if (flag(k)) args[k] = k === 'days' ? Number(flag(k)) : flag(k);
       if (flag('kinds')) args.kinds = flag('kinds').split(',');
       const one = has('here') || flag('host');

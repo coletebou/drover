@@ -1,6 +1,8 @@
 // Remote search sources (core/plugins.js search.remote): entries a plugin fetches at query time from a service of its
-// own, such as the Badland brain (kind brain), and that no host ever indexes. Only the front asks them: the process
-// that answers the search (the daemon for MCP and the web UI, the CLI for drover search and drover op). It asks each
+// own, such as the Badland brain (kind brain), and that no host ever indexes. Only a front asks them, and only when the
+// call says so (remote: true, which the MCP server, drover search, drover op and the web UI add): a call without it, a
+// search a host gets over rpc or one from a client older than this guard, searches the index alone, so nothing that
+// predates the work guard can ever send a query out. The front is the process that answers the search. It asks each
 // source once per query, beside its own index search or the fleet fan-out, under DROVER_SEARCH_REMOTE_TIMEOUT_MS
 // (default 5000), and every index search it sends on carries remote: false, so the host (or this host's daemon,
 // reached over HTTP) that runs that search does not ask them again. The two lists are fused by rank, since the
@@ -58,6 +60,9 @@ export function remoteTimeoutMs(env = _deps.env) {
   const n = Number(envvar('SEARCH_REMOTE_TIMEOUT_MS', env));
   return Number.isFinite(n) && n > 0 ? Math.min(n, 60_000) : DEFAULT_TIMEOUT_MS;
 }
+
+/** Whether a search call asks for its remote sources: only remote: true does (the front entry points add it). */
+export const frontCall = (args = {}) => args.remote === true || args.remote === 'true';
 
 /** Why a remote kind is not asked for this call ({ reason, field? }), or null when it may be. */
 export function blocked(kind, args = {}, where = {}) {
@@ -125,7 +130,8 @@ async function ask(kind, fn, q, filters, timeoutMs) {
  * name it), and lists the hits of each source that answered.
  */
 export function begin(args = {}, where = {}) {
-  const { callerCwd, remote: _remote, ...rest } = args;
+  const { callerCwd, remote, ...rest } = args;
+  const front = frontCall({ remote });
   const asked = list(rest.kinds);
   const localKinds = asked.filter((k) => !REMOTE_KINDS.includes(k));
   const local = !asked.length || localKinds.length > 0;
@@ -134,7 +140,8 @@ export function begin(args = {}, where = {}) {
   const legs = [];
   for (const kind of REMOTE_KINDS.filter((k) => !asked.length || asked.includes(k))) {
     const fn = sources[kind];
-    if (typeof fn !== 'function') { if (asked.includes(kind)) legs.push([kind, Promise.resolve({ status: { included: false, reason: 'no source' }, hits: [] })]); continue; }
+    const absent = !front ? 'not asked (the call did not say remote: true)' : typeof fn !== 'function' ? 'no source' : null;
+    if (absent) { if (asked.includes(kind)) legs.push([kind, Promise.resolve({ status: { included: false, reason: absent }, hits: [] })]); continue; }
     const no = blocked(kind, { ...rest, callerCwd }, where);
     if (no) { legs.push([kind, Promise.resolve({ status: { included: false, ...no }, hits: [] })]); continue; }
     const q = { query: String(rest.query ?? ''), limit: clampLimit(rest.limit), ...(asked.length ? { kinds: asked } : {}), ...(Number(rest.days) > 0 ? { days: Number(rest.days) } : {}), ...(typeof rest.project === 'string' && rest.project ? { project: rest.project } : {}) };

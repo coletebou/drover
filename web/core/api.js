@@ -481,11 +481,11 @@ export const front = {
    * A plugin's remote source (the brain) is asked here, once, beside the fan-out,
    * and fused in by rank (core/search/remote.js); the hosts are told not to.
    */
-  async 'search.fleet'({ hosts: names, host: _host, query, limit = 20, ...rest } = {}) {
+  async 'search.fleet'({ hosts: names, host: named, query, limit = 20, ...rest } = {}) {
     str(query, 'query', { max: 2000 });
     const lim = Math.max(1, Math.min(100, Number(limit) || 20));
     const t0 = Date.now();
-    const leg = remoteSearch.begin({ ...rest, query, limit: lim }, { hosts: names });
+    const leg = remoteSearch.begin({ ...rest, query, limit: lim }, { hosts: names, host: named });
     const [fleet, rem] = await Promise.all([leg.local ? searchHosts(names, leg.localArgs) : noHosts(names), leg.done]);
     const results = remoteSearch.withRemote(mergeHosts(fleet.perHost, { limit: lim }), rem.lists, lim);
     return { query, ms: Date.now() - t0, results, perHost: fleet.perHost.map(({ results: r, ...h }) => ({ ...h, hits: r.length })), coverage: fleet.coverage, ...(rem.remote ? { remote: rem.remote } : {}) };
@@ -851,12 +851,15 @@ export async function dispatch(op, args = {}) {
   const { host, ...rest } = args ?? {};
   // host "auto": the fleet's placement picks the machine (core/placement.js), then the launch goes there.
   if (op === 'launch.start' && host === 'auto') return launchPlaced(rest);
-  // A search's remote sources are the front's: unless the call says remote: false (the index search a front sends on),
-  // they are asked here. callerCwd, which only the front's work guard reads, never goes on to another host.
+  // A search's remote sources are asked here, at the front, only when the call says remote: true (core/search/remote.js);
+  // any other search, a host's over rpc or an older client's, searches the index alone. callerCwd, which only the
+  // front's work guard reads, never goes on to another host. search.fleet runs here whatever host it names, but its
+  // guard still reads that host.
   if (op === 'search.semantic') {
-    if (rest.remote !== false && rest.remote !== 'false') return semanticFront(host, rest);
+    if (remoteSearch.frontCall(rest)) return semanticFront(host, rest);
     delete rest.callerCwd;
   }
+  if (op === 'search.fleet' && host !== undefined) rest.host = host;
   // A docker op this table does not have (down, rm, kill, ...) is refused here, never forwarded for another host to refuse.
   if (typeof op === 'string' && op.startsWith('docker.') && !local[op] && !front[op]) return dispatchLocal(op, rest);
   if (FRONT_ONLY.has(op) || !host || host === hosts.LOCAL) return dispatchLocal(op, rest);

@@ -375,10 +375,11 @@ naming the hosts it could not see), `search.grep` / `search.grepFleet` (ripgrep 
 host); `DROVER_SEARCH_DOCS` replaces the document patterns (`|`-separated, `off` for none).
 
 Where a plugin serves it (`search.remote` in `core/plugins.js`), search kind `brain` adds the Badland brain's
-entries, fetched at query time and never indexed (`core/search/remote.js`). Only the front asks it, the process that
-answers the search (the daemon for MCP and the UI, the CLI for `drover search` and `drover op`): once per query,
-beside its own index search or the fleet fan-out, within `DROVER_SEARCH_REMOTE_TIMEOUT_MS` (default 5000); the index
-searches it sends on say `remote: false`, so no host asks again. The two rank with different embeddings whose scores
+entries, fetched at query time and never indexed (`core/search/remote.js`). Only a front asks it, and only for a
+call that says `remote: true`: the MCP server, `drover search`, `drover op` and the web UI add it, so a search a host
+gets over rpc, or one from a client older than the work guard, searches the index alone. The front is the process
+that answers the search; it asks once per query, beside its own index search or the fleet fan-out, within
+`DROVER_SEARCH_REMOTE_TIMEOUT_MS` (default 5000), and the index searches it sends on say `remote: false`. The two rank with different embeddings whose scores
 do not compare, so the lists are fused by rank: a hit at 0-based position p of its own list scores 1/(61+p),
 which becomes its `score` (`sourceScore` keeps its own). A brain hit has `host: "brain"`, `slug`, `namespace`,
 `tier`, `author` and `role` (its brain kind); `remote.brain` is `{ included: true, hits, ms }` or `{ included: false,

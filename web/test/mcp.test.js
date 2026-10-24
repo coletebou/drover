@@ -454,7 +454,7 @@ describe('drover_launch and folder trust', () => {
 });
 
 describe('search tools carry the calling session\'s working directory', () => {
-  test('drover_search_semantic, drover_search_fleet and drover_op pass callerCwd (this server\'s cwd) for the front\'s work guard', async () => {
+  test('drover_search_semantic, drover_search_fleet and drover_op pass callerCwd (this server\'s cwd) for the front\'s work guard, and remote: true (this server is a front)', async () => {
     const dispatch = fakeDispatch();
     const s = createServer({ dispatch, log: quiet });
     const call = (name, args) => s.handleMessage(req(1, 'tools/call', { name, arguments: args }));
@@ -466,9 +466,9 @@ describe('search tools carry the calling session\'s working directory', () => {
     ];
     for (const r of results) assert.notEqual(r.result.isError, true, JSON.stringify(r.result));
     assert.deepEqual(dispatch.calls, [
-      { op: 'search.semantic', args: { query: 'drover search index', kinds: ['brain', 'claude'], host: 'box-a', callerCwd: process.cwd() } },
-      { op: 'search.fleet', args: { query: 'drover search index', kinds: ['brain'], callerCwd: process.cwd() } },
-      { op: 'search.fleet', args: { query: 'q', callerCwd: process.cwd() } },
+      { op: 'search.semantic', args: { query: 'drover search index', kinds: ['brain', 'claude'], host: 'box-a', callerCwd: process.cwd(), remote: true } },
+      { op: 'search.fleet', args: { query: 'drover search index', kinds: ['brain'], callerCwd: process.cwd(), remote: true } },
+      { op: 'search.fleet', args: { query: 'q', callerCwd: process.cwd(), remote: true } },
     ]);
     const tool = (await s.handleMessage(req(2, 'tools/list'))).result.tools.find((t) => t.name === 'drover_search_fleet');
     assert.ok(tool.inputSchema.properties.kinds.items.enum.includes('brain'));
