@@ -44,26 +44,28 @@ const lstatExists = (p) => { try { lstatSync(p); return true; } catch { return f
 const ours = (p, { dir = false } = {}) => { try { const st = lstatSync(p); return !st.isSymbolicLink() && st.uid === process.getuid() && (!dir || (st.isDirectory() && (st.mode & 0o022) === 0)); } catch { return false; } };
 /** A private server, killed by its socket, and only when its folder, tmux-<uid> and the socket are all ours. */
 const killTmux = (tmuxDir) => { const sock = socketOf(tmuxDir ?? ''); if (tmuxDir && ours(tmuxDir, { dir: true }) && ours(path.dirname(sock), { dir: true }) && ours(sock)) tmuxAt(tmuxDir, ['kill-server']); };
+// An earlier world in this folder: checked, then cleaned up, and only then removed. All of it happens only when the
+// folder was there and is this user's own; an absent folder is made fresh below, and nothing is read from it first.
 if (lstatExists(DIR)) {
   if (!ours(DIR, { dir: true })) { console.error(`[devworld] ${DIR} is there and not this user's own private folder: stopping without touching it (use another --dir)`); process.exit(1); }
+  // A dev world still running in this folder is left alone: removing its tmux folders under its live daemon would send
+  // that daemon to the owner's default server (it picks its server by TMUX_TMPDIR), still serving the copied token.
+  const alive = (pid) => { try { return Number.isInteger(pid) && pid > 0 && (process.kill(pid, 0), true); } catch { return false; } };
+  const running = [path.join(DIR, 'devworld.json'), path.join(DIR, 'state', 'daemon.json')]
+    .map((f) => { try { const j = JSON.parse(readFileSync(f, 'utf8')); return j.daemonPid ?? j.pid; } catch { return null; } }).find(alive);
+  if (running) { console.error(`[devworld] a dev world is still running in ${DIR} (daemon pid ${running}): stop it first (Ctrl-C, or kill -TERM its devworld.js), or use another --dir or --port`); process.exit(1); }
+  // A dev world left from an earlier run: stop its tmux servers (and so its agents) before its directory goes, the
+  // showcase's other hosts' too (devworld.json names them; their sockets live under /tmp, see showcase/world.js).
+  killTmux(path.join(DIR, 'tmux'));
+  try {
+    for (const r of JSON.parse(readFileSync(path.join(DIR, 'devworld.json'), 'utf8')).remotes ?? []) {
+      killTmux(r.tmuxTmpdir);
+      // Only a host folder the showcase made (mkdtemp under /tmp/drover-) and still this user's.
+      if (typeof r.run === 'string' && /^\/tmp\/drover-[A-Za-z0-9]+-[A-Za-z0-9]{6}$/.test(r.run) && ours(r.run, { dir: true })) rmSync(r.run, { recursive: true, force: true });
+    }
+  } catch { /* no earlier showcase */ }
+  rmSync(DIR, { recursive: true, force: true });
 }
-// A dev world still running in this folder is left alone: removing its tmux folders under its live daemon would send
-// that daemon to the owner's default server (it picks its server by TMUX_TMPDIR), still serving the copied token.
-const alive = (pid) => { try { return Number.isInteger(pid) && pid > 0 && (process.kill(pid, 0), true); } catch { return false; } };
-const running = [path.join(DIR, 'devworld.json'), path.join(DIR, 'state', 'daemon.json')]
-  .map((f) => { try { const j = JSON.parse(readFileSync(f, 'utf8')); return j.daemonPid ?? j.pid; } catch { return null; } }).find(alive);
-if (running) { console.error(`[devworld] a dev world is still running in ${DIR} (daemon pid ${running}): stop it first (Ctrl-C, or kill -TERM its devworld.js), or use another --dir or --port`); process.exit(1); }
-// A dev world left from an earlier run: stop its tmux servers (and so its agents) before its directory goes, the
-// showcase's other hosts' too (devworld.json names them; their sockets live under /tmp, see showcase/world.js).
-killTmux(path.join(DIR, 'tmux'));
-try {
-  for (const r of JSON.parse(readFileSync(path.join(DIR, 'devworld.json'), 'utf8')).remotes ?? []) {
-    killTmux(r.tmuxTmpdir);
-    // Only a host folder the showcase made (mkdtemp under /tmp/drover-) and still this user's.
-    if (typeof r.run === 'string' && /^\/tmp\/drover-[A-Za-z0-9]+-[A-Za-z0-9]{6}$/.test(r.run) && ours(r.run, { dir: true })) rmSync(r.run, { recursive: true, force: true });
-  }
-} catch { /* no earlier showcase */ }
-rmSync(DIR, { recursive: true, force: true });
 // Made here and private, never taken over: on Linux the default folder has a known name under /tmp, and one another
 // user made in its place (its tmux folder linking to the owner's socket) must stop the world, not be used.
 mkdirSync(path.dirname(DIR), { recursive: true });
