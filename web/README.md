@@ -1,9 +1,10 @@
 # Drover
 
 Browser control plane for the agent fleet: see every tmux window, Claude Code
-session and Codex thread on every machine, chat with any of them, launch new
-agents (in tmux or headless) under any profile, and keep one tracked file as
-the record of features, notes, messages and launches. A built-in MCP server
+session, Codex thread and Grok bot on every machine, and the OpenClaw fleet
+manager, chat with any of them, launch new agents (in tmux or headless) under
+any profile, and keep one tracked file as the record of features, notes,
+messages and launches. A built-in MCP server
 gives Claude Code and Codex the same powers. Integrations that only one fleet needs live in plugins (see Plugins).
 
 Zero npm dependencies. Node 24 (already on every box via node-tools).
@@ -774,7 +775,15 @@ tmux server of pretend Claude sessions (`test/fake-agent.js`: a permission dialo
 keeps calling tools, an idle one that answers inbox messages), synthetic transcripts, an empty truth file, no fleet
 hosts and a fake manager gateway that streams (`test/fake-gateway.js`; a message starting "slow " streams for about
 8 s, "fail " fails, "echo " echoes). Tokens are copied from the real state dir, so a paired client works against it.
-A dialog comes back about 12 s after it is answered. Nothing in it can reach a real session, pane or host.
+A dialog comes back about 12 s after it is answered. Nothing in it can reach a real session, pane or host: its
+codex, docker and ssh are stand-ins (`test/showcase/fake-*.js`), every tmux server it starts or stops is named by
+socket, and it stops unless the daemon sees only its own hosts, no plugin and only its own tmux session.
+
+`--showcase` builds the showcase world instead (`test/showcase/world.js`): three hosts (studio runs the daemon, devbox
+answers through the stand-in ssh, spare is down) under a HOME of its own, Claude Code sessions on both, Codex threads,
+two Grok bots, the manager, docker compose stacks with git checkouts behind them, and a truth file with features,
+notes, launches and messages. `. <dir>/env.sh` points a shell's `drover` and `drover tui` at it. The README's pictures
+are taken there: `node test/showcase/shoot.mjs` (the web UI, the TUI and the CLI; `../docs/screenshots/README.md`).
 
 ## Pairing devices
 
