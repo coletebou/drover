@@ -203,8 +203,8 @@ async function panelScene(dark) {
   await until(page, `document.querySelector('.conn')?.textContent.includes('Live')`);
   await until(page, `document.querySelector('#picker option') !== null`);
   log('panel picker:', JSON.stringify(await evaluate(page.sessionId, `[...document.querySelectorAll('#picker option')].map((o) => (o.selected ? '*' : '') + o.textContent)`)));
-  // The busy session: tool groups with results.
-  await evaluate(page.sessionId, `(() => { const s = document.querySelector('#picker'); const o = [...s.options].find((x) => x.textContent.startsWith('demo-work')); s.value = o.value; s.dispatchEvent(new Event('change')); return o.textContent; })()`);
+  // The busy session: tool groups with results (demo-work in the dev world; in the showcase world, the first working one).
+  await evaluate(page.sessionId, `(() => { const s = document.querySelector('#picker'); const o = [...s.options].find((x) => x.textContent.startsWith('demo-work')) ?? [...s.options].find((x) => x.value !== 'manager' && !/^(Waiting|Idle):/.test(x.textContent) && x.textContent.startsWith('demo-')); s.value = o.value; s.dispatchEvent(new Event('change')); return o.textContent; })()`);
   await until(page, `document.querySelectorAll('.tools-group').length > 0`);
   await evaluate(page.sessionId, `(() => { const g = [...document.querySelectorAll('.tools-group')].slice(-2); for (const d of g) d.open = true; return g.length; })()`);
   await sleep(300);
