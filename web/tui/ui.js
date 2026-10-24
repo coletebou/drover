@@ -76,4 +76,11 @@ export function cut(segs, w) {
 /** A number right-aligned in n columns, blank for null. */
 export const num = (v, n) => padStart(v == null ? '' : String(v), n);
 /** A home path shortened to ~. */
-export const tilde = (p) => String(p ?? '').replace(/^\/(?:Users|home)\/[^/]+/, '~');
+// Homes written as ~: the front daemon's own (host.list names it, app.js sets it), then any /Users/<name> or /home/<name>.
+let homes = [];
+export function setHomes(list) { homes = [...new Set((list ?? []).filter((x) => typeof x === 'string' && x.length > 1).map((x) => x.replace(/\/+$/, '')))].sort((a, b) => b.length - a.length); }
+export const tilde = (p) => {
+  const s = String(p ?? '');
+  for (const home of homes) if (s === home || s.startsWith(`${home}/`)) return `~${s.slice(home.length)}`;
+  return s.replace(/^\/(?:Users|home)\/[^/]+/, '~');
+};

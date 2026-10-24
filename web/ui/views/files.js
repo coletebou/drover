@@ -4,7 +4,7 @@
 // ~/code/*/CLAUDE.md and AGENTS.md). Saves are conflict-checked against the
 // sha256 the file was loaded with. "Save a copy" and "Open from disk" use the
 // File System Access API on this computer.
-import { h, clear, btn, empty, loading, fmtTime, debounce, plural } from '../dom.js';
+import { h, clear, btn, empty, loading, fmtTime, debounce, plural, tildePath } from '../dom.js';
 import { saveText, openTextFile, copyButton } from '../clip.js';
 import { fmtBytes } from '../drawer.js';
 
@@ -89,8 +89,8 @@ export default {
       try {
         const r = await call('files.read', { path: p });
         current = r; ta.value = r.text; ta.disabled = false;
-        pathEl.textContent = r.path.replace(/^\/(Users|home)\/[^/]+/, '~');
-        clear(fileMeta); fileMeta.append(`${fmtBytes(r.bytes)}, changed ${fmtTime(r.mtime)}${r.symlink ? `, link to ${r.real.replace(/^\/(Users|home)\/[^/]+/, '~')}` : ''}  `, copyButton(r.path, 'Copy path'));
+        pathEl.textContent = tildePath(r.path);
+        clear(fileMeta); fileMeta.append(`${fmtBytes(r.bytes)}, changed ${fmtTime(r.mtime)}${r.symlink ? `, link to ${tildePath(r.real)}` : ''}  `, copyButton(r.path, 'Copy path'));
         localStorage.setItem(LAST_KEY, JSON.stringify({ host: host(), path: pathEl.textContent }));
         markDirty(); paintSide();
         ctx.nav('files', pathEl.textContent);

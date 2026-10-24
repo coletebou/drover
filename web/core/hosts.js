@@ -2,7 +2,7 @@
 // ~/.ssh/config (names only); anything else is refused as a target.
 import { readFile, readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { hostname } from 'node:os';
+import { hostname, homedir } from 'node:os';
 import path from 'node:path';
 import { envvar } from './envvars.js';
 import { tryRun } from './proc.js';
@@ -86,7 +86,8 @@ export async function knownHosts({ includeSsh = false } = {}) {
   const [fleet, ssh, self] = await Promise.all([fleetHosts(), sshAliases(), selfAliases()]);
   const sshSet = new Set(ssh);
   const seen = new Set();
-  const out = [{ name: LOCAL, display: localShortName(), source: 'local', inSshConfig: false }];
+  // home: the daemon's own HOME, so a client can write the paths under it as ~ (any home, not only /Users/x or /home/x).
+  const out = [{ name: LOCAL, display: localShortName(), source: 'local', inSshConfig: false, home: homedir() }];
   for (const h of fleet) { if (seen.has(h) || self.has(h)) continue; seen.add(h); out.push({ name: h, display: h, source: 'fleet', inSshConfig: sshSet.has(h) }); }
   if (includeSsh) for (const h of ssh) { if (seen.has(h) || self.has(h) || SSH_EXCLUDE.test(h)) continue; seen.add(h); out.push({ name: h, display: h, source: 'ssh-config', inSshConfig: true }); }
   return out;
