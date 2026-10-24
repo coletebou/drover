@@ -204,6 +204,15 @@ let coreTests: [TestCase] = [
         await m.refresh()
         try expectEqual(m.phase, .loaded)
     },
+    TestCase("model: a --mock launch is the offline preview, --mock-session opens that item") {
+        let m = AppModel.mock(arguments: ["DroverWatch", "--mock", "--mock-session", "s-demo-review"])
+        try expectEqual(m.path.map(\.id), ["s-demo-review"])
+        try expect(m.summary == PreviewData.summary && m.canReply)
+        try expect(AppModel.mock(arguments: ["DroverWatch", "--mock"]).path.isEmpty)
+        try expect(AppModel.mock(arguments: ["DroverWatch", "--mock", "--mock-session", "nope"]).path.isEmpty)
+        await m.refresh()
+        try expectEqual(m.phase, .loaded, "offline: nothing to fetch")
+    },
     TestCase("model: unknown session link waits for the next refresh, then resolves or drops") {
         let m = AppModel.preview(summary: NativeSummary())
         m.open(URL(string: "drover://session/s-demo-build?host=demo-mac")!)
