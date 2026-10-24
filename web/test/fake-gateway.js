@@ -14,8 +14,8 @@ const REPLIES = [
   'All machines answer. The local box is the only one with work in flight.',
 ];
 
-/** Start it; resolves { port, close, requests } (requests: the bodies it got, newest last). */
-export async function startFakeGateway({ port = 0, token = 'dev', delayMs = 60 } = {}) {
+/** Start it; resolves { port, close, requests } (requests: the bodies it got, newest last). replies: what it says, in turn. */
+export async function startFakeGateway({ port = 0, token = 'dev', delayMs = 60, replies = REPLIES } = {}) {
   const requests = [];
   let n = 0;
   const server = createServer((req, res) => {
@@ -29,7 +29,7 @@ export async function startFakeGateway({ port = 0, token = 'dev', delayMs = 60 }
       requests.push(j);
       const text = String(j.messages?.at(-1)?.content ?? '');
       if (/^fail /i.test(text)) { res.writeHead(500, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: { message: 'model overloaded' } })); return; }
-      const reply = /^echo /i.test(text) ? text.slice(5) : `${REPLIES[n++ % REPLIES.length]}${j.user && j.user !== `drover:${OWNER}` ? `\n\n(conversation ${j.user})` : ''}`;
+      const reply = /^echo /i.test(text) ? text.slice(5) : `${replies[n++ % replies.length]}${j.user && j.user !== `drover:${OWNER}` ? `\n\n(conversation ${j.user})` : ''}`;
       if (!j.stream) { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ model: 'openclaw/default', choices: [{ message: { role: 'assistant', content: reply } }] })); return; }
       res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache' });
       const chunk = (delta, finish = null) => `data: ${JSON.stringify({ id: 'chatcmpl_fake', object: 'chat.completion.chunk', model: 'openclaw/default', choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
