@@ -4,7 +4,8 @@ extension Suites {
     /// Add suites here; other test files append theirs in `Suites.extra` (see Background tests).
     static var all: [(String, () async throws -> Void)] {
         [("models", models), ("sse", sse), ("deeplinks", deeplinks), ("pair links", pairLinks), ("pairing save", pairingSave),
-         ("urls", urls), ("mock", mock), ("fixtures", FixtureTests.run), ("review fixes", reviewFixes)] + extra
+         ("urls", urls), ("mock", mock), ("mock launch", mockLaunch), ("fixtures", FixtureTests.run),
+         ("review fixes", reviewFixes)] + extra
     }
 
     static func models() throws {
@@ -145,6 +146,22 @@ extension Suites {
         m.pendingPairURL = nil
         expect(!m.handle(url: URL(string: "drover://pair?url=http%3A%2F%2F127.0.0.1%3A7337&token=abc")!), "token-carrying link refused")
         expect(m.pendingPairURL == nil, "and leaves nothing to pair with")
+    }
+
+    /// `--mock` launches pick the first screen from their arguments and keep out of the Keychain and the App Group.
+    @MainActor
+    static func mockLaunch() throws {
+        let tab = AppModel.mock(arguments: ["Drover", "--mock", "--mock-tab", "manager"])
+        expect(tab.selectedTab == .manager && tab.hasMainToken, "--mock-tab picks the tab")
+        expect(AppModel.mock(arguments: ["Drover", "--mock", "--mock-tab", "nope"]).selectedTab == .board, "unknown tab ignored")
+        let open = AppModel.mock(arguments: ["Drover", "--mock", "--mock-session", "thread-demo-review"])
+        expect(open.selectedTab == .board && open.boardSelection == SessionRef(id: "thread-demo-review", host: "demo-box"),
+               "--mock-session opens the fixture session, host included")
+        expect(!open.vault.usesKeychain && open.settings.suiteName != DroverIDs.appGroup, "no Keychain, no App Group")
+        let service = "dev.drover.token.logic-\(UUID().uuidString)"
+        defer { try? TokenVault(service: service, accessGroup: nil).delete(.main) }
+        try TokenVault(service: service, accessGroup: nil, usesKeychain: false).write("main-secret", for: .main)
+        expect(TokenVault(service: service, accessGroup: nil).read(.main) == nil, "a write off the Keychain stores nothing")
     }
 }
 
