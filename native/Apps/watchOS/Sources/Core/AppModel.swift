@@ -191,4 +191,14 @@ final class AppModel {
         m.lastUpdated = Date()
         return m
     }
+
+    /// A `--mock` launch (DroverWatchApp): the preview model. `--mock-session <id>` opens that waiting item, for
+    /// screenshots.
+    static func mock(arguments: [String]) -> AppModel {
+        let m = preview()
+        if let i = arguments.firstIndex(of: "--mock-session"), i + 1 < arguments.count {
+            m.path = m.waiting.filter { $0.id == arguments[i + 1] }
+        }
+        return m
+    }
 }

@@ -2,7 +2,8 @@ import Foundation
 
 /// Synthetic data for previews and tests (CONTRACT.md: invented names only).
 enum PreviewData {
-    static let now = Date(timeIntervalSince1970: 1_791_000_000)
+    /// Launch time: fixture times are relative to it, so ages read like a live fleet ("4m").
+    static let now = Date()
 
     static let summary = NativeSummary(
         generatedAt: FlexibleDate(now),
