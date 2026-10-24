@@ -89,6 +89,11 @@ script/typecheck.sh ios Apps/iOS/Sources
 Apps/iOS/Tests/run-logic-tests.sh
 ```
 
+`--mock` (`xcrun simctl launch <device> dev.drover.app --mock`) runs on synthetic data (`MockDroverAPI`) with no network,
+no Keychain access, no background refresh and no notification polling; `--mock-tab <board|sessions|manager|settings>` and
+`--mock-session <id>` pick the first screen. `script/screenshots.sh` photographs the iPhone and watch apps that way in the
+simulator (CI: `.github/workflows/screenshots.yml`).
+
 ## What the owner must do
 
 1. Accept the Xcode license (`sudo xcodebuild -license accept`) or build on a GitHub macOS runner.
