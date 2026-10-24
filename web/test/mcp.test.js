@@ -453,6 +453,30 @@ describe('drover_launch and folder trust', () => {
   });
 });
 
+describe('search tools carry the calling session\'s working directory', () => {
+  test('drover_search_semantic, drover_search_fleet and drover_op pass callerCwd (this server\'s cwd) for the front\'s work guard', async () => {
+    const dispatch = fakeDispatch();
+    const s = createServer({ dispatch, log: quiet });
+    const call = (name, args) => s.handleMessage(req(1, 'tools/call', { name, arguments: args }));
+    const results = [
+      await call('drover_search_semantic', { query: 'drover search index', kinds: ['brain', 'claude'], host: 'box-a' }),
+      await call('drover_search_fleet', { query: 'drover search index', kinds: ['brain'] }),
+      // An agent cannot name another checkout: drover_op's free-form args get this server's own.
+      await call('drover_op', { op: 'search.fleet', args: { query: 'q', callerCwd: '/somewhere/personal' } }),
+    ];
+    for (const r of results) assert.notEqual(r.result.isError, true, JSON.stringify(r.result));
+    assert.deepEqual(dispatch.calls, [
+      { op: 'search.semantic', args: { query: 'drover search index', kinds: ['brain', 'claude'], host: 'box-a', callerCwd: process.cwd() } },
+      { op: 'search.fleet', args: { query: 'drover search index', kinds: ['brain'], callerCwd: process.cwd() } },
+      { op: 'search.fleet', args: { query: 'q', callerCwd: process.cwd() } },
+    ]);
+    const tool = (await s.handleMessage(req(2, 'tools/list'))).result.tools.find((t) => t.name === 'drover_search_fleet');
+    assert.ok(tool.inputSchema.properties.kinds.items.enum.includes('brain'));
+    assert.equal(tool.inputSchema.properties.callerCwd, undefined, 'set by this server, not by the agent');
+    assert.match(tool.description, /remote\.brain/);
+  });
+});
+
 describe('files.wait over MCP waits at most MCP_WAIT_MAX_SEC', () => {
   test('by name and through drover_op: a longer or absent timeoutSec becomes 110 s, a shorter one stays', async () => {
     const dispatch = fakeDispatch();

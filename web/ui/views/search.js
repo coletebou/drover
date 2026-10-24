@@ -1,14 +1,15 @@
 // Search: find what was said in any Claude Code or Codex session (and in truth-file
 // notes, messages, survey items, memory notes and preserved refs) on every
 // machine, by meaning and by exact words, through search.fleet / search.semantic
-// (core/search). A hit opens its session in the drawer; the resume command (for a
-// preserved ref, the restore command) is one click away.
+// (core/search), with the Badland brain's entries fused in where a plugin serves it.
+// A hit opens its session in the drawer; the resume command (for a preserved ref,
+// the restore command) is one click away.
 import { h, clear, btn, empty, loading, fmtTime, debounce, plural, seg, chip, engine, kv } from '../dom.js';
 import { hostTime, hostTimeTitle, slowHost } from '../fleet-time.js';
 
-const KINDS = [['claude', 'Claude'], ['subagent', 'Subagents'], ['codex', 'Codex'], ['wal', 'Notes and messages'], ['memory', 'Memory'], ['doc', 'Docs'], ['reflection', 'Reflections'], ['preserved', 'Preserved refs']];
+const KINDS = [['claude', 'Claude'], ['subagent', 'Subagents'], ['codex', 'Codex'], ['wal', 'Notes and messages'], ['memory', 'Memory'], ['doc', 'Docs'], ['reflection', 'Reflections'], ['preserved', 'Preserved refs'], ['brain', 'Brain']];
 /** The badge on a hit that is not from an agent session; any other kind is a truth-file event (WAL). */
-const BADGES = new Map([['memory', 'MEM'], ['doc', 'DOC'], ['reflection', 'REFL'], ['preserved', 'REF']]);
+const BADGES = new Map([['memory', 'MEM'], ['doc', 'DOC'], ['reflection', 'REFL'], ['preserved', 'REF'], ['brain', 'BRAIN']]);
 const PREF = 'drover.search.prefs';
 
 export function resumeCommand(r) {
@@ -64,11 +65,14 @@ export default {
     /** opts.route: the host alias a single-host search ran on (its hits carry that machine's hostname, which may not be an alias). */
     function paint(r, opts = {}) {
       clear(list); clear(status);
-      const per = r.perHost ?? [{ host: r.host, ok: true, hits: r.results?.length ?? 0, vector: r.vector, index: r.index, notes: r.notes }];
+      // One host: its own hits, not the remote source's fused in beside them (counted under remote below).
+      const per = r.perHost ?? [{ host: r.host, ok: true, hits: (r.results ?? []).filter((x) => !r.remote?.[x.kind]).length, vector: r.vector, index: r.index, notes: r.notes }];
       // A host's time shows inline only when it was slow (a second or more), in the CLI's form so it reads as that
       // host's ("devbox: 2 in 6.6 s (search 212 ms)"); the tooltip always has it.
       const slow = (p) => (slowHost(p) ? ` in ${hostTime(p)}` : '');
       status.append(`${plural(r.results.length, 'result')} in ${r.ms} ms · `, ...per.flatMap((p, i) => [i ? ' · ' : '', h('span', { class: p.ok ? '' : 'em', title: [p.error ?? (p.notes ?? []).join('\n'), hostTimeTitle(p)].filter(Boolean).join('\n') }, `${p.host}: ${p.ok ? `${p.hits}${p.vector && p.vector !== 'ok' ? ` (vectors ${p.vector})` : ''}${slow(p)}` : 'error'}`)]));
+      // A remote source (the brain) is asked by the daemon that answers, beside the hosts: how it went.
+      for (const [kind, s] of Object.entries(r.remote ?? {})) status.append(' · ', h('span', { class: s.included ? '' : 'em', title: s.included ? `${s.ms} ms` : s.reason }, `${kind}: ${s.included ? s.hits : `not searched (${s.reason})`}`));
       const miss = [...(r.coverage?.notCovered ?? []), ...(r.coverage?.partial ?? [])];
       if (miss.length) status.append(h('div', { class: 'small em', title: miss.map((x) => `${x.host}: ${x.reason}`).join('\n') }, `Not covered: ${miss.map((x) => x.host).join(', ')}`));
       if (!r.results.length) { list.append(empty('No matches', 'Try other words, or switch to Meaning to match ideas rather than words.')); return; }
@@ -82,7 +86,7 @@ export default {
           h('div', { class: 'l1' },
             it.kind === 'codex' ? engine('codex') : it.kind === 'claude' || it.kind === 'subagent' ? engine('claude') : h('span', { class: 'engine' }, BADGES.get(it.kind) ?? 'WAL'),
             h('b', { class: 'trunc' }, it.title || '(untitled)'),
-            h('span', { class: 'muted small' }, [it.project, it.kind === 'subagent' ? 'subagent' : null, it.role, it.kind === 'reflection' ? it.status : null].filter(Boolean).join(' · ')),
+            h('span', { class: 'muted small' }, [it.project, it.kind === 'subagent' ? 'subagent' : null, it.role, it.kind === 'reflection' ? it.status : null, it.kind === 'brain' ? it.namespace : null].filter(Boolean).join(' · ')),
             h('span', { class: 'spacer' }),
             h('span', { class: 'muted small', title: (it.hosts ?? [host]).join(', ') }, (it.hosts?.length ?? 1) > 1 ? `${host} +${it.hosts.length - 1}` : host),
             h('span', { class: 'muted small' }, fmtTime(it.ts))),

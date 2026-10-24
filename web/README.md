@@ -374,6 +374,21 @@ naming the hosts it could not see), `search.grep` / `search.grepFleet` (ripgrep 
 `DROVER_SEARCH_DAYS=N` limits it; `DROVER_SEARCH_KINDS=claude,subagent` indexes only those kinds (an archive
 host); `DROVER_SEARCH_DOCS` replaces the document patterns (`|`-separated, `off` for none).
 
+Where a plugin serves it (`search.remote` in `core/plugins.js`), search kind `brain` adds the Badland brain's
+entries, fetched at query time and never indexed (`core/search/remote.js`). Only the front asks it, the process that
+answers the search (the daemon for MCP and the UI, the CLI for `drover search` and `drover op`): once per query,
+beside its own index search or the fleet fan-out, within `DROVER_SEARCH_REMOTE_TIMEOUT_MS` (default 5000); the index
+searches it sends on say `remote: false`, so no host asks again. The two rank with different embeddings whose scores
+do not compare, so the lists are fused by rank: a hit at 0-based position p of its own list scores 1/(61+p),
+which becomes its `score` (`sourceScore` keeps its own). A brain hit has `host: "brain"`, `slug`, `namespace`,
+`tier`, `author` and `role` (its brain kind); `remote.brain` is `{ included: true, hits, ms }` or `{ included: false,
+reason }`, and a slow or failing brain leaves the index's answer as it was. `kinds: ["brain"]` searches no index;
+kinds without `brain` skip it. Work never reaches the brain: nothing is sent from a machine whose dotfiles identity is
+work (`DF_IDENTITY` in the environment or `~/.df-profile`), or for a query, `project`, `repoIdentity`, host named or
+caller's working directory (`callerCwd`, set by the MCP server and the CLI and dropped before any host sees the
+search) that matches the dotfiles' brain-sync pattern (apex, x-energy, cpt-dev, govcloud, max-beta, code spaces...).
+`DROVER_SEARCH_BRAIN=off` turns the brain leg off on a host.
+
 Reflections come from the reflections CLI (`reflections export`), not a file: each pass reads what
 changed in the last day, and once per UTC day everything, so derived `stale` statuses refresh. One
 chunk per item (title, body, tags and its `#id`, so two items with the same words stay two hits);
@@ -395,7 +410,8 @@ runs ops (`serve`, `rpc`, `op`, `mcp`, `search`, `grep`, `stacks`, `tui`) loads 
 - What a plugin can add (every field optional; the full list and shapes are in `core/plugins.js`): ops and front-only
   ops with their MCP descriptions and schemas (so they become `drover_*` tools), cache and invalidation rules, truth-file
   event types with validators, lines for the MCP server's instructions, a host provider (hosts such as `space:<name>`
-  that are reached some other way than ssh: listing, rpc argv, exec, docker stacks), the `preserved` search kind, daemon
+  that are reached some other way than ssh: listing, rpc argv, exec, docker stacks), the `preserved` search kind and
+  remote search sources asked at query time (the `brain` kind), daemon
   start and stop hooks, web UI views and `drover tui` tables.
 - A plugin imports Drover's own modules as `drover/core/<module>.js`; that specifier resolves to the checkout that is
   running, so the plugin and the core share one copy of every module, wherever the plugin's repository lives.

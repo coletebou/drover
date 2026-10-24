@@ -25,7 +25,7 @@ and in the MCP server's instructions, and a plugin's own skill, when it has one,
 | Sessions on one host | `drover_sessions` (`host`) | Claude registry + Codex threads + headless agents; ids feed the tools below. A busy host's whole list runs to hundreds of KB (Codex first prompts): ask for what you need with `cwd` (that folder or inside it), `name`, `engine`, `live`, `limit` (most recent first) and `compact: true`; they run on that host, and `matched` is the count before `limit`. Codex thread lists come from that host's one daemon reader and can be up to 10 minutes old while a refresh runs |
 | Wait until workers' files change (status files, a result appearing) | `drover op files.wait` under background Bash (see "Waiting on workers") | one command that exits when something under the path is added, removed or modified; never a `sleep; ssh cat` loop. `drover_files_wait` over MCP waits at most 110 s |
 | Read a session | `drover_session_transcript` | `since` is a byte offset; incremental |
-| Find what a session said or ran, on every host | `drover_search_fleet` | words + meaning over conversation, commands (keyword-only), documents (Codex memories, dotfiles specs) and reflections; read `coverage.notCovered` before trusting an empty answer |
+| Find what a session said or ran, on every host | `drover_search_fleet` | words + meaning over conversation, commands (keyword-only), documents (Codex memories, dotfiles specs) and reflections, plus Badland brain entries where a plugin serves them (see "Search and the brain"); read `coverage.notCovered` before trusting an empty answer |
 | Find tool output, or history no index holds | `drover_search_grepFleet` | ripgrep over the raw transcripts on every host; `roles: ["tool_result"]` for what a command printed |
 | Talk to a live session | `drover_send` | lands in its queue like typed input; `queuedBehindTurn` when busy. Say who you are in the text |
 | Ask one of the owner's Grok bots | `drover_send` with id `grok:<name>` (`grok:*` for all) | on the host that runs the bot gateway (`drover_bots_status`). Its Routine webhook runs the bot, else the message waits in its inbox; the answer comes later as a `chat` event (read it with `drover_session_transcript`). Bots show in `drover_sessions` with their last reported state |
@@ -41,6 +41,16 @@ and in the MCP server's instructions, and a plugin's own skill, when it has one,
 Set `host` to a fleet alias (an ssh-config alias, such as `box-a` or `devbox`) to
 act there; omit for the machine the daemon runs on. Hosts and reachability:
 `drover_fleet`.
+
+## Search and the brain
+
+Where a plugin serves it, `drover_search_fleet` and `drover_search_semantic` also return Badland brain entries (kind
+`brain`, `host: "brain"`, with `slug` for `drover_brain_get`): the daemon that answers asks the brain once per query,
+beside the index, and fuses the two lists by rank (`score` is the fused score, `sourceScore` the hit's own).
+`kinds: ["brain"]` asks only the brain; kinds without it skip it. `remote.brain` says whether it was searched, or why
+not: nothing is sent when the machine's identity is work or the query, project, host or your session's checkout looks
+like work (`work identity`, `work context`), with `DROVER_SEARCH_BRAIN=off` (`disabled`), and a timeout or an error
+leaves the index's answer as it was.
 
 ## Waiting on workers
 

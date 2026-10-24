@@ -33,6 +33,7 @@ import * as docker from './docker.js';
 import * as vitals from './vitals.js';
 import * as placement from './placement.js';
 import { mergeHosts } from './search/query.js';
+import * as remoteSearch from './search/remote.js';
 import { OWNER } from './owner.js';
 import { UPDATE_HINT } from './util.js';
 import { classifyAsk, ASK_LABELS } from '../ui/notify-policy.js';
@@ -477,16 +478,17 @@ export const front = {
    * search.semantic on several hosts in parallel, merged by score with identical
    * chunks folded together. Hosts default to local plus every fleet host that
    * answered the last probe (as fleet.summary does), so a dead box costs nothing.
+   * A plugin's remote source (the brain) is asked here, once, beside the fan-out,
+   * and fused in by rank (core/search/remote.js); the hosts are told not to.
    */
   async 'search.fleet'({ hosts: names, host: _host, query, limit = 20, ...rest } = {}) {
     str(query, 'query', { max: 2000 });
-    const { targets, known } = await fleetTargets(names);
     const lim = Math.max(1, Math.min(100, Number(limit) || 20));
     const t0 = Date.now();
-    const perHost = await askHosts(targets, 'search.semantic', { ...rest, query, limit: lim },
-      (r, { route }) => ({ results: (r.results ?? []).map((x) => ({ ...x, route })), vector: r.vector ?? null, index: r.index ?? null, notes: r.notes ?? [], searchMs: r.ms ?? null }));
-    const coverage = fleetCoverage({ known, targets, perHost, probes: lastProbe, chosen: Boolean(names?.length), vectors: rest.mode !== 'keyword' });
-    return { query, ms: Date.now() - t0, results: mergeHosts(perHost, { limit: lim }), perHost: perHost.map(({ results, ...h }) => ({ ...h, hits: results.length })), coverage };
+    const leg = remoteSearch.begin({ ...rest, query, limit: lim }, { hosts: names });
+    const [fleet, rem] = await Promise.all([leg.local ? searchHosts(names, leg.localArgs) : noHosts(names), leg.done]);
+    const results = remoteSearch.withRemote(mergeHosts(fleet.perHost, { limit: lim }), rem.lists, lim);
+    return { query, ms: Date.now() - t0, results, perHost: fleet.perHost.map(({ results: r, ...h }) => ({ ...h, hits: r.length })), coverage: fleet.coverage, ...(rem.remote ? { remote: rem.remote } : {}) };
   },
   /** search.grep on several hosts in parallel (same host choice as search.fleet), newest hit first. */
   async 'search.grepFleet'({ hosts: names, host: _host, pattern, limit = 50, ...rest } = {}) {
@@ -741,6 +743,19 @@ async function fleetTargets(names) {
   return { targets: [hosts.LOCAL, ...others.filter((n) => lastProbe.get(n)?.up)], known };
 }
 
+/** search.fleet's index searches: search.semantic on the fleet's hosts (args say remote: false), { perHost, coverage }. */
+async function searchHosts(names, args) {
+  const { targets, known } = await fleetTargets(names);
+  const perHost = await askHosts(targets, 'search.semantic', args,
+    (r, { route }) => ({ results: (r.results ?? []).map((x) => ({ ...x, route })), vector: r.vector ?? null, index: r.index ?? null, notes: r.notes ?? [], searchMs: r.ms ?? null }));
+  return { perHost, coverage: fleetCoverage({ known, targets, perHost, probes: lastProbe, chosen: Boolean(names?.length), vectors: args.mode !== 'keyword' }) };
+}
+/** A search for remote kinds only (kinds: ["brain"]) asks no host; hosts it names must still be known. */
+async function noHosts(names) {
+  for (const t of names ?? []) await hosts.assertKnownHost(t);
+  return { perHost: [], coverage: { searched: [], notCovered: [], partial: [] } };
+}
+
 /**
  * One op on every target host in parallel, this one included. A host answers { host, ok, ms, ...shape(r, where) },
  * or { host, ok: false, ms, error, results: [] } when it failed; where.host is the name its hits are shown under (this
@@ -810,11 +825,38 @@ export function hostTimeoutMs(op, args = {}) {
   return HOST_TIMEOUT_MS[op] ?? (op.startsWith('launch') ? 120_000 : 60_000);
 }
 
+/**
+ * search.semantic as the front answers it: a plugin's remote source (the brain) is asked here, once, beside the index
+ * search on the host named (this one by default), and its hits fused in by rank (core/search/remote.js). The index
+ * search goes out with remote: false and without callerCwd, so the host, or this host's daemon behind the search
+ * service, does not ask the source again; a call for remote kinds only searches no index.
+ */
+async function semanticFront(host, args) {
+  const t0 = Date.now();
+  str(args.query, 'query', { max: 2000 });
+  const leg = remoteSearch.begin(args, { host });
+  const indexSearch = (a) => (!host || host === hosts.LOCAL ? dispatchLocal('search.semantic', a) : callOn(host, 'search.semantic', a, dispatchLocal, { timeoutMs: hostTimeoutMs('search.semantic', a) }));
+  const noIndex = async () => {
+    if (host) await hosts.assertKnownHost(host);
+    return { host: hosts.localShortName(), query: args.query, mode: ['keyword', 'semantic'].includes(args.mode) ? args.mode : 'hybrid', vector: null, results: [], sessions: [], notes: [] };
+  };
+  const [r, rem] = await Promise.all([leg.local ? indexSearch(leg.localArgs) : noIndex(), leg.done]);
+  if (!rem.remote) return r;
+  const limit = Math.max(1, Math.min(100, Number(args.limit) || 20));
+  return { ...r, ...(leg.local ? {} : { ms: Date.now() - t0 }), results: remoteSearch.withRemote(r.results ?? [], rem.lists, limit), remote: rem.remote };
+}
+
 /** Dispatch with host routing: {host:'box-a'} forwards to that box's drover rpc. */
 export async function dispatch(op, args = {}) {
   const { host, ...rest } = args ?? {};
   // host "auto": the fleet's placement picks the machine (core/placement.js), then the launch goes there.
   if (op === 'launch.start' && host === 'auto') return launchPlaced(rest);
+  // A search's remote sources are the front's: unless the call says remote: false (the index search a front sends on),
+  // they are asked here. callerCwd, which only the front's work guard reads, never goes on to another host.
+  if (op === 'search.semantic') {
+    if (rest.remote !== false && rest.remote !== 'false') return semanticFront(host, rest);
+    delete rest.callerCwd;
+  }
   // A docker op this table does not have (down, rm, kill, ...) is refused here, never forwarded for another host to refuse.
   if (typeof op === 'string' && op.startsWith('docker.') && !local[op] && !front[op]) return dispatchLocal(op, rest);
   if (FRONT_ONLY.has(op) || !host || host === hosts.LOCAL) return dispatchLocal(op, rest);
