@@ -298,7 +298,7 @@ drover op launch.start '{"host":"auto","engine":"claude","prompt":"hi"}'   # lau
 - `host.vitals` (`core/vitals.js`, Linux and macOS, no dependencies): load per core, CPU busy, memory available (the
   kernel's MemAvailable; on macOS the free, inactive, speculative and purgeable pages, lowered to
   `kern.memorystatus_level` when that is smaller, plus the kernel pressure level), Linux PSI memory stalls,
-  swap used and swap pages per second (a swap storm), every real volume (one `df` for the local ones and one per
+  swap used and swap pages per second in and out, every real volume (one `df` for the local ones and one per
   network or FUSE mount, each with its own timeout, so a hung remote leaves the rest measured), and each Claude Code
   and Codex session with its whole process tree (MCP servers, language servers, the builds it runs; a Codex started
   from a Claude Bash call is its own entry), named from the Claude registry. No command line leaves the module: argv
@@ -333,7 +333,9 @@ drover op launch.start '{"host":"auto","engine":"claude","prompt":"hi"}'   # lau
   ```
 
   Thresholds are `DEFAULT_THRESHOLDS` in `core/vitals.js`, then the catalog's, then the host's; each is
-  `{ warn, crit }`, null turns a level off. `ignore` mounts are never measured.
+  `{ warn, crit }`, null turns a level off. `ignore` mounts are never measured. Swapping is graded on pages swapped
+  out (`swapOutPerSec`); pages in plus out (`swapIoPerSec`) count only while memory is short (the `mem` check at
+  `warn` or worse), so a host paging back in after a squeeze is reported, never raised.
 - `fleet.place` judges every host with a `placement` policy: the workload's memory (`claude-session` 3.5 GB,
   `codex-session` 2, `heavy-build` 6 and 20 GB free disk, `macos-only` only on macOS) must leave the host's
   `reserveMemGB`; load must stay under `maxLoadPerCore` and `maxLoad`; macOS memory pressure under `maxPressure`

@@ -38,11 +38,15 @@ export function parsePsi(text) {
   return out.some ? out : null;
 }
 
-/** /proc/vmstat: pages swapped in plus out since boot (the rate between two samples is a swap storm's signature). */
+/**
+ * /proc/vmstat: pages swapped in and out since boot, { in, out }. The two are apart because they mean different
+ * things: a sustained swap-out rate is memory being pushed to disk, while swap-in alone is pages coming back after a
+ * squeeze has passed.
+ */
 export function parseLinuxVmstat(text) {
   const v = {};
   for (const l of lines(text)) { const [k, n] = l.split(/\s+/); if (k === 'pswpin' || k === 'pswpout') v[k] = Number(n); }
-  return Number.isFinite(v.pswpin) && Number.isFinite(v.pswpout) ? v.pswpin + v.pswpout : null;
+  return Number.isFinite(v.pswpin) && Number.isFinite(v.pswpout) ? { in: v.pswpin, out: v.pswpout } : null;
 }
 
 const unescapeMount = (s) => s.replace(/\\([0-7]{3})/g, (_, o) => String.fromCharCode(parseInt(o, 8)));
@@ -322,15 +326,15 @@ async function memDarwin(errors) {
   return {
     mem: totalMB > 0 ? { totalMB: round(totalMB, 0), availableMB: availableMB === null ? null : round(availableMB, 0), availablePct: availableMB === null ? null : round((availableMB / totalMB) * 100, 0), ...(kernelFree === null ? {} : { kernelFreePct: kernelFree }), pressure: pl ? { kind: 'kernel', level: pl } : null, compressedMB: round(pagesMB(v['pages occupied by compressor']), 0) } : null,
     swap: sw ? { totalMB: round(sw.totalMB, 0), usedMB: round(sw.usedMB, 0), usedPct: sw.totalMB > 0 ? round((sw.usedMB / sw.totalMB) * 100, 0) : 0, pageKB: v.pageSize / 1024, dynamic: true } : null,
-    swapPages: Number.isFinite(v.swapins) && Number.isFinite(v.swapouts) ? v.swapins + v.swapouts : null,
+    swapPages: Number.isFinite(v.swapins) && Number.isFinite(v.swapouts) ? { in: v.swapins, out: v.swapouts } : null,
     cpuPressure: null,
   };
 }
 
 /**
- * One reading of this machine. Rates (CPU busy, swap pages per second, per-agent CPU) come from the previous reading
- * in this process when it is recent; otherwise CPU busy is measured over a quarter second and the others are null.
- * ignore lists mount points never to measure (a remote mount another machine already watches).
+ * One reading of this machine. Rates (CPU busy, swap pages per second in and out, per-agent CPU) come from the
+ * previous reading in this process when it is recent; otherwise CPU busy is measured over a quarter second and the
+ * others are null. ignore lists mount points never to measure (a remote mount another machine already watches).
  */
 export async function sample({ ignore = [] } = {}) {
   const skip = new Set(Array.isArray(ignore) ? ignore : []);
@@ -353,9 +357,15 @@ export async function sample({ ignore = [] } = {}) {
   if (last.cpus && recent(last.cpusTs)) busy = cpuBusyPct(last.cpus, cpusA);
   else { await sleep(250); busy = cpuBusyPct(cpusA, _deps.cpus()); }
   last.cpus = cpusA; last.cpusTs = t0;
-  let swapIo = null;
-  if (memPart.swapPages !== null && last.swapPages !== null && now > last.swapTs && recent(last.swapTs)) swapIo = round(Math.max(0, memPart.swapPages - last.swapPages) / ((now - last.swapTs) / 1000), 0);
-  if (memPart.swapPages !== null) { last.swapPages = memPart.swapPages; last.swapTs = now; }
+  // Swap pages per second each way since the last reading; ioPerSec is the two together, as it always was.
+  let swapRates = { ioPerSec: null, inPerSec: null, outPerSec: null };
+  const sp = memPart.swapPages;
+  if (sp && last.swapPages && now > last.swapTs && recent(last.swapTs)) {
+    const perSec = (k) => round(Math.max(0, sp[k] - last.swapPages[k]) / ((now - last.swapTs) / 1000), 0);
+    const inPerSec = perSec('in'), outPerSec = perSec('out');
+    swapRates = { ioPerSec: inPerSec + outPerSec, inPerSec, outPerSec };
+  }
+  if (sp) { last.swapPages = sp; last.swapTs = now; }
   const prev = last.ps && recent(last.ps.ts) ? last.ps : null;
   const trees = agentTrees(ps, { registry, prev, ts: now });
   if (ps.length) last.ps = { cpu: trees.cpu, ts: now };
@@ -366,7 +376,7 @@ export async function sample({ ignore = [] } = {}) {
   return {
     host: _deps.host(), os: darwin ? 'darwin' : platform, ts: new Date(now).toISOString(), ms: now - t0,
     cpu: { cores, load1: round(l1, 2), load5: round(l5, 2), load15: round(l15, 2), perCore: round(l1 / cores, 2), busyPct: busy, ...(memPart.cpuPressure ? { pressure: memPart.cpuPressure } : {}) },
-    mem: memPart.mem, swap: memPart.swap ? { ...memPart.swap, ioPerSec: swapIo } : null,
+    mem: memPart.mem, swap: memPart.swap ? { ...memPart.swap, ...swapRates } : null,
     disks: vols, agents: trees.agents, agentTotals: totals, top: trees.top,
     ...(errors.length ? { errors } : {}),
   };
@@ -388,7 +398,8 @@ export const DEFAULT_THRESHOLDS = Object.freeze({
   psiMemSome60: { warn: 25, crit: 50 },       // Linux: share of the last minute some task stalled on memory
   swapUsedPct: { warn: 85, crit: 95 },        // Linux; macOS swap grows on demand, so its share means little there
   swapUsedGB: { warn: null, crit: null },     // macOS: swap files grow into the data volume
-  swapIoPerSec: { warn: 300, crit: 1500 },    // pages in plus out per second: a swap storm
+  swapOutPerSec: { warn: 300, crit: 1500 },   // pages swapped out per second: memory pushed to disk
+  swapIoPerSec: { warn: 300, crit: 1500 },    // pages in plus out per second, graded only while memory is short
   diskUsedPct: { warn: 88, crit: 95 },
   diskFreeGB: { warn: null, crit: null },     // below
   agentRssGB: { warn: 6, crit: 12 },          // one session's process tree
@@ -424,6 +435,20 @@ const gb = (mb) => round(mb / 1024, 1);
 const pct = (n) => `${round(n, 0)}%`;
 
 /**
+ * The swap rate check, as [grade, text, value]. Swap-out is graded on its own (swapOutPerSec): memory pushed to disk
+ * is the trouble. Pages in plus out (swapIoPerSec) count only while memory is short (memShort: the mem check at warn
+ * or worse). Swap-in alone, with memory to spare, is pages coming back after a squeeze: reported, never raised.
+ */
+function swapRate(inPerSec, outPerSec, memShort, th) {
+  const io = inPerSec + outPerSec;
+  const out = grade(outPerSec, th.swapOutPerSec, 'above', ' pages/s out');
+  const both = memShort ? grade(io, th.swapIoPerSec, 'above', ' pages/s in and out') : { level: 'ok', limit: null };
+  if (levelRank(both.level) > levelRank(out.level)) return [both, `swapping ${io} pages/s in and out while memory is short (${inPerSec} in, ${outPerSec} out)`, io];
+  const text = outPerSec > 0 ? `swapping out ${outPerSec} pages/s${inPerSec > 0 ? ` (${inPerSec} in)` : ''}` : inPerSec > 0 ? `swap-in ${inPerSec} pages/s` : 'no swapping';
+  return [out, out.level === 'ok' && !memShort && inPerSec > 0 ? `${text}, no shortage` : text, outPerSec];
+}
+
+/**
  * Grade a sample: one check per metric (key, level, text, value, limit, limitText), ok ones included so the monitor
  * can see a level clear. Volumes take monitor.volumes overrides by mount point; monitor.ignore lists mounts to skip.
  */
@@ -435,9 +460,14 @@ export function evaluate(v, th = DEFAULT_THRESHOLDS) {
     add('load', worst(grade(c.perCore, th.loadPerCore, 'above', ' per core'), grade(c.load1, th.load)), `load ${c.load1} on ${c.cores} cores (${c.perCore} per core)`, c.load1);
     if (Number.isFinite(c.busyPct)) add('cpu', grade(c.busyPct, th.cpuBusyPct, 'above', '%'), `CPU ${pct(c.busyPct)} busy`, c.busyPct);
   }
+  let memShort = false;
   if (v?.mem) {
     const m = v.mem;
-    if (Number.isFinite(m.availableMB)) add('mem', worst(grade(m.availablePct, th.memAvailablePct, 'below', '% available'), grade(m.availableMB / 1024, th.memAvailableGB, 'below', ' GB available')), `memory ${gb(m.availableMB)} GB available of ${gb(m.totalMB)} (${pct(m.availablePct)})`, m.availableMB / 1024);
+    if (Number.isFinite(m.availableMB)) {
+      const g = worst(grade(m.availablePct, th.memAvailablePct, 'below', '% available'), grade(m.availableMB / 1024, th.memAvailableGB, 'below', ' GB available'));
+      memShort = g.level !== 'ok';
+      add('mem', g, `memory ${gb(m.availableMB)} GB available of ${gb(m.totalMB)} (${pct(m.availablePct)})`, m.availableMB / 1024);
+    }
     if (m.pressure?.kind === 'kernel') {
       const r = PRESSURE_RANK[m.pressure.level] ?? 0;
       const lv = ['crit', 'warn'].find((l) => th.pressure?.[l] && r >= (PRESSURE_RANK[th.pressure[l]] ?? 9)) ?? 'ok';
@@ -449,7 +479,7 @@ export function evaluate(v, th = DEFAULT_THRESHOLDS) {
     const bySize = grade(s.usedMB / 1024, th.swapUsedGB, 'above', ' GB');
     if (s.dynamic) add('swap', bySize, `swap ${gb(s.usedMB)} GB used`, s.usedMB / 1024);   // macOS swap grows on demand: only its size counts
     else add('swap', worst(grade(s.usedPct, th.swapUsedPct, 'above', '%'), bySize), `swap ${gb(s.usedMB)} of ${gb(s.totalMB)} GB used (${pct(s.usedPct)})`, s.usedPct);
-    if (Number.isFinite(s.ioPerSec)) add('swapio', grade(s.ioPerSec, th.swapIoPerSec, 'above', ' pages/s'), `swapping ${s.ioPerSec} pages/s`, s.ioPerSec);
+    if (Number.isFinite(s.inPerSec) && Number.isFinite(s.outPerSec)) add('swapio', ...swapRate(s.inPerSec, s.outPerSec, memShort, th));
   }
   const ignore = Array.isArray(th.ignore) ? th.ignore : [];
   for (const d of v?.disks ?? []) {
@@ -557,7 +587,7 @@ async function appendCapped(file, line, maxBytes = HISTORY_MAX_BYTES) {
 /** One compact line per sample for the history file: the numbers a trend needs. */
 export function historyLine(v) {
   const disks = Object.fromEntries((v.disks ?? []).map((d) => [d.mount, d.usedPct]));
-  return { ts: v.ts, load1: v.cpu?.load1 ?? null, busy: v.cpu?.busyPct ?? null, memAvailPct: v.mem?.availablePct ?? null, memAvailMB: v.mem?.availableMB ?? null, pressure: v.mem?.pressure?.level ?? v.mem?.pressure?.some60 ?? null, swapMB: v.swap?.usedMB ?? null, swapIo: v.swap?.ioPerSec ?? null, disks, agents: v.agents?.length ?? 0, agentMB: (v.agents ?? []).reduce((n, a) => n + (a.rssMB ?? 0), 0) };
+  return { ts: v.ts, load1: v.cpu?.load1 ?? null, busy: v.cpu?.busyPct ?? null, memAvailPct: v.mem?.availablePct ?? null, memAvailMB: v.mem?.availableMB ?? null, pressure: v.mem?.pressure?.level ?? v.mem?.pressure?.some60 ?? null, swapMB: v.swap?.usedMB ?? null, swapIo: v.swap?.ioPerSec ?? null, swapIn: v.swap?.inPerSec ?? null, swapOut: v.swap?.outPerSec ?? null, disks, agents: v.agents?.length ?? 0, agentMB: (v.agents ?? []).reduce((n, a) => n + (a.rssMB ?? 0), 0) };
 }
 
 let current = null;   // the daemon's monitor: { monitor, latest, enabled, thresholds }

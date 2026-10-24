@@ -1,13 +1,14 @@
 // core/vitals.js: the Linux and macOS parsers on real command output (test/fixtures/vitals), each agent's process tree
 // (nested agents counted once, the Claude desktop app not an agent, no command line in the result), a whole sample
-// with the commands faked, grading against thresholds, and the monitor's state machine (sustain, raise, quiet easing,
-// cleared, said again, forgotten agents).
+// with the commands faked, grading against thresholds (swap-out on its own, swap in plus out only while memory is
+// short), and the monitor's state machine (sustain, raise, quiet easing, cleared, said again, forgotten agents).
 import { test, describe, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as v from '../core/vitals.js';
+import * as placement from '../core/placement.js';
 
 const FIX = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'vitals');
 const fx = (n) => readFileSync(path.join(FIX, n), 'utf8');
@@ -29,8 +30,9 @@ describe('Linux parsers', () => {
   test('PSI and swap counters', () => {
     assert.deepEqual(v.parsePsi(fx('linux-psi-memory.txt')), { some: { avg10: 0, avg60: 0.16, avg300: 0.42 }, full: { avg10: 0, avg60: 0.12, avg300: 0.3 } });
     assert.equal(v.parsePsi(''), null);
-    assert.equal(v.parseLinuxVmstat(fx('linux-vmstat-1.txt')), 3_000_000);
+    assert.deepEqual(v.parseLinuxVmstat(fx('linux-vmstat-1.txt')), { in: 1_000_000, out: 2_000_000 }, 'pswpin and pswpout apart');
     assert.equal(v.parseLinuxVmstat('nr_free_pages 1\n'), null);
+    assert.equal(v.parseLinuxVmstat('pswpin 5\n'), null, 'one direction alone is no reading');
   });
   test('a btrfs root mounted as a subvolume is the filesystem, not a bind mount', () => {
     const vols = v.pickLinuxVolumes(v.parseMountinfo('29 1 0:26 /@ / rw,relatime shared:1 - btrfs /dev/nvme0n1p2 rw,subvol=/@\n30 1 0:26 /@home /home rw,relatime shared:2 - btrfs /dev/nvme0n1p2 rw,subvol=/@home\n'));
@@ -60,6 +62,7 @@ describe('macOS parsers', () => {
     assert.equal(vm['pages free'], 4393);
     assert.equal(vm['translation faults'], 25325202185);
     assert.equal(vm.swapins, 16743496);
+    assert.equal(vm.swapouts, 21227433);
   });
   test('volumes: the data volume and writable disks under /Volumes (names with spaces too); never the sealed system, VM, Preboot, cryptex, autofs or a read-only image', () => {
     const vols = v.pickDarwinVolumes(v.parseDarwinMount(fx('darwin-mount.txt')));
@@ -191,6 +194,7 @@ describe('sample() with the commands faked', () => {
     assert.deepEqual(s.cpu.cores, 4); assert.equal(s.cpu.perCore, 0.5);
     assert.equal(s.mem.availablePct, 37); assert.deepEqual(s.mem.pressure, { kind: 'psi', some60: 0.16, full60: 0.12 });
     assert.equal(s.swap.usedPct, 74); assert.equal(s.swap.ioPerSec, null, 'one reading: no rate yet');
+    assert.deepEqual([s.swap.inPerSec, s.swap.outPerSec], [null, null]);
     assert.deepEqual(s.disks.map((d) => [d.mount, d.kind, d.usedPct]), [['/', 'local', 83], ['/mnt/data', 'local', 62], ['/mnt/storage box', 'remote', 21]]);
     assert.ok(s.errors.some((e) => /df timed out on \/mnt\/c/.test(e)), 'a hung mount is reported, the rest still measured');
     assert.ok(calls.some((c) => c.join(' ') === 'df -Pk / /mnt/data'), 'the local volumes share one df');
@@ -200,6 +204,9 @@ describe('sample() with the commands faked', () => {
     now += 60_000; vmstat = fx('linux-vmstat-2.txt');
     const s2 = await v.sample({ ignore: ['/mnt/c', '/mnt/storage box'] });
     assert.equal(s2.swap.ioPerSec, 500, '30000 pages in 60 s');
+    assert.deepEqual([s2.swap.inPerSec, s2.swap.outPerSec], [200, 300], '12000 in and 18000 out in 60 s');
+    const h = v.historyLine(s2);
+    assert.deepEqual([h.swapIo, h.swapIn, h.swapOut], [500, 200, 300], 'the history keeps the total and both directions');
     assert.ok(Number.isFinite(s2.cpu.busyPct));
     assert.ok(s2.agents[0].cpuPct !== null, 'the second reading has a CPU rate per agent');
     assert.deepEqual(s2.disks.map((d) => d.mount), ['/', '/mnt/data'], 'ignored mounts are never measured');
@@ -240,13 +247,35 @@ describe('sample() with the commands faked', () => {
     const lv = Object.fromEntries(checks.map((c) => [c.key, c.level]));
     assert.deepEqual([lv.load, lv.pressure, lv.swap, lv['disk:/System/Volumes/Data'], lv['disk:/Volumes/Archive Disk']], ['warn', 'warn', 'ok', 'warn', 'crit']);
   });
+
+  test('macOS: swap pages in and out per second from the vm_stat Swapins and Swapouts counters', async () => {
+    let now = 5_000_000, vmStat = fx('darwin-vm_stat.txt');
+    Object.assign(v._deps, {
+      platform: () => 'darwin', now: () => now, host: () => 'mac-a', loadavg: () => [2, 2, 2], cpus: () => cpus(3000),
+      registry: async () => [], read: async () => { throw new Error('no /proc on macOS'); },
+      run: async (file) => {
+        if (file === 'sysctl') return { code: 0, stdout: fx('darwin-sysctl.txt'), stderr: '' };
+        if (file === 'vm_stat') return { code: 0, stdout: vmStat, stderr: '' };
+        if (file === 'mount' || file === 'ps' || file === 'df') return { code: 0, stdout: '', stderr: '' };
+        throw new Error(`unexpected ${file}`);
+      },
+    });
+    const s = await v.sample();
+    assert.deepEqual([s.swap.ioPerSec, s.swap.inPerSec, s.swap.outPerSec], [null, null, null], 'one reading: no rate yet');
+    const bump = (t, label, by) => t.replace(new RegExp(`^(${label}:\\s+)(\\d+)`, 'm'), (_, head, n) => `${head}${Number(n) + by}`);
+    now += 60_000; vmStat = bump(bump(vmStat, 'Swapins', 6000), 'Swapouts', 1200);
+    const s2 = await v.sample();
+    assert.deepEqual([s2.swap.ioPerSec, s2.swap.inPerSec, s2.swap.outPerSec], [120, 100, 20], '6000 in and 1200 out in 60 s');
+    const c = v.evaluate(s2).find((x) => x.key === 'swapio');
+    assert.deepEqual([c.level, c.text], ['ok', 'swapping out 20 pages/s (100 in), no shortage']);
+  });
 });
 
 describe('evaluate', () => {
   const base = {
     cpu: { cores: 8, load1: 13, perCore: 1.63, busyPct: 99 },
     mem: { totalMB: 16000, availableMB: 2400, availablePct: 15, pressure: { kind: 'psi', some60: 30 } },
-    swap: { totalMB: 16000, usedMB: 15400, usedPct: 96, ioPerSec: 2000 },
+    swap: { totalMB: 16000, usedMB: 15400, usedPct: 96, ioPerSec: 2000, inPerSec: 400, outPerSec: 1600 },
     disks: [{ mount: '/', usedPct: 94, availGB: 9 }, { mount: '/srv', usedPct: 50, availGB: 400 }, { mount: '/tmpdisk', usedPct: 99, availGB: 1 }],
     agents: [{ engine: 'claude', pid: 9, sessionId: 's9', name: 'big', tmux: 'w:@1.%1', rssMB: 13 * 1024, procs: 40 }],
   };
@@ -283,6 +312,61 @@ describe('evaluate', () => {
     assert.deepEqual(m.loadPerCore, { warn: 9, crit: 3 });
     m.diskUsedPct.warn = 1;
     assert.equal(v.DEFAULT_THRESHOLDS.diskUsedPct.warn, 88);
+  });
+});
+
+describe('evaluate: swap rates (swap-out is graded; in plus out only while memory is short)', () => {
+  const T = 1_800_000_000_000;
+  // A production host's thresholds: the defaults with a 4 GB memory floor, as the fleet catalog gives one.
+  const prod = placement.thresholdsFor({}, { monitor: { thresholds: { memAvailableGB: { warn: 4, crit: 3 } } } });
+  const at = ({ inPerSec, outPerSec, availGB, totalGB = 15.6 }) => ({
+    mem: { totalMB: Math.round(totalGB * 1024), availableMB: Math.round(availGB * 1024), availablePct: Math.round((availGB / totalGB) * 100), pressure: { kind: 'psi', some60: 0.4, full60: 0.2 } },
+    swap: { totalMB: 16384, usedMB: 11214, usedPct: 68, pageKB: 4, ioPerSec: inPerSec + outPerSec, inPerSec, outPerSec },
+  });
+  const swapio = (s, th = prod) => v.evaluate(s, th).find((c) => c.key === 'swapio');
+  const said = (s, th = prod) => { const c = swapio(s, th); return [c.level, c.text]; };
+
+  test('1731 pages/s swapped in, none out, 6.5 GB of 15.6 GB available: ok, where grading in plus out alone said crit', () => {
+    const s = at({ inPerSec: 1731, outPerSec: 0, availGB: 6.5 });
+    assert.equal(v.grade(s.swap.ioPerSec, prod.swapIoPerSec).level, 'crit', 'in plus out alone crosses its 1500 pages/s limit');
+    const c = swapio(s);
+    assert.deepEqual([c.level, c.text, c.value, c.limit], ['ok', 'swap-in 1731 pages/s, no shortage', 0, null]);
+    const m = new v.Monitor({ host: 'h' });
+    for (let i = 0; i < 6; i++) assert.deepEqual(m.step(v.evaluate(s, prod), prod, T + i * 60e3), [], 'nothing is raised however long it lasts');
+    assert.deepEqual(m.raised(), []);
+  });
+  test('sustained swap-out of 1600 pages/s is critical, raised once it has held for sustain samples', () => {
+    const c = swapio(at({ inPerSec: 0, outPerSec: 1600, availGB: 6.5 }));
+    assert.deepEqual([c.level, c.text, c.value, c.limitText], ['crit', 'swapping out 1600 pages/s', 1600, '1500 pages/s out']);
+    assert.deepEqual(said(at({ inPerSec: 50, outPerSec: 400, availGB: 6.5 })), ['warn', 'swapping out 400 pages/s (50 in)']);
+    const m = new v.Monitor({ host: 'h' });
+    assert.deepEqual(m.step([c], prod, T), []);
+    assert.deepEqual(m.step([c], prod, T + 60e3), []);
+    const [a, ...more] = m.step([c], prod, T + 120e3);
+    assert.deepEqual([a.kind, a.title, a.body, more.length], ['crit', 'h: swapping out 1600 pages/s', 'critical (limit 1500 pages/s out)', 0]);
+  });
+  test('in plus out of 2000 pages/s with 2.5 GB available, under a 3 GB floor, is critical; with memory to spare it is not', () => {
+    const floor = v.mergeThresholds(v.DEFAULT_THRESHOLDS, { memAvailableGB: { warn: 3 } });
+    const short = swapio(at({ inPerSec: 1800, outPerSec: 200, availGB: 2.5 }), floor);
+    assert.deepEqual([short.level, short.text, short.value, short.limitText], ['crit', 'swapping 2000 pages/s in and out while memory is short (1800 in, 200 out)', 2000, '1500 pages/s in and out']);
+    assert.deepEqual(said(at({ inPerSec: 1800, outPerSec: 200, availGB: 6.5 }), floor), ['ok', 'swapping out 200 pages/s (1800 in), no shortage'], 'swap-out alone is under its limit');
+    // The share floor counts as well: 10% available is under the default 12% warn.
+    assert.equal(swapio(at({ inPerSec: 1800, outPerSec: 200, availGB: 1.6 }), v.DEFAULT_THRESHOLDS).level, 'crit');
+    // Short of memory but swapping little: ok, and no "no shortage".
+    assert.deepEqual(said(at({ inPerSec: 100, outPerSec: 0, availGB: 2.5 }), floor), ['ok', 'swap-in 100 pages/s']);
+  });
+  test('swapIoPerSec stays a per-host catalog override of the in plus out limit; swapOutPerSec is one of its own', () => {
+    const host = (thresholds) => placement.thresholdsFor({}, { monitor: { thresholds: { memAvailableGB: { warn: 3 }, ...thresholds } } });
+    assert.equal(swapio(at({ inPerSec: 1800, outPerSec: 200, availGB: 2.5 }), host({ swapIoPerSec: { warn: 5000, crit: 10000 } })).level, 'ok');
+    assert.equal(swapio(at({ inPerSec: 700, outPerSec: 100, availGB: 2.5 }), host({ swapIoPerSec: { warn: 100, crit: 800 } })).level, 'crit');
+    assert.equal(swapio(at({ inPerSec: 0, outPerSec: 5000, availGB: 6.5 }), host({ swapOutPerSec: { warn: null, crit: null } })).level, 'ok');
+    assert.equal(swapio(at({ inPerSec: 0, outPerSec: 120, availGB: 6.5 }), host({ swapOutPerSec: { warn: 100 } })).level, 'warn');
+  });
+  test('nothing swapping says so; no rates yet (the first reading) means no swap rate check', () => {
+    assert.deepEqual(said(at({ inPerSec: 0, outPerSec: 0, availGB: 6.5 })), ['ok', 'no swapping']);
+    const first = at({ inPerSec: 0, outPerSec: 0, availGB: 6.5 });
+    first.swap = { ...first.swap, ioPerSec: null, inPerSec: null, outPerSec: null };
+    assert.equal(swapio(first), undefined);
   });
 });
 
