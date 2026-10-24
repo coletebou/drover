@@ -1,5 +1,6 @@
-// Paths read ~ under any home: the front daemon names its own HOME in host.list's local entry, and the web UI and the
-// TUI write paths under it (and under any /Users/<name> or /home/<name>) as ~.
+// Paths read ~ under any home: the front daemon names its own HOME in host.list's local entry, the web UI and the TUI
+// write paths under it (and under any /Users/<name> or /home/<name>) as ~, and so does the text the daemon shapes for
+// native clients (core/native.js clean).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -17,6 +18,17 @@ test('host.list: the local entry names the daemon\'s HOME', async () => {
   assert.equal(list[0].name, 'local');
   assert.equal(list[0].home, path.join(dir, 'home'));
   assert.equal(list.find((h) => h.name === 'devbox')?.home, undefined, 'only this host\'s home is known');
+});
+
+test('native clean(): the daemon\'s own home reads ~, wherever it is, and the usual homes still do', async () => {
+  // HOME is the test's own home (set by the test above, before any import that reads it).
+  const { clean, noPaths } = await import('../core/native.js');
+  const home = process.env.HOME;
+  assert.equal(clean(`working in ${home}/code/demo`), 'working in ~/code/demo');
+  // (the temporary folder's random-looking name may be redacted as a secret; it must not read as under the home)
+  assert.ok(!clean(`${home}x/y`).startsWith('~'), 'a home matches whole folders only');
+  assert.equal(clean('in /Users/sam/code and /home/sam/src'), 'in ~/code and ~/src');
+  assert.equal(noPaths(`edited ${home}/code/demo/src/a.js`), 'edited a.js');
 });
 
 for (const [name, load] of [['web UI', async () => { const m = await import('../ui/dom.js'); return { setHomes: m.setHomes, tilde: m.tildePath, short: m.shortPath }; }], ['TUI', async () => { const m = await import('../tui/ui.js'); return { setHomes: m.setHomes, tilde: m.tilde }; }]]) {
