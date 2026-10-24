@@ -75,7 +75,9 @@ xcrun simctl bootstatus "$watch"
 xcrun simctl install "$phone" "$dd/Build/Products/Debug-iphonesimulator/Drover.app"
 xcrun simctl install "$watch" "$dd/Build/Products/Debug-watchsimulator/DroverWatch.app"
 xcrun simctl status_bar "$phone" override --time 9:41 --batteryState charged --batteryLevel 100 --cellularBars 4 --wifiBars 3
-xcrun simctl status_bar "$watch" override --time 9:41 >/dev/null 2>&1 || echo "note: no status bar override on the watch"
+if ! err=$(xcrun simctl status_bar "$watch" override --time 9:41 2>&1); then
+  echo "note: the watch keeps its real time ($err)"
+fi
 
 shot() { # device bundle-id file [app arguments after --mock]
   local dev=$1 app=$2 file=$3; shift 3
