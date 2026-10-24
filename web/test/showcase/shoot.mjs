@@ -162,10 +162,12 @@ async function web() {
 }
 
 // ------------------------------------------------------------ the TUI and the CLI, in real terminals
-const TMUX_DIR = path.join('/tmp', `${path.basename(DIR)}-shots`);
 // An explicit socket, never TMUX_TMPDIR alone: when TMUX_TMPDIR names a missing directory, tmux falls back to
-// the user's default server, and this script's kill-server took down every real tmux session on the Mac.
-const TMUX_SOCK = path.join(TMUX_DIR, 'sock');
+// the user's default server, and this script's kill-server took down every real tmux session on the Mac. Its folder is
+// made fresh and private (mkdtemp, 0700) when the terminals start: a folder with a known name could already be there,
+// another user's, with a sock that links to the owner's own server. Short, under /tmp: a socket path has 103
+// characters at most on macOS.
+let TMUX_DIR = null, TMUX_SOCK = null;
 // No GIT_* either: a GIT_DIR from the caller would put its own repository in the CLI's picture.
 const tmux = (...a) => { const e = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_'))); delete e.TMUX; delete e.TMUX_PANE; delete e.TMUX_TMPDIR; const r = spawnSync('tmux', ['-S', TMUX_SOCK, ...a], { env: e, encoding: 'utf8' }); if (r.status !== 0) throw new Error(`tmux ${a.join(' ')}: ${r.stderr}`); return r.stdout; };
 const ENV_SH = path.join(DIR, 'env.sh');
@@ -214,8 +216,8 @@ async function cli() {
 const killShots = () => { try { tmux('kill-server'); } catch { /* none running */ } };
 if (ONLY.has('web')) await web();
 if (ONLY.has('tui') || ONLY.has('cli')) {
-  mkdirSync(TMUX_DIR, { recursive: true });
-  killShots();
+  TMUX_DIR = mkdtempSync(path.join('/tmp', 'drover-shots-'));
+  TMUX_SOCK = path.join(TMUX_DIR, 'sock');
   try {
     if (ONLY.has('tui')) await tui();
     if (ONLY.has('cli')) await cli();

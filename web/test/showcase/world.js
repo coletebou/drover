@@ -5,7 +5,7 @@
 // from test/fixtures/docker-inspect.jsonl, with git checkouts behind them) and a truth file with features, notes,
 // launches and messages. It all runs on this machine under one directory, with a HOME of its own; every name and every
 // line in it is invented.
-import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -125,8 +125,9 @@ export function prepare({ dir, root, base, home = path.join(dir, 'home'), now = 
     const hostDir = path.join(dir, 'hosts', h.name);
     if (h.down) return { name: h.name, down: h.down, agents: [] };
     // Sockets (its tmux server's, its agents' inboxes) under a short folder: a socket path has at most 103 characters
-    // on macOS, and the system's temporary folder there is long.
-    const run = path.join('/tmp', path.basename(dir), h.name);
+    // on macOS, and the system's temporary folder there is long. Made fresh and private (mkdtemp, 0700): a folder with
+    // a known name under /tmp could already be there, another user's, with a socket that links to the owner's server.
+    const run = mkdtempSync(path.join('/tmp', `drover-${h.name}-`));
     for (const d of ['state', 'cache', 'claude/sessions', 'claude/projects', 'codex']) mkdirSync(path.join(hostDir, d), { recursive: true });
     for (const d of ['tmux', 'socks']) mkdirSync(path.join(run, d), { recursive: true, mode: 0o700 });
     // TMUX names this host's socket (tmux takes it over TMUX_TMPDIR, and fails rather than fall back when it is gone).

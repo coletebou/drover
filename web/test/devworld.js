@@ -49,7 +49,10 @@ if (running) { console.error(`[devworld] a dev world is still running in ${DIR} 
 killTmux(path.join(DIR, 'tmux'));
 try { for (const r of JSON.parse(readFileSync(path.join(DIR, 'devworld.json'), 'utf8')).remotes ?? []) { killTmux(r.tmuxTmpdir); if (r.run) rmSync(r.run, { recursive: true, force: true }); } } catch { /* no earlier showcase */ }
 rmSync(DIR, { recursive: true, force: true });
-mkdirSync(DIR, { recursive: true, mode: 0o700 });
+// Made here and private, never taken over: on Linux the default folder has a known name under /tmp, and one another
+// user made in its place (its tmux folder linking to the owner's socket) must stop the world, not be used.
+mkdirSync(path.dirname(DIR), { recursive: true });
+try { mkdirSync(DIR, { mode: 0o700 }); } catch (e) { console.error(`[devworld] ${DIR} was made again by someone else (${e.code}): stopping`); process.exit(1); }
 for (const d of ['state', 'cache', 'dotfiles/claude', 'claude/sessions', 'claude/projects', 'codex', 'bin', 'tmux', 'work', 'socks']) mkdirSync(path.join(DIR, d), { recursive: true });
 mkdirSync(MANAGER, { recursive: true });
 for (const f of ['token', 'widget-token']) if (existsSync(path.join(REAL_STATE, f))) { copyFileSync(path.join(REAL_STATE, f), path.join(DIR, 'state', f)); chmodSync(path.join(DIR, 'state', f), 0o600); }
