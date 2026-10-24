@@ -17,6 +17,8 @@ struct TokenVault: Sendable {
     var service = DroverIDs.keychainService
     /// nil = the app's default group (previews and unsigned builds).
     var accessGroup: String? = DroverIDs.keychainAccessGroup
+    /// False for `--mock` launches: reads find nothing and writes do nothing, so the Keychain is never touched.
+    var usesKeychain = true
 
     struct KeychainError: LocalizedError, Sendable {
         let status: OSStatus
@@ -34,6 +36,7 @@ struct TokenVault: Sendable {
     }
 
     func read(_ account: Account) -> String? {
+        guard usesKeychain else { return nil }
         var q = baseQuery(account)
         q[kSecReturnData as String] = true
         q[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -45,6 +48,7 @@ struct TokenVault: Sendable {
     /// Saves (or deletes when `value` is nil or empty). Readable after first unlock so
     /// background refresh can use it while the phone is locked.
     func write(_ value: String?, for account: Account) throws {
+        guard usesKeychain else { return }
         let q = baseQuery(account)
         guard let value, !value.isEmpty else { return try delete(account) }
         let data = Data(value.utf8)
@@ -65,6 +69,7 @@ struct TokenVault: Sendable {
 
     /// Removes the item; one that is not there is fine.
     func delete(_ account: Account) throws {
+        guard usesKeychain else { return }
         let s = SecItemDelete(baseQuery(account) as CFDictionary)
         guard s == errSecSuccess || s == errSecItemNotFound else { throw KeychainError(status: s) }
     }

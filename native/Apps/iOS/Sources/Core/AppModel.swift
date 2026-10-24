@@ -62,6 +62,21 @@ final class AppModel {
 
     static func preview() -> AppModel { AppModel(api: MockDroverAPI(delay: .zero)) }
 
+    /// A `--mock` launch (DroverApp): synthetic data, no Keychain, settings kept out of the App Group.
+    /// `--mock-tab <tab>` and `--mock-session <id>` pick the first screen, for screenshots.
+    static func mock(arguments: [String]) -> AppModel {
+        let m = AppModel(api: MockDroverAPI(), vault: TokenVault(usesKeychain: false),
+                         settings: SharedSettings(suiteName: "drover.mock"))
+        func value(_ flag: String) -> String? {
+            arguments.firstIndex(of: flag).flatMap { $0 + 1 < arguments.count ? arguments[$0 + 1] : nil }
+        }
+        if let tab = value("--mock-tab").flatMap(Tab.init(rawValue:)) { m.selectedTab = tab }
+        if let id = value("--mock-session") {
+            m.open(MockDroverAPI.sessionsFixture.first { $0.id == id }?.ref ?? SessionRef(id: id), in: m.selectedTab)
+        }
+        return m
+    }
+
     var isConfigured: Bool { connection != .unconfigured }
     var hasMainToken: Bool { isMock || (isConfigured && vault.has(.main)) }
 
