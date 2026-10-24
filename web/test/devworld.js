@@ -11,7 +11,7 @@
 //   node test/devworld.js [--port 7338] [--gateway 18799] [--dir DIR] [--showcase]
 // Ctrl-C (or SIGTERM) stops the daemon, the gateway and the private tmux servers.
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdirSync, rmSync, writeFileSync, copyFileSync, existsSync, chmodSync, readFileSync, realpathSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync, copyFileSync, existsSync, chmodSync, readFileSync, realpathSync, lstatSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -37,7 +37,16 @@ const MANAGER = SHOWCASE ? path.join(SHOW_HOME, '.openclaw-manager') : path.join
 // TMUX_TMPDIR) finds the same server; the isolation check below makes sure it does.
 const socketOf = (tmuxDir) => path.join(tmuxDir, `tmux-${process.getuid()}`, 'default');
 const tmuxAt = (tmuxDir, args, env = process.env) => { const e = { ...env }; delete e.TMUX; delete e.TMUX_PANE; return spawnSync('tmux', ['-S', socketOf(tmuxDir), ...args], { env: e, encoding: 'utf8' }); };
-const killTmux = (tmuxDir) => { if (tmuxDir && existsSync(socketOf(tmuxDir))) tmuxAt(tmuxDir, ['kill-server']); };
+// Only what this user made is acted on: no symlink, owned by this user and, for a folder, writable by no one else. On
+// Linux the default folder has a known name under /tmp, so an earlier "world" there may be another user's: a socket in
+// it linked to the owner's own server, a manifest naming folders to delete.
+const lstatExists = (p) => { try { lstatSync(p); return true; } catch { return false; } };
+const ours = (p, { dir = false } = {}) => { try { const st = lstatSync(p); return !st.isSymbolicLink() && st.uid === process.getuid() && (!dir || (st.isDirectory() && (st.mode & 0o022) === 0)); } catch { return false; } };
+/** A private server, killed by its socket, and only when its folder, tmux-<uid> and the socket are all ours. */
+const killTmux = (tmuxDir) => { const sock = socketOf(tmuxDir ?? ''); if (tmuxDir && ours(tmuxDir, { dir: true }) && ours(path.dirname(sock), { dir: true }) && ours(sock)) tmuxAt(tmuxDir, ['kill-server']); };
+if (lstatExists(DIR)) {
+  if (!ours(DIR, { dir: true })) { console.error(`[devworld] ${DIR} is there and not this user's own private folder: stopping without touching it (use another --dir)`); process.exit(1); }
+}
 // A dev world still running in this folder is left alone: removing its tmux folders under its live daemon would send
 // that daemon to the owner's default server (it picks its server by TMUX_TMPDIR), still serving the copied token.
 const alive = (pid) => { try { return Number.isInteger(pid) && pid > 0 && (process.kill(pid, 0), true); } catch { return false; } };
@@ -47,7 +56,13 @@ if (running) { console.error(`[devworld] a dev world is still running in ${DIR} 
 // A dev world left from an earlier run: stop its tmux servers (and so its agents) before its directory goes, the
 // showcase's other hosts' too (devworld.json names them; their sockets live under /tmp, see showcase/world.js).
 killTmux(path.join(DIR, 'tmux'));
-try { for (const r of JSON.parse(readFileSync(path.join(DIR, 'devworld.json'), 'utf8')).remotes ?? []) { killTmux(r.tmuxTmpdir); if (r.run) rmSync(r.run, { recursive: true, force: true }); } } catch { /* no earlier showcase */ }
+try {
+  for (const r of JSON.parse(readFileSync(path.join(DIR, 'devworld.json'), 'utf8')).remotes ?? []) {
+    killTmux(r.tmuxTmpdir);
+    // Only a host folder the showcase made (mkdtemp under /tmp/drover-) and still this user's.
+    if (typeof r.run === 'string' && /^\/tmp\/drover-[A-Za-z0-9]+-[A-Za-z0-9]{6}$/.test(r.run) && ours(r.run, { dir: true })) rmSync(r.run, { recursive: true, force: true });
+  }
+} catch { /* no earlier showcase */ }
 rmSync(DIR, { recursive: true, force: true });
 // Made here and private, never taken over: on Linux the default folder has a known name under /tmp, and one another
 // user made in its place (its tmux folder linking to the owner's socket) must stop the world, not be used.
