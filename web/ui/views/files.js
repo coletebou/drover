@@ -91,9 +91,10 @@ export default {
         current = r; ta.value = r.text; ta.disabled = false;
         pathEl.textContent = tildePath(r.path);
         clear(fileMeta); fileMeta.append(`${fmtBytes(r.bytes)}, changed ${fmtTime(r.mtime)}${r.symlink ? `, link to ${tildePath(r.real)}` : ''}  `, copyButton(r.path, 'Copy path'));
-        localStorage.setItem(LAST_KEY, JSON.stringify({ host: host(), path: pathEl.textContent }));
+        // The real path, never the label: ~ in the label is the front daemon's home, and the file may be on another host.
+        localStorage.setItem(LAST_KEY, JSON.stringify({ host: host(), path: r.path }));
         markDirty(); paintSide();
-        ctx.nav('files', pathEl.textContent);
+        ctx.nav('files', r.path);
       } catch { if (current) ta.disabled = false; }
     }
     async function save() {
@@ -121,7 +122,7 @@ export default {
     window.addEventListener('beforeunload', guard);
     return {
       destroy() { alive = false; window.removeEventListener('beforeunload', guard); },
-      params(p) { if (p?.[0] && p[0] !== pathEl.textContent) openFile(p[0]); },
+      params(p) { if (p?.[0] && p[0] !== current?.path && p[0] !== pathEl.textContent) openFile(p[0]); },
       search(v) { search.value = v; find(v); },
     };
   },

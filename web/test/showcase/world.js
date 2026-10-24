@@ -129,7 +129,8 @@ export function prepare({ dir, root, base, home = path.join(dir, 'home'), now = 
     const run = path.join('/tmp', path.basename(dir), h.name);
     for (const d of ['state', 'cache', 'claude/sessions', 'claude/projects', 'codex']) mkdirSync(path.join(hostDir, d), { recursive: true });
     for (const d of ['tmux', 'socks']) mkdirSync(path.join(run, d), { recursive: true, mode: 0o700 });
-    const settings = { ...env(h.name, hostDir), TMUX_TMPDIR: path.join(run, 'tmux'), PATH: `${bin}:${base.PATH}` };
+    // TMUX names this host's socket (tmux takes it over TMUX_TMPDIR, and fails rather than fall back when it is gone).
+    const settings = { ...env(h.name, hostDir), TMUX_TMPDIR: path.join(run, 'tmux'), TMUX: `${path.join(run, 'tmux', `tmux-${process.getuid()}`, 'default')},0,0`, PATH: `${bin}:${base.PATH}` };
     return { name: h.name, dir: hostDir, run, socks: path.join(run, 'socks'), agents: h.agents.map((a) => ({ ...a, cwd: path.join(home, a.cwd) })), settings, env: { ...base, ...settings } };
   });
   for (const h of HOSTS) if (containers[h.name]) writeFileSync(path.join(dir, `containers-${h.name}.jsonl`), containers[h.name].map((c) => JSON.stringify(c)).join('\n') + '\n');

@@ -135,7 +135,10 @@ function seed({ name, sid, cwd = path.join(DIR, 'work', name), title = `${name}:
 for (const a of AGENTS) seed(a);
 
 // ------------------------------------------------------------ the private tmux servers and their agents
-const tmuxEnv = { ...isolated, TMUX_TMPDIR: path.join(DIR, 'tmux'), CLAUDE_CONFIG_DIR: path.join(DIR, 'claude'), ...show?.front.env };
+// TMUX names the world's own socket too: tmux takes it over TMUX_TMPDIR, and when that socket is gone (the world stopped,
+// its folder removed) a call fails instead of falling back to the owner's default server. The daemon, env.sh and the
+// shells it starts all get it; the world's own tmux calls name the socket themselves (tmuxAt).
+const tmuxEnv = { ...isolated, TMUX_TMPDIR: path.join(DIR, 'tmux'), TMUX: `${socketOf(path.join(DIR, 'tmux'))},0,0`, CLAUDE_CONFIG_DIR: path.join(DIR, 'claude'), ...show?.front.env };
 const tmuxIn = (env) => {
   mkdirSync(path.dirname(socketOf(env.TMUX_TMPDIR)), { recursive: true, mode: 0o700 });
   return (args) => { const r = tmuxAt(env.TMUX_TMPDIR, args, env); if (r.status !== 0) throw new Error(`tmux ${args.join(' ')}: ${r.stderr}`); return r.stdout; };
@@ -167,8 +170,8 @@ const env = {
   OPENCLAW_MANAGER_STATE_DIR: MANAGER, OPENCLAW_GATEWAY_URL: `http://127.0.0.1:${gateway.port}`, OPENCLAW_GATEWAY_TOKEN: 'dev',
 };
 // What a shell needs to use the CLI and the TUI here (`. <dir>/env.sh`): the settings the daemon got on top of the
-// shell's own environment, no $TMUX (inside the owner's tmux it would beat TMUX_TMPDIR and reach the real server) and no
-// GIT_* (a GIT_DIR would point the CLI's look at a stack's code at the shell's own repository).
+// shell's own environment (TMUX among them, naming the world's socket: the shell's own TMUX would reach the owner's
+// server), no TMUX_PANE and no GIT_* (a GIT_DIR would point the CLI's look at a stack's code at the shell's own repository).
 const shq = (v) => `'${String(v).replaceAll("'", "'\\''")}'`;
 writeFileSync(path.join(DIR, 'env.sh'), 'unset TMUX TMUX_PANE\nfor v in $(env | awk -F= \'/^GIT_/ { print $1 }\'); do unset "$v"; done\n' + Object.entries(env).filter(([k, v]) => inherited[k] !== v).map(([k, v]) => `export ${k}=${shq(v)}`).join('\n') + '\n', { mode: 0o600 });
 const daemon = spawn(process.execPath, [path.join(ROOT, 'bin', 'drover'), 'serve', '--port', String(PORT)], { env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -182,6 +185,8 @@ async function stop(code = 0) {
   try { daemon.kill('SIGTERM'); } catch { /* gone */ }
   for (const e of [tmuxEnv, ...remotes.map((r) => r.env)]) { try { killTmux(e.TMUX_TMPDIR); } catch { /* gone */ } }
   for (const r of remotes) rmSync(r.run, { recursive: true, force: true });
+  // A shell that sourced env.sh keeps the stand-in ssh: once stopped, it knows no host.
+  try { writeFileSync(path.join(DIR, 'hosts.json'), JSON.stringify({ drover: path.join(ROOT, 'bin', 'drover'), hosts: {} }), { mode: 0o600 }); } catch { /* gone */ }
   await gateway.close().catch(() => {});
   process.exit(code);
 }
@@ -189,10 +194,14 @@ process.on('SIGINT', () => stop(0));
 process.on('SIGTERM', () => stop(0));
 
 const token = existsSync(path.join(DIR, 'state', 'token')) ? readFileSync(path.join(DIR, 'state', 'token'), 'utf8').trim() : null;
-for (let i = 0; i < 100; i++) {
-  try { const r = await fetch(`http://127.0.0.1:${PORT}/api/op/host.identity`, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: '{}' }); if (r.ok) break; } catch { /* not yet */ }
+// The daemon that answers must be the one started here: its pid in its own daemon.json, the port its URL. Another
+// daemon already on the port (this one then fails to bind and exits) would pass every check below with the copied token.
+const ownDaemon = () => { try { const d = JSON.parse(readFileSync(path.join(DIR, 'state', 'daemon.json'), 'utf8')); return d.pid === daemon.pid && new URL(d.url).port === String(PORT); } catch { return false; } };
+for (let i = 0; i < 100 && daemon.exitCode === null; i++) {
+  try { const r = await fetch(`http://127.0.0.1:${PORT}/api/op/host.identity`, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: '{}' }); if (r.ok && ownDaemon()) break; } catch { /* not yet */ }
   await new Promise((r) => setTimeout(r, 200));
 }
+if (daemon.exitCode !== null || !ownDaemon()) { console.error(`[devworld] the daemon started here is not the one answering on port ${PORT}, stopping`); await stop(1); }
 // It runs only isolated: its own hosts alone (this one, and the showcase's pretend ones), no plugin loaded, and its
 // own tmux server alone (a daemon that reached the owner's would answer and type into their real sessions),
 // whatever the daemon's own defaults become.
