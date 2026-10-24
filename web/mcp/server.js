@@ -44,9 +44,10 @@ export function instructionsText(extra = plugins.mcpInstructions()) {
 
 const HOST = { type: 'string', description: 'ssh alias of another fleet machine; omit for this one' };
 
+// A tool may describe host itself (drover_launch also takes "auto").
 const schema = (properties, required = []) => ({
   type: 'object',
-  properties: { ...properties, host: HOST },
+  properties: { host: HOST, ...properties },
   required,
   additionalProperties: false,
 });
@@ -155,7 +156,7 @@ export const TOOLS = [
   {
     name: 'drover_launch',
     title: 'Launch an agent',
-    description: `Start a new Claude Code or Codex agent. mode "tmux" (default) opens a new window named \`name\` in tmux session \`tmuxSession\` (default: the launch profiles' tmuxSession, "agents" in the shipped profiles.json) running the interactive agent in \`cwd\` with \`prompt\` as its first input. mode "headless" runs the agent inside this MCP server process and returns a headlessId for drover_headless; such agents die when this server exits, so use "tmux" for anything that should outlive the conversation. \`profile\` is a profile id from the launch profiles (drover_launch_profiles lists them: Drover's profiles.json, or the file DROVER_PROFILES names); omit for the engine default. \`model\` is an alias the engine accepts (opus, sonnet, haiku for Claude; a model name your Codex accepts). \`effort\` starts the agent at that reasoning effort for this session only (claude --effort: ${EFFORT_LEVELS.claude.join(', ')}; codex -c model_reasoning_effort: ${EFFORT_LEVELS.codex.join(', ')}) without touching the global default the way /effort or /model inside a session would; a level the engine does not take is refused before anything starts, and so is a Codex level the named \`model\` does not list in that host's \`codex debug models\`. \`resume\` continues an existing session/thread id (with an effort, a resumed Codex session takes its model from the profile or \`model\`). In tmux mode the agent's first-run "trust this folder" dialog is answered ahead: \`cwd\` is recorded as trusted in that host's ~/.claude.json (Claude Code) or ~/.codex/config.toml (Codex, inside git), as accepting the dialog would, and the result's \`trust\` says what was done; \`trust: false\` skips that. Appends a "launch" event with actor "mcp".`,
+    description: `Start a new Claude Code or Codex agent. mode "tmux" (default) opens a new window named \`name\` in tmux session \`tmuxSession\` (default: the launch profiles' tmuxSession, "agents" in the shipped profiles.json) running the interactive agent in \`cwd\` with \`prompt\` as its first input. mode "headless" runs the agent inside this MCP server process and returns a headlessId for drover_headless; such agents die when this server exits, so use "tmux" for anything that should outlive the conversation. \`profile\` is a profile id from the launch profiles (drover_launch_profiles lists them: Drover's profiles.json, or the file DROVER_PROFILES names); omit for the engine default. \`model\` is an alias the engine accepts (opus, sonnet, haiku for Claude; a model name your Codex accepts). \`effort\` starts the agent at that reasoning effort for this session only (claude --effort: ${EFFORT_LEVELS.claude.join(', ')}; codex -c model_reasoning_effort: ${EFFORT_LEVELS.codex.join(', ')}) without touching the global default the way /effort or /model inside a session would; a level the engine does not take is refused before anything starts, and so is a Codex level the named \`model\` does not list in that host's \`codex debug models\`. \`resume\` continues an existing session/thread id (with an effort, a resumed Codex session takes its model from the profile or \`model\`). In tmux mode the agent's first-run "trust this folder" dialog is answered ahead: \`cwd\` is recorded as trusted in that host's ~/.claude.json (Claude Code) or ~/.codex/config.toml (Codex, inside git), as accepting the dialog would, and the result's \`trust\` says what was done; \`trust: false\` skips that. \`host\` "auto" lets the fleet's placement (drover_fleet_place) choose the machine for \`placement\` (default the engine's session class) and starts nothing when no host is eligible; the result's \`placement\` says where and why. Appends a "launch" event with actor "mcp".`,
     inputSchema: schema({
       engine: { type: 'string', enum: ['claude', 'codex'], description: 'Which agent to start. Default claude.' },
       mode: { type: 'string', enum: ['tmux', 'headless'], description: 'tmux window (default) or headless inside this process.' },
@@ -168,10 +169,14 @@ export const TOOLS = [
       name: { type: 'string', description: 'Window name (tmux mode) or label (headless mode).' },
       resume: { type: 'string', description: 'Session id (Claude) or thread id (Codex) to resume instead of starting fresh.' },
       trust: { type: 'boolean', description: 'tmux mode: record cwd as trusted in the agent\'s own config first, so it starts at its prompt instead of the first-run trust dialog. Default true.' },
+      host: { type: 'string', description: 'ssh alias of another fleet machine, "auto" to let the fleet\'s placement choose one, or omit for this one' },
+      placement: { type: 'string', description: 'With host "auto": the workload class to place (claude-session, codex-session, heavy-build, macos-only, or one the fleet catalog defines). Default: the engine\'s session class.' },
+      placementExclude: { type: 'array', items: { type: 'string' }, description: 'With host "auto": hosts never to pick.' },
     }),
     async run(dispatch, args) {
-      const req = { ...pick(args, ['engine', 'mode', 'profile', 'model', 'effort', 'cwd', 'prompt', 'tmuxSession', 'name', 'resume', 'trust', 'host']), actor: ACTOR };
-      if (req.effort !== undefined) await requireEffortSupport(dispatch, args.host);
+      const req = { ...pick(args, ['engine', 'mode', 'profile', 'model', 'effort', 'cwd', 'prompt', 'tmuxSession', 'name', 'resume', 'trust', 'host', 'placement', 'placementExclude']), actor: ACTOR };
+      // host "auto": the daemon in front checks the chosen host's efforts itself (core/api.js requireLaunchEfforts).
+      if (req.effort !== undefined) await requireEffortSupport(dispatch, args.host === 'auto' ? undefined : args.host);
       return dispatch('launch.start', req);
     },
   },

@@ -1,0 +1,15 @@
+      1 init
+    100 sshd
+    200 -zsh
+    300 claude
+    301 node
+    302 node
+    303 zsh
+    304 node
+    305 zsh
+    306 node
+    307 codex
+    400 node
+    401 codex
+    500 openclaw-gatewa
+    501 clickhouse-serv

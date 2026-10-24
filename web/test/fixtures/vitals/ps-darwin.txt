@@ -1,0 +1,6 @@
+    1     0  20000   0.0 10:00.00 01-21:09:00 /sbin/launchd
+19670     1 300000   1.0  5:00.00    21:12:39 /Applications/Claude.app/Contents/MacOS/Claude
+19905 19670 129328   0.0  1:00.00    21:12:39 /Applications/Claude.app/Contents/Frameworks/Claude Helper (Renderer).app/Contents/MacOS/Claude Helper (Renderer) --type=renderer
+61545 60387  74928   0.2  0:30.50    14:18:11 /Users/u/.local/bin/claude daemon run --origin transient
+70000 69999 380000   4.0 12:00.10    01:00:00 /Users/u/.local/bin/claude --effort high
+70001 70000  50000   0.0  0:10.00    01:00:00 node /Users/u/.local/bin/drover mcp
