@@ -14,7 +14,10 @@
 //   mcpInstructions  lines added to the MCP server's instructions
 //   hosts            a host provider: hosts that are not ssh aliases (see hostProvider below)
 //   search           { preserved: () => source, restoreCommand: (ref) => string, roles: [...] }: the "preserved"
-//                    search kind (core/search: indexer, meta, query)
+//                    search kind (core/search: indexer, meta, query); and remote: { <kind>: async ({ query, limit,
+//                    kinds, days, project, signal }) => ({ hits, note? }) }: a search kind (brain) the front fetches at
+//                    query time and no host indexes, its hits fused with the index's by rank; signal is aborted when
+//                    the front stops waiting (core/search/remote.js)
 //   start(ctx)       daemon start, returns a stop function; ctx is { dispatch, notifier, broadcast, watching }
 //   settle()         awaited before a one-shot process (drover op, rpc, mcp) exits: work that answered "running"
 //   ui               { views: ['ui/<file>.js', ...] }: web UI views, served at /views/plugin-<name>-<file>.js so their
@@ -112,6 +115,17 @@ export const eventTypes = () => state.plugins.flatMap((p) => Object.keys(p.event
 
 /** The plugin that serves the "preserved" search kind, or null. */
 export function preservedSearch() { return state.plugins.find((p) => p.search?.preserved)?.search ?? null; }
+
+/** The remote search sources, kind -> async ({ query, limit, kinds, days, project, signal }) => ({ hits, note? }): the first plugin that serves a kind has it. */
+export function remoteSearchSources() {
+  const out = {};
+  for (const p of state.plugins) {
+    const remote = p.search?.remote;
+    if (!remote || typeof remote !== 'object') continue;
+    for (const [kind, fn] of Object.entries(remote)) if (typeof fn === 'function' && !Object.hasOwn(out, kind)) out[kind] = fn;
+  }
+  return out;
+}
 
 export const mcpInstructions = () => state.plugins.flatMap((p) => (Array.isArray(p.mcpInstructions) ? p.mcpInstructions : []));
 
