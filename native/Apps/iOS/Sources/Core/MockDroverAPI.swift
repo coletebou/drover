@@ -4,7 +4,8 @@ import Foundation
 struct MockDroverAPI: DroverAPI {
     var delay: Duration = .milliseconds(150)
 
-    static let now = Date(timeIntervalSince1970: 1_791_000_000)
+    /// Launch time: fixture times are relative to it, so ages read like a live fleet ("4 min. ago").
+    static let now = Date()
 
     static let summaryFixture = NativeSummary(
         generatedAt: LooseDate(now),
@@ -52,6 +53,16 @@ struct MockDroverAPI: DroverAPI {
              text: "The build passed. The test suite needs network access. Should I allow it?"),
     ]
 
+    static let managerTranscriptFixture: [Turn] = [
+        Turn(role: "user", ts: LooseDate(now.addingTimeInterval(-420)), uuid: "m1", text: "What needs me right now?"),
+        Turn(role: "assistant", ts: LooseDate(now.addingTimeInterval(-410)), uuid: "m2",
+             text: "Two sessions wait on you. **demo-build** asks to run the test suite with network access, and "
+                 + "**demo-review** asks whether to update the changelog. demo-docs is still rewriting the setup guide."),
+        Turn(role: "user", ts: LooseDate(now.addingTimeInterval(-300)), uuid: "m3", text: "Why is demo-spare down?"),
+        Turn(role: "assistant", ts: LooseDate(now.addingTimeInterval(-290)), uuid: "m4",
+             text: "It stopped answering after its nightly restart. I will check it again on the next sweep."),
+    ]
+
     func summary() async throws -> NativeSummary { try await Task.sleep(for: delay); return Self.summaryFixture }
 
     func notifications(since cursor: String?, wait: Int?) async throws -> NotificationFeed {
@@ -72,9 +83,10 @@ struct MockDroverAPI: DroverAPI {
 
     func transcript(_ ref: SessionRef, since: Int?, limit: Int) async throws -> TranscriptPage {
         try await Task.sleep(for: delay)
-        let all = Self.transcriptFixture
+        let manager = ref.id == SessionRef.manager.id
+        let all = manager ? Self.managerTranscriptFixture : Self.transcriptFixture
         let from = min(since ?? 0, all.count)
-        return TranscriptPage(engine: .claude, turns: Array(all[from...].prefix(limit)), offset: all.count)
+        return TranscriptPage(engine: manager ? .openclaw : .claude, turns: Array(all[from...].prefix(limit)), offset: all.count)
     }
 
     func lastReply(_ ref: SessionRef) async throws -> LastReply {
@@ -114,13 +126,15 @@ struct MockDroverAPI: DroverAPI {
     }
 
     func managerStatus(host: String?) async throws -> JSONValue {
-        .object(["gateway": .object(["up": .bool(true)]), "model": .string("demo-model"),
-                 "unit": .object(["state": .string("active")])])
+        .object(["gateway": .object(["up": .bool(true)]), "unit": .object(["state": .string("active")]),
+                 "model": .object(["primary": .string("demo-model"), "thinking": .string("medium"),
+                                   "heartbeatEvery": .string("30m")]),
+                 "cost": .object(["todayUsd": .number(0.42), "budgetUsd": .number(5)])])
     }
 
     func managerFeed(host: String?, limit: Int) async throws -> JSONValue {
         .array([
-            .object(["type": .string("note"), "ts": .string("2026-10-01T10:00:00Z"),
+            .object(["type": .string("note"), "ts": .string(Self.now.addingTimeInterval(-1800).formatted(.iso8601)),
                      "text": .string("Swept 3 hosts. demo-build waits on a permission prompt.")]),
         ])
     }
