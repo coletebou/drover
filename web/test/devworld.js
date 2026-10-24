@@ -43,6 +43,7 @@ const killTmux = (tmuxDir) => { if (tmuxDir && existsSync(socketOf(tmuxDir))) tm
 killTmux(path.join(DIR, 'tmux'));
 try { for (const r of JSON.parse(readFileSync(path.join(DIR, 'devworld.json'), 'utf8')).remotes ?? []) { killTmux(r.tmuxTmpdir); if (r.run) rmSync(r.run, { recursive: true, force: true }); } } catch { /* no earlier showcase */ }
 rmSync(DIR, { recursive: true, force: true });
+mkdirSync(DIR, { recursive: true, mode: 0o700 });
 for (const d of ['state', 'cache', 'dotfiles/claude', 'claude/sessions', 'claude/projects', 'codex', 'bin', 'tmux', 'work', 'socks']) mkdirSync(path.join(DIR, d), { recursive: true });
 mkdirSync(MANAGER, { recursive: true });
 for (const f of ['token', 'widget-token']) if (existsSync(path.join(REAL_STATE, f))) { copyFileSync(path.join(REAL_STATE, f), path.join(DIR, 'state', f)); chmodSync(path.join(DIR, 'state', f), 0o600); }
@@ -64,7 +65,7 @@ for (const b of ['codex', 'docker', 'ssh']) writeFileSync(path.join(DIR, 'bin', 
 writeFileSync(path.join(DIR, 'bin', 'drover'), `#!/bin/sh\nexec "${process.execPath}" "${path.join(ROOT, 'bin', 'drover')}" "$@"\n`);
 for (const b of ['claude', 'codex', 'docker', 'ssh', 'drover']) chmodSync(path.join(DIR, 'bin', b), 0o755);
 writeFileSync(path.join(DIR, 'containers.jsonl'), '');
-writeFileSync(path.join(DIR, 'hosts.json'), JSON.stringify({ drover: path.join(ROOT, 'bin', 'drover'), hosts: {} }));
+writeFileSync(path.join(DIR, 'hosts.json'), JSON.stringify({ drover: path.join(ROOT, 'bin', 'drover'), hosts: {} }), { mode: 0o600 });
 
 // Secrets come in through the inherited environment too (the shell may export ~/.env_secrets), whatever
 // DROVER_SECRETS_FILE says below: with them a plugin's ops here would reach the real services they talk to, as the
@@ -76,6 +77,9 @@ const secretNames = existsSync(REAL_SECRETS) ? readFileSync(REAL_SECRETS, 'utf8'
 const inherited = { ...process.env };
 for (const k of secretNames) delete inherited[k];
 for (const k of ['TMUX', 'TMUX_PANE', 'DROVER_BOTS_URL', 'DROVER_BIND', 'APXW_STATE', 'APXW_CACHE']) delete inherited[k];
+// A GIT_DIR, GIT_WORK_TREE or GIT_INDEX_FILE from the caller would point every git call here (the world's checkouts,
+// the daemon's look at a stack's code) at the caller's own repository.
+for (const k of Object.keys(inherited)) if (k.startsWith('GIT_')) delete inherited[k];
 // What every daemon here runs with: no plugins (an empty list, not the default plugin directory: a plugin's hosts
 // would be real hosts here, and a press or a message on one of them would go to a real session; its ops would reach
 // real services), no secrets file, no search index, and the stand-ins first on PATH.
@@ -159,7 +163,7 @@ const env = {
 // What a shell needs to use the CLI and the TUI here (`. <dir>/env.sh`): the settings the daemon got on top of the
 // shell's own environment, and no $TMUX (inside the owner's tmux it would beat TMUX_TMPDIR and reach the real server).
 const shq = (v) => `'${String(v).replaceAll("'", "'\\''")}'`;
-writeFileSync(path.join(DIR, 'env.sh'), 'unset TMUX TMUX_PANE\n' + Object.entries(env).filter(([k, v]) => inherited[k] !== v).map(([k, v]) => `export ${k}=${shq(v)}`).join('\n') + '\n');
+writeFileSync(path.join(DIR, 'env.sh'), 'unset TMUX TMUX_PANE\n' + Object.entries(env).filter(([k, v]) => inherited[k] !== v).map(([k, v]) => `export ${k}=${shq(v)}`).join('\n') + '\n', { mode: 0o600 });
 const daemon = spawn(process.execPath, [path.join(ROOT, 'bin', 'drover'), 'serve', '--port', String(PORT)], { env, stdio: ['ignore', 'pipe', 'pipe'] });
 daemon.stdout.on('data', (d) => process.stdout.write(`[daemon] ${d}`));
 daemon.stderr.on('data', (d) => process.stderr.write(`[daemon] ${d}`));
@@ -200,7 +204,8 @@ if (JSON.stringify(seen) !== JSON.stringify(show?.expectedHosts ?? ['local']) ||
 writeFileSync(path.join(DIR, 'devworld.json'), JSON.stringify({ port: PORT, gateway: gateway.port, dir: DIR, daemonPid: daemon.pid, tmuxTmpdir: tmuxEnv.TMUX_TMPDIR, agents: AGENTS, showcase: SHOWCASE, ...(show ? { home: show.home, remotes: remotes.map((r) => ({ name: r.name, tmuxTmpdir: r.env.TMUX_TMPDIR, run: r.run, agents: r.agents })) } : {}) }, null, 2));
 console.log(`[devworld] daemon http://127.0.0.1:${PORT} (token: the real token file, copied), fake manager gateway :${gateway.port}`);
 console.log(`[devworld] agents in a private tmux server: ${AGENTS.map((a) => `${a.name} (${a.mode})`).join(', ')}`);
-for (const r of remotes) console.log(`[devworld] ${r.name}: ${r.agents.map((a) => `${a.name} (${a.mode})`).join(', ')} (TMUX_TMPDIR=${r.env.TMUX_TMPDIR})`);
-console.log(`[devworld] watch them: TMUX_TMPDIR=${tmuxEnv.TMUX_TMPDIR} tmux attach -t ${show ? 'work' : 'demo'}`);
+for (const r of remotes) console.log(`[devworld] ${r.name}: ${r.agents.map((a) => `${a.name} (${a.mode})`).join(', ')} (tmux -S ${socketOf(r.env.TMUX_TMPDIR)} attach -t work)`);
+// Named by socket: pasted inside the owner's tmux, TMUX would beat TMUX_TMPDIR and attach their own session of that name.
+console.log(`[devworld] watch them: tmux -S ${socketOf(tmuxEnv.TMUX_TMPDIR)} attach -t ${show ? 'work' : 'demo'}`);
 console.log(`[devworld] the CLI and the TUI here: . ${path.join(DIR, 'env.sh')} && drover tui`);
 console.log(`[devworld] a dialog comes back about 12 s after it is answered; manager messages starting "slow " stream for about 8 s, "fail " fail, "echo " echo`);

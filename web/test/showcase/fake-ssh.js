@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // ssh for the dev world (test/devworld.js): `ssh [-o opt]... <host> [--] <command>` runs the command for one of the
-// showcase world's pretend hosts (test/showcase/world.js), on this machine, with that host's environment (its own
-// state, tmux server, Claude and Codex homes, docker). `drover rpc` starts the daemon's rpc server directly, so a login
-// shell's PATH cannot put the real docker or ps ahead of the world's; a host marked down fails the way an unreachable
-// machine does. The file DEVWORLD_HOSTS names maps host names to environments; any other name is unknown, so no call
-// reaches a real machine.
+// showcase world's pretend hosts (test/showcase/world.js), on this machine, with that host's settings (its own state,
+// tmux server, Claude and Codex homes, docker) laid over the environment it inherits. `drover rpc` starts the daemon's
+// rpc server directly, so a login shell's PATH cannot put the real docker or ps ahead of the world's; a host marked
+// down fails the way an unreachable machine does. The file DEVWORLD_HOSTS names maps host names to their settings; any
+// other name is unknown, so no call reaches a real machine.
 import { readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 
@@ -22,8 +22,10 @@ const h = world.hosts?.[host];
 if (!h) { process.stderr.write(`ssh: Could not resolve hostname ${host}: nodename nor servname provided, or not known\n`); process.exit(255); }
 if (h.down) { setTimeout(() => { process.stderr.write(`${h.down}\n`); process.exit(255); }, 300); }
 else {
+  // The host's own settings over the environment this ssh got from the daemon (the dev world's, already isolated).
+  const env = { ...process.env, ...h.settings };
   const child = /\brpc\b/.test(command)
-    ? spawn(process.execPath, [world.drover, 'rpc'], { env: h.env, stdio: 'inherit' })
-    : spawn('/bin/sh', ['-c', command], { env: h.env, stdio: 'inherit' });
+    ? spawn(process.execPath, [world.drover, 'rpc'], { env, stdio: 'inherit' })
+    : spawn('/bin/sh', ['-c', command], { env, stdio: 'inherit' });
   child.on('exit', (code, signal) => process.exit(code ?? (signal ? 255 : 0)));
 }

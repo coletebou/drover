@@ -28,6 +28,19 @@ const world = JSON.parse(readFileSync(path.join(DIR, 'devworld.json'), 'utf8'));
 if (!world.showcase || world.port !== PORT) { console.error(`${DIR} is not a showcase world on port ${PORT}: start node test/devworld.js --showcase --port ${PORT}`); process.exit(2); }
 const TOKEN = readFileSync(path.join(DIR, 'state', 'token'), 'utf8').trim();
 const BASE = `http://127.0.0.1:${PORT}/`;
+// The saved descriptor outlives the world, and its token is a copy of the real one: before anything is typed, the
+// server on that port must be this world's live daemon (its pid running and serving the port, its pretend hosts, its
+// HOME), not another daemon that took the port later.
+{
+  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  let daemon = null; try { daemon = JSON.parse(readFileSync(path.join(DIR, 'state', 'daemon.json'), 'utf8')); } catch { /* none */ }
+  let hosts = null;
+  try { hosts = (await (await fetch(`${BASE}api/op/host.list`, { method: 'POST', headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' }, body: '{}' })).json()).result; } catch { /* no answer */ }
+  const local = hosts?.find?.((h) => h.name === 'local');
+  const ok = alive(world.daemonPid) && daemon?.pid === world.daemonPid && new URL(daemon.url).port === String(PORT)
+    && JSON.stringify(hosts?.map((h) => h.name)) === JSON.stringify(['local', 'devbox', 'spare']) && local?.display === 'studio' && local?.home === world.home;
+  if (!ok) { console.error(`the server on port ${PORT} is not the showcase world in ${DIR}: start node test/devworld.js --showcase --port ${PORT}`); process.exit(2); }
+}
 mkdirSync(OUT, { recursive: true });
 
 // ------------------------------------------------------------ Chrome over the DevTools protocol

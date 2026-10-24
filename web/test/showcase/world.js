@@ -67,7 +67,9 @@ export const REPLIES = [
 const git = (cwd, args) => {
   const who = { GIT_AUTHOR_NAME: 'Demo Dev', GIT_AUTHOR_EMAIL: 'dev@example.com', GIT_COMMITTER_NAME: 'Demo Dev', GIT_COMMITTER_EMAIL: 'dev@example.com' };
   // No global or system config: the owner's signing, hooks and identity stay out of these checkouts.
-  const r = spawnSync('git', ['-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null', ...args], { cwd, encoding: 'utf8', env: { ...process.env, ...who, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } });
+  // Nor the caller's GIT_DIR, GIT_WORK_TREE or GIT_INDEX_FILE: those would commit into the caller's repository.
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_')));
+  const r = spawnSync('git', ['-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null', ...args], { cwd, encoding: 'utf8', env: { ...env, ...who, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } });
   if (r.status !== 0) throw new Error(`git ${args.join(' ')}: ${r.stderr}`);
 };
 /** A checkout with a short history on a branch, optionally with an uncommitted change. */
@@ -127,7 +129,8 @@ export function prepare({ dir, root, base, home = path.join(dir, 'home'), now = 
     const run = path.join('/tmp', path.basename(dir), h.name);
     for (const d of ['state', 'cache', 'claude/sessions', 'claude/projects', 'codex']) mkdirSync(path.join(hostDir, d), { recursive: true });
     for (const d of ['tmux', 'socks']) mkdirSync(path.join(run, d), { recursive: true, mode: 0o700 });
-    return { name: h.name, dir: hostDir, run, socks: path.join(run, 'socks'), agents: h.agents.map((a) => ({ ...a, cwd: path.join(home, a.cwd) })), env: { ...base, ...env(h.name, hostDir), TMUX_TMPDIR: path.join(run, 'tmux'), PATH: `${bin}:${base.PATH}` } };
+    const settings = { ...env(h.name, hostDir), TMUX_TMPDIR: path.join(run, 'tmux'), PATH: `${bin}:${base.PATH}` };
+    return { name: h.name, dir: hostDir, run, socks: path.join(run, 'socks'), agents: h.agents.map((a) => ({ ...a, cwd: path.join(home, a.cwd) })), settings, env: { ...base, ...settings } };
   });
   for (const h of HOSTS) if (containers[h.name]) writeFileSync(path.join(dir, `containers-${h.name}.jsonl`), containers[h.name].map((c) => JSON.stringify(c)).join('\n') + '\n');
 
@@ -184,9 +187,10 @@ export function prepare({ dir, root, base, home = path.join(dir, 'home'), now = 
   writeFileSync(path.join(dir, 'dotfiles', 'claude', 'drover-events.jsonl'), events.map((e) => JSON.stringify(e)).join('\n') + '\n');
   writeFileSync(path.join(dir, 'dotfiles', 'claude', 'fleet-hosts.txt'), others.map((h) => h.name).join('\n') + '\n');
 
-  // ---- what the stand-in ssh reads: each host's environment, or why it does not answer
+  // ---- what the stand-in ssh reads: each host's own settings (laid over the daemon's environment, which it inherits;
+  // never the whole environment, which would put whatever the shell exports in a file), or why it does not answer
   const hostsFile = path.join(dir, 'hosts.json');
-  writeFileSync(hostsFile, JSON.stringify({ drover: path.join(root, 'bin', 'drover'), hosts: Object.fromEntries(remotes.map((r) => [r.name, r.down ? { down: r.down } : { env: r.env }])) }, null, 1));
+  writeFileSync(hostsFile, JSON.stringify({ drover: path.join(root, 'bin', 'drover'), hosts: Object.fromEntries(remotes.map((r) => [r.name, r.down ? { down: r.down } : { settings: r.settings }])) }, null, 1), { mode: 0o600 });
 
   return {
     home,
