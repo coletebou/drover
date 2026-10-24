@@ -11,6 +11,10 @@ import { isRepoIdentity } from '../bots/access.js';
 const RRF_K = 60;
 const LEG = 200;           // candidates per leg
 export const KINDS = ['claude', 'subagent', 'codex', 'wal', 'memory', 'doc', 'reflection', 'preserved'];
+/** Kinds a plugin's remote source serves at query time (core/search/remote.js): never indexed, so never in KINDS. */
+export const REMOTE_KINDS = ['brain'];
+/** Every kind a search may ask for. */
+export const QUERY_KINDS = [...KINDS, ...REMOTE_KINDS];
 const list = (v) => (Array.isArray(v) ? v : v ? String(v).split(',') : []).map((x) => String(x).trim()).filter(Boolean);
 
 /** Words for the FTS leg: letters/digits runs of 2+ chars, deduped, at most 24. */
@@ -42,8 +46,10 @@ const HOST_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 const where = ({ kinds, days, project, repoIdentity, originHosts, role, session, status }, alias = 'c', { provenance = true, checkouts = true } = {}) => {
   const sql = [], args = [];
-  const ks = list(kinds).filter((k) => KINDS.includes(k));
+  const asked = list(kinds), ks = asked.filter((k) => KINDS.includes(k));
   if (ks.length) { sql.push(`${alias}.kind IN (${ks.map(() => '?').join(',')})`); args.push(...ks); }
+  // Only remote kinds asked for: the index holds none of them (the front asks their sources itself).
+  else if (asked.length && asked.every((k) => REMOTE_KINDS.includes(k))) sql.push('0 = 1');
   // A reflection's status lives beside its chunk (the reflections table), so a status filter keeps only reflections.
   const st = list(status).filter((x) => REFLECTION_STATUSES.includes(x));
   if (st.length) { sql.push(`${alias}.kind = 'reflection' AND ${alias}.ref IN (SELECT id FROM reflections WHERE status IN (${st.map(() => '?').join(',')}))`); args.push(...st); }

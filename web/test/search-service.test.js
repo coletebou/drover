@@ -261,7 +261,9 @@ describe('op and MCP surface', () => {
     assert.equal(isMutating('search.semantic'), false);
     assert.equal(isMutating('search.grep'), false); assert.equal(isMutating('search.grepFleet'), false);
     assert.deepEqual(META['search.grep'].s.required, ['pattern']);
-    assert.deepEqual(META['search.semantic'].s.properties.kinds.items.enum, ['claude', 'subagent', 'codex', 'wal', 'memory', 'doc', 'reflection', 'preserved']);
+    // brain: a plugin's remote source, asked by the front at query time and never indexed (core/search/remote.js).
+    assert.deepEqual(META['search.semantic'].s.properties.kinds.items.enum, ['claude', 'subagent', 'codex', 'wal', 'memory', 'doc', 'reflection', 'preserved', 'brain']);
+    assert.deepEqual(META['search.fleet'].s.properties.kinds.items.enum, META['search.semantic'].s.properties.kinds.items.enum);
   });
 });
 

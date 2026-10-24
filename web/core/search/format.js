@@ -21,6 +21,14 @@ export function coverageLine(cov) {
   return miss.length ? `not covered: ${miss.join(' · ')}` : null;
 }
 
+/** How a search's remote sources went (core/search/remote.js: the brain), one line, or null when none was in play. */
+export function remoteLine(remote) {
+  const parts = Object.entries(remote ?? {}).map(([kind, s]) => (s?.included
+    ? `${kind}: ${s.hits} hit${s.hits === 1 ? '' : 's'}${s.ms != null ? ` in ${s.ms} ms` : ''}`
+    : `${kind}: not searched (${s?.reason ?? 'unknown'})`));
+  return parts.length ? parts.join(' · ') : null;
+}
+
 /** Plain-text rendering of search.grep / search.grepFleet results for `drover grep`. */
 export function formatGrep(res, { color = false } = {}) {
   const c = (k, s) => (color ? `${C[k]}${s}${C.off}` : s);
@@ -53,6 +61,8 @@ export function formatResults(res, { color = false } = {}) {
   } else if (res) lines.push(c('dim', `${results.length} results on ${res.host} in ${res.ms} ms${res.vector && res.vector !== 'ok' ? ` (vectors ${res.vector})` : ''}`));
   const cov = coverageLine(res?.coverage);
   if (cov) lines.push(c('yellow', cov));
+  const remote = remoteLine(res?.remote);
+  if (remote) lines.push(c(Object.values(res.remote).every((s) => s?.included) ? 'dim' : 'yellow', remote));
   for (const n of res?.notes ?? []) lines.push(c('yellow', `note: ${n}`));
   results.forEach((r, i) => {
     const host = r.hosts?.length > 1 ? `${r.host} +${r.hosts.length - 1}` : r.host ?? res?.host ?? '';
@@ -61,7 +71,9 @@ export function formatResults(res, { color = false } = {}) {
     lines.push(`    ${r.role ? c('dim', `[${r.role}] `) : ''}${r.snippet ?? ''}`);
     const hint = resumeHint(r);
     const legs = [r.legs?.fts ? `words #${r.legs.fts}` : null, r.legs?.vec ? `meaning #${r.legs.vec.rank} (${r.legs.vec.sim})` : null, r.legs?.exact ? 'exact' : null].filter(Boolean).join(', ');
-    const at = r.kind === 'reflection' ? `reflection ${r.id ?? r.ref}${r.status ? ` (${r.status})` : ''}` : r.sessionId ? `session ${r.sessionId}` : r.ref ? `ref ${r.ref}` : '';
+    const at = r.kind === 'reflection' ? `reflection ${r.id ?? r.ref}${r.status ? ` (${r.status})` : ''}`
+      : r.kind === 'brain' ? `brain ${r.slug ?? ''}${r.namespace ? ` (${r.namespace})` : ''}${r.author ? ` by ${r.author}` : ''}`
+        : r.sessionId ? `session ${r.sessionId}` : r.ref ? `ref ${r.ref}` : '';
     lines.push(c('dim', `    ${at}${hint ? `  ·  ${hint}` : ''}${legs ? `  ·  ${legs}` : ''}`));
   });
   if (!results.length) lines.push('', 'No matches.');

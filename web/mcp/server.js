@@ -374,8 +374,15 @@ const COVERED = new Set(TOOLS.flatMap((t) => [...String(t.run).matchAll(/dispatc
 // files.wait waits at most this long (by name or through drover_op). A longer wait is `drover op files.wait` under
 // Claude Code's background Bash, which tells the session when it ends (skills/drover/SKILL.md).
 export const MCP_WAIT_MAX_SEC = 110;
+// A search's remote sources (the brain) are asked only by a call that says remote: true, and are kept from work by a
+// guard at the front that also reads the checkout the call comes from (core/search/remote.js): this stdio server runs
+// in the calling session's working directory. Both are set here, after argument checks, over anything the caller
+// passed. The front drops callerCwd before the search goes to any host.
+const withCallerCwd = (a) => ({ ...a, callerCwd: process.cwd(), remote: true });
 const MCP_ARGS = {
   'files.wait': (a) => { const n = Number(a.timeoutSec ?? MCP_WAIT_MAX_SEC); return { ...a, timeoutSec: Number.isFinite(n) ? Math.min(n, MCP_WAIT_MAX_SEC) : a.timeoutSec }; },
+  'search.semantic': withCallerCwd,
+  'search.fleet': withCallerCwd,
 };
 const mcpArgs = (op, a) => (MCP_ARGS[op] ? MCP_ARGS[op](a) : a);
 const generatedTool = (op) => ({
