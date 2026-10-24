@@ -1,0 +1,2 @@
+Filesystem          1024-blocks       Used  Available Capacity Mounted on
+remote{59M9S}:       5261334938 1088765216 4172569722      21% /mnt/storage box

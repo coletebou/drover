@@ -1,6 +1,6 @@
 // Fleet host list and read-only probes. Hosts come from fleet-hosts.txt and
 // ~/.ssh/config (names only); anything else is refused as a target.
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { hostname } from 'node:os';
 import path from 'node:path';
@@ -32,16 +32,36 @@ export function localShortName() {
   return (envvar('HOST') ?? hostname()).split('.')[0];
 }
 
+/**
+ * Host aliases (names only) from ~/.ssh/config and the files its Include lines name, as ssh reads them: a relative
+ * path is under ~/.ssh and a file name may be a glob. One level deep: a tool that adds machines (an ephemeral cloud
+ * box) writes them to an included file, and they are fleet targets like the rest.
+ */
 export async function sshAliases() {
-  if (!existsSync(SSH_CONFIG)) return [];
-  const text = await readFile(SSH_CONFIG, 'utf8');
-  const out = new Set();
-  for (const line of text.split('\n')) {
-    const m = line.match(/^\s*Host\s+(.+)$/i);
-    if (!m) continue;
-    for (const h of m[1].trim().split(/\s+/)) if (!h.includes('*') && !h.includes('?') && HOST_RE.test(h)) out.add(h);
+  const out = new Set(), files = [SSH_CONFIG], seen = new Set();
+  for (let i = 0; i < files.length && seen.size < 32; i++) {
+    if (seen.has(files[i])) continue;
+    seen.add(files[i]);
+    let text;
+    try { text = await readFile(files[i], 'utf8'); } catch { continue; }
+    for (const line of text.split('\n')) {
+      const inc = line.match(/^\s*Include\s+(.+)$/i);
+      if (inc) { if (i === 0) for (const p of inc[1].trim().split(/\s+/)) files.push(...(await includeFiles(p))); continue; }
+      const m = line.match(/^\s*Host\s+(.+)$/i);
+      if (!m) continue;
+      for (const h of m[1].trim().split(/\s+/)) if (!h.includes('*') && !h.includes('?') && HOST_RE.test(h)) out.add(h);
+    }
   }
   return [...out];
+}
+
+async function includeFiles(p) {
+  const abs = p.startsWith('~/') ? path.join(process.env.HOME, p.slice(2)) : path.isAbsolute(p) ? p : path.join(process.env.HOME, '.ssh', p);
+  const name = path.basename(abs), dir = path.dirname(abs);
+  if (!/[*?]/.test(name)) return [abs];
+  if (/[*?]/.test(dir)) return [];
+  const re = new RegExp(`^${name.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.')}$`);
+  try { return (await readdir(dir)).filter((n) => re.test(n)).sort().map((n) => path.join(dir, n)); } catch { return []; }
 }
 
 export async function fleetHosts() {

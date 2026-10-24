@@ -286,6 +286,66 @@ drover op files.wait '{"host":"box-a","path":"~/runs/status","glob":"WS-*.md","s
   lists every shortcut. Direct peers (Settings) let the browser call another
   daemon over a forwarded port or the tailnet instead of ssh rpc.
 
+## Vitals, resource alerts and placement
+
+```
+drover op host.vitals                                    # this machine: the daemon's last sample, or one now
+drover op fleet.vitals                                   # every machine of this identity, offline ones as last seen
+drover op fleet.place '{"class":"claude-session"}'       # where the next session should go, and why
+drover op launch.start '{"host":"auto","engine":"claude","prompt":"hi"}'   # launch where fleet.place says
+```
+
+- `host.vitals` (`core/vitals.js`, Linux and macOS, no dependencies): load per core, CPU busy, memory available (the
+  kernel's MemAvailable; on macOS the free, inactive, speculative and purgeable pages, lowered to
+  `kern.memorystatus_level` when that is smaller, plus the kernel pressure level), Linux PSI memory stalls,
+  swap used and swap pages per second (a swap storm), every real volume (one `df` for the local ones and one per
+  network or FUSE mount, each with its own timeout, so a hung remote leaves the rest measured), and each Claude Code
+  and Codex session with its whole process tree (MCP servers, language servers, the builds it runs; a Codex started
+  from a Claude Bash call is its own entry), named from the Claude registry. No command line leaves the module: argv
+  can hold a whole prompt.
+- The daemon samples its own machine every minute (`DROVER_VITALS_SECONDS`) and grades it: `checks` per metric at
+  `ok`, `warn` or `crit`. A level has to hold for three samples before it is raised or cleared, rising raises a
+  `resource` alert, a critical level that clears says so, easing is quiet, and a critical level that lasts is said
+  again every six hours. Its state lives in the state dir (`vitals-state.json`), so a restart does not repeat old news;
+  `vitals.json` is the last sample (a peer's `drover rpc` serves it without sampling), `vitals-history.jsonl` one
+  line a minute, `vitals-alerts.jsonl` what was raised. Resource alerts go to the alert ring, not the truth file, and
+  front daemons pull them with `notify.recent` like any other alert. `DROVER_VITALS=off` stops the monitor; `on`
+  forces it on a host the catalog leaves off.
+- The fleet catalog (`core/placement.js`): `DROVER_FLEET_CATALOG` (default `~/.config/drover/fleet.json`) plus every
+  `*.json` in `DROVER_FLEET_DIR` (default `~/.config/drover/fleet.d`, where a tool that starts machines drops one
+  entry each). Every host has an `identity`; this machine's comes from its own entry (found by `DF_MACHINE` in
+  `~/.df-profile`, its hostname or an alias), else `DF_IDENTITY`. `fleet.vitals` and `fleet.place` only ever read
+  hosts of that identity, so a personal fleet and a work fleet sharing one catalog never poll or place on each
+  other's machines; a host named explicitly is refused unless it is one of them. A machine whose identity cannot be
+  told (no entry of its own, no `DF_IDENTITY`) sees no other host of a catalog that names identities: it fails closed.
+  Two entries for one name with different identities are never merged (the later one is reported and ignored).
+  Without a catalog the monitor runs everywhere and the fleet is this machine plus the fleet hosts that answered the
+  last probe.
+
+  ```json
+  { "hosts": [
+      { "name": "box-a", "identity": "personal", "aliases": ["a"], "ssh": "box-a",
+        "placement": { "classes": ["claude-session", "codex-session"], "weight": 0.6, "reserveMemGB": 3 },
+        "monitor": { "enabled": true, "thresholds": { "memAvailableGB": { "warn": 4, "crit": 3 } },
+                     "volumes": { "/data": { "diskUsedPct": { "warn": 80, "crit": 90 } } }, "ignore": ["/mnt/peer"] } } ],
+    "placement": { "classes": { "gpu-job": { "needMemGB": 12, "needCores": 2 } } },
+    "monitor": { "thresholds": { "diskUsedPct": { "warn": 85 } } } }
+  ```
+
+  Thresholds are `DEFAULT_THRESHOLDS` in `core/vitals.js`, then the catalog's, then the host's; each is
+  `{ warn, crit }`, null turns a level off. `ignore` mounts are never measured.
+- `fleet.place` judges every host with a `placement` policy: the workload's memory (`claude-session` 3.5 GB,
+  `codex-session` 2, `heavy-build` 6 and 20 GB free disk, `macos-only` only on macOS) must leave the host's
+  `reserveMemGB`; load must stay under `maxLoadPerCore` and `maxLoad`; macOS memory pressure under `maxPressure`
+  (`normal`; `macos-only` may go at `warn`, never at `critical`), Linux stalls under `maxPsiSome60`; swap under
+  `maxSwapPct`/`maxSwapGB`, swapping under `maxSwapIoPerSec`; free disk on `diskPath` over `minFreeDiskGB`. Among the
+  eligible, the most memory and CPU headroom times `weight` wins (a production box gets a weight under 1), with the
+  caller's own machine winning a near tie. The answer names the host (`local`, or the ssh alias), the reason, and
+  every candidate with why it was passed over. Outside the daemon the daemon answers, through its warm ssh peers.
+- `launch.start` with `host: "auto"` (`drover_launch` too) places, then launches there; nothing starts when no host is
+  eligible. A chosen host that never accepts the ssh connection is excluded and the launch placed once more.
+- `resource` is an alert category of its own in the browser's settings (sound `fall` by default).
+
 ## Search
 
 Every host's daemon indexes what was said in its Claude Code sessions (with subagents),

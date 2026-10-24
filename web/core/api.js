@@ -30,6 +30,8 @@ import { ops as fileWaitOps, waitLimits } from './filewait.js';
 import { filterSessions, filtersGiven } from './session-filter.js';
 import { ops as searchOps } from './search/service.js';
 import * as docker from './docker.js';
+import * as vitals from './vitals.js';
+import * as placement from './placement.js';
 import { mergeHosts } from './search/query.js';
 import { OWNER } from './owner.js';
 import { UPDATE_HINT } from './util.js';
@@ -169,6 +171,7 @@ export const local = {
   // ---- host facts
   async 'host.facts'() { return hosts.localFacts(); },
   async 'host.identity'() { const f = await hosts.localFacts(); return { host: f.host, identity: f.identity, node: f.node }; },
+  async 'host.vitals'({ fresh = false } = {}) { return localVitals({ fresh: fresh === true || fresh === 'true' }); },
 
   // ---- tmux
   async 'tmux.windows'({ classify = true } = {}) {
@@ -411,7 +414,7 @@ function headlessTurns(evs = []) {
 }
 
 /** Ops that must never be forwarded (they are about the front itself). */
-const FRONT_ONLY = new Set(['host.list', 'host.probe', 'fleet.summary', 'native.summary', 'native.board', 'native.notifications', 'search.fleet', 'search.grepFleet', 'docker.fleet']);
+const FRONT_ONLY = new Set(['host.list', 'host.probe', 'fleet.summary', 'fleet.vitals', 'fleet.place', 'native.summary', 'native.board', 'native.notifications', 'search.fleet', 'search.grepFleet', 'docker.fleet']);
 
 // Per-host board data goes through the shared cache (stale-while-revalidate,
 // persisted) so the board renders at once and a down host still shows its last
@@ -517,7 +520,191 @@ export const front = {
     for (const p of perHost) for (const [k, v] of Object.entries(p.totals ?? {})) totals[k] = (totals[k] ?? 0) + v;
     return { ts: new Date().toISOString(), ms: Date.now() - t0, hosts: perHost, totals, coverage };
   },
+  /**
+   * host.vitals on every machine of this machine's identity that the fleet catalog has monitoring on for (local plus
+   * the fleet hosts that answered the last probe when there is no catalog), in parallel. Each host's answer is cached,
+   * so one that cannot answer shows its last sample, marked stale, with its age.
+   */
+  async 'fleet.vitals'({ hosts: names, fresh = false } = {}) {
+    const t0 = Date.now(), f = fresh === true || fresh === 'true';
+    const { cat, me, targets } = await fleetHostsFor('monitor', names);
+    const rows = await Promise.all(targets.map(async (t) => {
+      const t1 = Date.now();
+      try {
+        if (t.local) return vitalsRow(t, await localVitals({ fresh: f }), { ok: true, ms: Date.now() - t1 });
+        const r = await remoteVitals(t.route, { fresh: f });
+        return vitalsRow(t, r.value, { ok: !r.meta.error, ms: Date.now() - t1, age: r.meta.age, ...(r.meta.error ? { error: String(r.meta.error).slice(0, 300), stale: true } : {}) });
+      } catch (e) { return vitalsRow(t, null, { ok: false, ms: Date.now() - t1, error: String(e.message).slice(0, 300) }); }
+    }));
+    return { ts: new Date().toISOString(), ms: Date.now() - t0, identity: me.identity, catalog: cat.found ? cat.file : null, ...(cat.errors.length ? { catalogErrors: cat.errors } : {}), hosts: rows };
+  },
+  /**
+   * Where the next workload of a class should run: among this identity's catalog hosts with a placement policy, the
+   * eligible one with the most headroom (core/placement.js judge). host is "local" for this machine, else the ssh
+   * alias to reach it, or null when no host is eligible (reason says why for each). Outside the daemon the daemon
+   * answers, through its warm ssh peers, so a call stays under ten seconds.
+   */
+  async 'fleet.place'(args = {}) {
+    const ep = await daemonEndpoint();
+    if (ep) {
+      try { return await callDaemon(ep, 'fleet.place', args, { timeoutMs: 8_000 }); }
+      catch (e) { if (!(e.unreachable || (e.fromDaemon && /unknown op/i.test(e.message)))) throw e; }
+    }
+    return placeHere(args);
+  },
 };
+
+// ---------------------------------------------------------------- vitals and placement (core/vitals.js, core/placement.js)
+/** This machine's vitals: the daemon's last sample when it is recent, else one taken now and graded against this host's thresholds. */
+async function localVitals({ fresh = false } = {}) {
+  const v = fresh ? null : await vitals.latest();
+  if (v) return v;
+  const pol = await placement.monitorPolicy({ shortName: hosts.localShortName() });
+  const s = await vitals.sample({ ignore: pol.thresholds.ignore });
+  return { ...s, checks: vitals.evaluate(s, pol.thresholds), monitor: { enabled: pol.enabled, raised: vitals.monitorInfo()?.raised ?? [] } };
+}
+
+/** Another host's vitals through the cache: { value, meta }. maxAgeMs set: never older than that (placement). */
+function remoteVitals(route, { fresh = false, maxAgeMs = null, timeoutMs = 15_000 } = {}) {
+  const key = cache.keyFor('fleet.vitals.host', {}, { host: route });
+  const opts = maxAgeMs ? { ttl: maxAgeMs, maxStale: maxAgeMs, fresh } : { ttl: 30_000, maxStale: 7 * 86400_000, fresh };
+  return cache.get(key, () => callOn(route, 'host.vitals', {}, dispatchLocal, { timeoutMs }), opts);
+}
+
+function vitalsRow(t, v, extra) {
+  const checks = Array.isArray(v?.checks) ? v.checks : [];
+  return { host: t.display, route: t.route, ...extra, level: v ? vitals.worstLevel(checks) : 'unknown', problems: checks.filter((c) => c.level !== 'ok').map(({ key, level, text }) => ({ key, level, text })), raised: v?.monitor?.raised ?? [], vitals: v };
+}
+
+/**
+ * The machines a fleet vitals or placement call reads, as { route, display, local, entry }: the hosts named (vitals
+ * only), else this identity's catalog hosts with monitoring on (and this machine) or with a placement policy, else,
+ * with no catalog, this machine plus the fleet hosts that answered the last probe.
+ */
+async function fleetHostsFor(purpose, names) {
+  const cat = await placement.loadCatalog();
+  const me = await placement.whoAmI(cat, hosts.localShortName());
+  const localT = { route: 'local', display: me.entry?.name ?? hosts.localShortName(), local: true, entry: me.entry };
+  const isLocal = (n) => n === hosts.LOCAL || me.names.has(String(n).toLowerCase()) || (me.entry ? placement.hostNames(me.entry).includes(String(n).toLowerCase()) : false);
+  const targets = [];
+  if (names?.length) {
+    for (const n of names) {
+      if (isLocal(n)) { if (!targets.some((t) => t.local)) targets.push(localT); continue; }
+      const entry = cat.hosts.find((h) => placement.hostNames(h).includes(String(n).toLowerCase())) ?? null;
+      // A named host is read only when this identity may see it: with a catalog, one of this fleet's own machines.
+      if (cat.invalid && !cat.found) throw new Error(`${n} cannot be read: this machine's fleet catalog is invalid (${cat.errors[0] ?? cat.file})`);
+      if (cat.found && !(entry && placement.sameFleet(cat, me.identity, entry))) throw new Error(`${n} is not a host of this machine's fleet${me.identity ? ` (${me.identity})` : ' (this machine has no identity in the catalog)'}`);
+      const route = entry?.ssh ?? n;
+      await hosts.assertKnownHost(route);
+      targets.push({ route, display: entry?.name ?? n, local: false, entry });
+    }
+  } else if (cat.found) {
+    for (const h of placement.scoped(cat, me.identity)) {
+      const isMe = h === me.entry;
+      const wanted = purpose === 'monitor' ? isMe || h.monitor?.enabled === true : h.placement && typeof h.placement === 'object';
+      if (wanted) targets.push(isMe ? localT : { route: h.ssh ?? h.name, display: h.name, local: false, entry: h });
+    }
+    if (purpose === 'monitor' && !targets.some((t) => t.local)) targets.unshift(localT);
+  } else if (cat.invalid) {
+    // The catalog exists but does not parse: no identity can be checked, so nothing beyond this machine is read.
+    if (purpose === 'monitor') targets.push(localT);
+  } else {
+    await probeRestored;
+    const known = await hosts.knownHosts();
+    targets.push(localT, ...known.filter((h) => h.name !== hosts.LOCAL && lastProbe.get(h.name)?.up).map((h) => ({ route: h.name, display: h.name, local: false, entry: null })));
+  }
+  return { cat, me, targets };
+}
+
+/** One candidate's vitals for placement: this machine's, or another's no older than 45 s; null with why when it cannot answer. */
+async function vitalsForPlacement(t) {
+  try {
+    if (t.local) return { vitals: await localVitals(), error: null };
+    // The daemon probes every two minutes: a host it just found down is not waited for.
+    const p = notifier.daemon ? lastProbe.get(t.route) : null;
+    if (p && p.up === false && Date.now() - p.ts < 5 * 60_000) return { vitals: null, error: `down at the last probe${p.error ? `: ${p.error}` : ''}` };
+    const r = await remoteVitals(t.route, { maxAgeMs: 45_000, timeoutMs: 6_000 });
+    if (r.meta.error) return { vitals: null, error: r.meta.error };
+    const age = Date.now() - Date.parse(r.value?.ts ?? '');
+    if (!(age < 5 * 60_000)) return { vitals: null, error: `its last sample is ${Number.isFinite(age) ? `${Math.round(age / 60_000)} min` : 'of unknown'} age` };
+    return { vitals: r.value, error: null };
+  } catch (e) { return { vitals: null, error: e.message }; }
+}
+
+const given = (v) => v !== undefined && v !== null && v !== '';
+
+// Memory placed on each host in the last few minutes (fleet.place reserve: true), which its vitals may not show yet: a
+// sample can be up to 150 s old on the host and 45 s more in this cache, so back-to-back launches would all see the
+// same free memory and pile onto one host. Kept in the process that answers fleet.place (the daemon, when one runs).
+const RESERVE_MS = 4 * 60_000;
+const reserved = new Map();   // route -> [{ ts, gb }]
+/** Tests: forget every reservation. */
+export const _resetReservations = () => reserved.clear();
+function reservedGB(route, now = Date.now()) {
+  const list = (reserved.get(route) ?? []).filter((r) => now - r.ts < RESERVE_MS);
+  if (list.length) reserved.set(route, list); else reserved.delete(route);
+  return list.reduce((n, r) => n + r.gb, 0);
+}
+
+/** Hold gb on route for the next few minutes (a launch placed there); returns what is held there now. */
+function placeReserve(route, gb) {
+  reserved.set(route, [...(reserved.get(route) ?? []), { ts: Date.now(), gb }]);
+  return Math.round(reservedGB(route) * 10) / 10;
+}
+
+async function placeHere({ class: className = 'claude-session', exclude = [], prefer, needMemGB, reserve = false } = {}) {
+  const t0 = Date.now();
+  const { cat, me, targets } = await fleetHostsFor('placement');
+  const classes = placement.classesOf(cat);
+  const base = classes[className];
+  if (!base) throw new Error(`unknown class ${JSON.stringify(className)}: one of ${Object.keys(classes).join(', ')}`);
+  const cls = given(needMemGB) ? { ...base, needMemGB: Number(needMemGB) } : base;
+  if (!Number.isFinite(Number(cls.needMemGB)) || Number(cls.needMemGB) < 0) throw new Error('needMemGB must be a number of GB');
+  const ex = new Set((Array.isArray(exclude) ? exclude : [exclude]).filter((s) => typeof s === 'string' && s).map((s) => s.toLowerCase()));
+  const namesOf = (t) => [t.route, t.display, ...(t.entry ? placement.hostNames(t.entry) : []), ...(t.local ? ['local', ...me.names] : [])].map((n) => String(n).toLowerCase());
+  const excluded = targets.filter((t) => namesOf(t).some((n) => ex.has(n)));
+  const judged = await Promise.all(targets.filter((t) => !excluded.includes(t)).map(async (t) => {
+    const { vitals: v, error } = await vitalsForPlacement(t);
+    const route = t.local ? 'local' : t.route;
+    return { name: route, display: t.display, ...placement.judge({ vitals: v, policy: t.entry?.placement ?? {}, cls, className, error, pendingMemGB: reservedGB(route) }) };
+  }));
+  // The caller's own machine wins a near tie unless another is preferred: moving work costs something.
+  const pref = !given(prefer) || targets.find((t) => namesOf(t).includes(String(prefer).toLowerCase()))?.local ? 'local' : String(prefer);
+  const best = placement.choose(judged, { prefer: pref });
+  return {
+    ...(best && (reserve === true || reserve === 'true') ? { reserved: placeReserve(best.name, Number(cls.needMemGB) || 0) } : {}),
+    host: best?.name ?? null, alias: best?.display ?? null, class: className, identity: me.identity, reason: placement.reasonFor(best, judged, className), score: best?.score ?? 0,
+    candidates: judged.map(({ name, display, eligible, score, why, facts }) => ({ host: name, name: display, eligible, score, why, facts })),
+    ...(excluded.length ? { excluded: excluded.map((t) => t.display) } : {}), ...(cat.found ? {} : { catalog: null }), ms: Date.now() - t0,
+  };
+}
+
+// ssh's own words for a connection that never opened: the launch did not reach the host, so placing it again is safe.
+const NEVER_CONNECTED = /connect to host .* (timed out|Connection refused|No route to host)|Could not resolve hostname|Network is unreachable/i;
+
+/**
+ * launch.start with host "auto": fleet.place for the launch's class (placement, else the engine's session class), then
+ * the launch there. A chosen host that turns out to be unreachable (its vitals were recent, the host went down since)
+ * is excluded and the launch placed once more; any other failure is the caller's, since the launch may have started.
+ */
+async function launchPlaced(args) {
+  const { placement: placementClass, placementExclude, ...launchArgs } = args;
+  const className = placementClass || (launchArgs.engine === 'codex' ? 'codex-session' : 'claude-session');
+  const exclude = (Array.isArray(placementExclude) ? placementExclude : placementExclude ? [placementExclude] : []).map(String);
+  let failed = null;
+  for (let attempt = 0; ; attempt++) {
+    const p = await front['fleet.place']({ class: className, reserve: true, ...(exclude.length ? { exclude } : {}) });
+    if (!p.host) throw new Error(`nothing was started: ${p.reason}${failed ? `; before that ${failed}` : ''}`);
+    try {
+      const r = p.host === 'local' ? await dispatchLocal('launch.start', launchArgs) : await dispatch('launch.start', { ...launchArgs, host: p.host });
+      return { ...r, placement: { host: p.host === 'local' ? hosts.localShortName() : p.host, class: className, reason: p.reason, ...(failed ? { retriedAfter: failed } : {}) } };
+    } catch (e) {
+      if (p.host === 'local' || attempt > 0 || !NEVER_CONNECTED.test(String(e?.message ?? ''))) throw e;
+      failed = `${p.host} could not be reached (${String(e.message).slice(0, 160)})`;
+      exclude.push(p.host);
+    }
+  }
+}
 
 /**
  * One host's docker.stacks through the read cache (see docker.fleet). A host that cannot answer and has nothing cached is
@@ -626,6 +813,8 @@ export function hostTimeoutMs(op, args = {}) {
 /** Dispatch with host routing: {host:'box-a'} forwards to that box's drover rpc. */
 export async function dispatch(op, args = {}) {
   const { host, ...rest } = args ?? {};
+  // host "auto": the fleet's placement picks the machine (core/placement.js), then the launch goes there.
+  if (op === 'launch.start' && host === 'auto') return launchPlaced(rest);
   // A docker op this table does not have (down, rm, kill, ...) is refused here, never forwarded for another host to refuse.
   if (typeof op === 'string' && op.startsWith('docker.') && !local[op] && !front[op]) return dispatchLocal(op, rest);
   if (FRONT_ONLY.has(op) || !host || host === hosts.LOCAL) return dispatchLocal(op, rest);
