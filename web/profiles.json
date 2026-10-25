@@ -24,7 +24,7 @@
   "hermes": {
     "models": [],
     "profiles": [
-      { "id": "hermes-default", "label": "hermes TUI (your config.yaml model; asks before a dangerous command, Drover shows the approval)", "argv": ["--tui"], "env": {}, "default": true },
+      { "id": "hermes-default", "label": "hermes TUI (your config.yaml model; in tmux it asks before a dangerous command and Drover shows the approval; headless follows approvals.single_query_mode, deny by default)", "argv": ["--tui"], "env": {}, "default": true },
       { "id": "hermes-classic", "label": "hermes classic REPL (turns sent from Drover run but are not drawn in its window)", "argv": ["--cli"], "env": {} },
       { "id": "hermes-yolo", "label": "hermes without approval prompts (only where you trust the agent with the machine)", "argv": ["--tui", "--yolo"], "env": {} }
     ]

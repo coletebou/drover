@@ -142,7 +142,10 @@ Drover was called apx-web (CLI `apxw`) until 2026-10-15. Until 2026-11-15:
   `sessions.answer` sends the choice; a message to a session waiting on a question answers it. A tmux launch runs
   `hermes chat --tui` with a unique title (`-c <name>-<tail> --create-if-missing`) and remembers its window
   (`hermes-panes.json` in the state dir); a headless session runs each turn as one `hermes chat --oneshot --format
-  stream-json`, resuming the session the first reported. `hermes` on the PATH, or `DROVER_HERMES_BIN`;
+  stream-json`, resuming the session the first reported. A one-shot never stops for an approval: Hermes'
+  `approvals.single_query_mode` decides (`deny`, the default, refuses a dangerous command; `approve`, or the
+  `hermes-yolo` profile, runs it). One that cannot go on without a person (exit 3) leaves its prompt to the gateway,
+  and the headless entry waits with it. `hermes` on the PATH, or `DROVER_HERMES_BIN`;
   `hermes.status` says what Drover sees.
 - While a call is in flight, `drover rpc` writes a blank line every 30 s (`DROVER_RPC_BEAT_MS`); callers skip blank
   lines. It keeps an hour-long `files.wait` from looking idle, and when the write fails (the caller's ssh session is
