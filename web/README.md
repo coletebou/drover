@@ -128,6 +128,22 @@ Drover was called apx-web (CLI `apxw`) until 2026-10-15. Until 2026-11-15:
   answers new ops with "unknown op". The daemon then retires it, so it finishes what it
   owes and gets EOF only after its last reply, and retries on a fresh one, at most once
   per 10 minutes per host. A retired child that hangs is killed after 150 s.
+- Hermes Agent (`core/hermes.js`, checked against Hermes 2026.9.24): every Hermes surface is a client of one gateway
+  per profile home (`HERMES_HOME`, default `~/.hermes`; named profiles under `profiles/<name>`), the only writer of
+  `state.db`. Lists, transcripts and last replies are read-only reads of that database (a reset lineage or a compression
+  chain is one conversation; rewound rows are left out; the policy rows' client environment is never read). Live state,
+  turns and answers go to the gateway: one JSON line on its private control socket (`gateway.sock`, owner-only, as
+  Hermes requires) gives the loopback WebSocket and a single-use ticket, then JSON-RPC (`session.active_list`,
+  `session.resume` with `omit_messages`, `prompt.submit`, `approval.respond`, `clarify.respond`), one connection per
+  operation. Any WebSocket traffic holds off the idle exit of a gateway Hermes started on its own, so a listing dials it
+  only when a Hermes client is running, a turn is in flight (`session_admissions`), or the gateway is not
+  `--idle-exit`; otherwise nothing is live and the database answers. A pending approval or question is the session's
+  own dialog (`dialog`, `hash` = the prompt id, `keys`, `reported: true`), numbered as the Hermes TUI numbers it, and
+  `sessions.answer` sends the choice; a message to a session waiting on a question answers it. A tmux launch runs
+  `hermes chat --tui` with a unique title (`-c <name>-<tail> --create-if-missing`) and remembers its window
+  (`hermes-panes.json` in the state dir); a headless session runs each turn as one `hermes chat --oneshot --format
+  stream-json`, resuming the session the first reported. `hermes` on the PATH, or `DROVER_HERMES_BIN`;
+  `hermes.status` says what Drover sees.
 - While a call is in flight, `drover rpc` writes a blank line every 30 s (`DROVER_RPC_BEAT_MS`); callers skip blank
   lines. It keeps an hour-long `files.wait` from looking idle, and when the write fails (the caller's ssh session is
   gone) the waits it left end at once instead of polling for nobody. Everything else in flight still runs to its end.

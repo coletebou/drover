@@ -292,8 +292,11 @@ function sessionCols(db) {
   return { list: cols.join(', '), activity: activity.length > 1 ? `COALESCE(${activity.join(', ')})` : activity[0] ?? 'rowid' };
 }
 
-// Hermes' own sessions that are not conversations a person had: tool calls, subagents, kanban and cron runs.
-const HIDDEN_SOURCES = new Set(['tool', 'subagent', 'kanban', 'cron']);
+// The surfaces a person runs Hermes at on this machine (a row's created_source; source is rewritten to local per turn):
+// the CLI and TUI, Desktop, an ACP editor, one-shots. The rest are not listed: Hermes' own tool calls, subagents, kanban
+// and cron runs, and the conversations of its messaging platforms (Telegram, Slack and the like), where Drover is not
+// a party to the chat.
+const LOCAL_SURFACES = new Set(['cli', 'tui', 'gui', 'desktop', 'acp', 'oneshot', 'local']);
 const POLICY_PREFIX = 'gateway.local_policy.v1:';
 const secs = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 const isoOf = (v) => { const s = secs(v); return s === null ? null : new Date(s * 1000).toISOString(); };
@@ -385,7 +388,7 @@ export function storedSessions(home, { profile = null, days = 4, limit = 200, id
     const groups = new Map();
     const one = db.prepare(`SELECT ${list} FROM sessions WHERE id = ?`);
     for (const r of rows) {
-      if (HIDDEN_SOURCES.has(r.created_source ?? r.source) || r.archived || r.hidden) continue;
+      if (!LOCAL_SURFACES.has(r.created_source ?? r.source ?? 'local') || r.archived || r.hidden) continue;
       const conv = conversationOf(db, r.id, lin);
       if (!groups.has(conv)) groups.set(conv, { head: conv === r.id ? r : one.get(conv) ?? r, rows: [] });
       groups.get(conv).rows.push(r);
@@ -576,7 +579,7 @@ async function gatewayLive(gw) {
       if (s.status === 'waiting') {
         try { prompts = (await c.call('session.resume', { session_id: s.id, omit_messages: true }, { timeoutMs: 10_000 }))?.prompts ?? []; } catch { /* shown as waiting, unanswerable here */ }
       }
-      out.set(s.id, { status: STATUS[s.status] ?? String(s.status ?? 'unknown'), title: s.title ?? null, model: s.model ?? null, startedAt: isoOf(s.started_at), lastActive: isoOf(s.last_active), prompts: Array.isArray(prompts) ? prompts : [] });
+      out.set(s.id, { status: STATUS[s.status] ?? String(s.status ?? 'unknown'), title: s.title ?? null, model: s.model ?? null, startedAt: isoOf(s.started_at), lastActive: isoOf(s.last_active), source: typeof s.source === 'string' ? s.source : null, prompts: Array.isArray(prompts) ? prompts : [] });
     }
     return out;
   });
@@ -662,13 +665,15 @@ async function listSessionsUncached({ includeRecent = true, days = 4, limit = 20
     const busy = inFlight(home);
     let live = null;
     if (gw && (await mayPoll(gw, { busy: busy.size > 0 }).catch(() => false))) live = await gatewayLive(gw).catch(() => null);
-    if (!live) live = new Map([...busy].map(([id]) => [id, { status: 'busy', prompts: [] }]));
+    if (!live) live = new Map([...busy].map(([id]) => [id, { status: 'busy', source: null, prompts: [] }]));
     const stored = storedSessions(home, { profile, days, limit });
     const byId = new Map(stored.map((s) => [s.id, s]));
     const missing = [...live.keys()].filter((id) => !byId.has(id));
     if (missing.length) for (const s of storedSessions(home, { profile, ids: missing })) byId.set(s.id, s);
     const items = [];
     for (const [id, l] of live) {
+      // Not a conversation of a local surface (its stored row was left out, or the gateway names a messaging platform): not listed.
+      if (!byId.has(id) && !(l.source && LOCAL_SURFACES.has(l.source))) continue;
       const base = byId.get(id) ?? { id, sessionId: id, kind: 'hermes', engine: ENGINE, name: l.title ?? id.replace(/^local-/, '').slice(0, 8), title: l.title ?? null, cwd: null, model: l.model ?? null, ...(profile ? { profile } : {}), startedAt: l.startedAt ?? null };
       const pending = l.prompts.map(promptDialog).find(Boolean);
       const last = lastAssistant(home, id);

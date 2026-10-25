@@ -6,7 +6,7 @@
 # Drover
 
 A control plane for every coding agent you run, on every machine you run them on. Drover sees the Claude Code
-sessions, Codex threads, Grok bots and its own OpenClaw fleet manager on all your hosts, shows what each one is doing
+sessions, Codex threads, Hermes Agent sessions, Grok bots and its own OpenClaw fleet manager on all your hosts, shows what each one is doing
 and which ones are waiting on you, and lets you answer them, message them and launch new ones from a browser, a
 terminal, a Mac, an iPhone, a watch or a browser extension. It also keeps one append-only truth file of features,
 notes, messages and launches. One daemon per machine, zero npm dependencies, Node 24. Machines reach each other over
@@ -23,18 +23,22 @@ ssh, with no open ports.
 |---|---|---|
 | **Claude Code** | Interactive sessions in tmux (the session registry, the transcript, the pane) and headless `claude -p` runs it holds open | Read the chat with every tool call and result, answer a permission dialog or a question with one key, message the session's inbox, launch a new one under any profile and effort |
 | **Codex** | Threads through `codex app-server`, transcripts from the rollout files | Read the thread, message a TUI thread (`codex queue`) or a headless one, launch new ones at any reasoning effort |
+| **Hermes Agent** | Each profile's Hermes gateway, through its private control socket and loopback WebSocket, for live state, turns and answers; `~/.hermes/state.db`, read-only, for lists and transcripts | Read the chat with every tool call and result, answer an approval or a question from any client (numbered as the Hermes TUI numbers it), message a session (a turn, or the answer to the question it waits on), launch the TUI in tmux or headless one-shot turns at any reasoning effort |
 | **Grok bots** | Grok Bot agents on xAI's hosted VMs connect through Drover's bot gateway (OAuth and MCP); each bot is a session, `grok:<name>` | Send a bot work through its Routine webhook, read its replies and status reports, see it in the waiting lane when it needs you |
 | **OpenClaw** | Drover installs an OpenClaw agent as the fleet manager (`drover manager setup`) | Ask it about the whole fleet ("who is waiting on me?") from any client, have it sweep every host, float it over any tmux window |
 | **Any tmux pane** | `tmux` on each host | Read the screen, send keys and text; a paste into a pane that shows a dialog is refused unless you force it |
 
-Hermes Agent and other harnesses are not supported yet.
+Drover lists the Hermes conversations people have at their own terminals, editors and Desktop, never those of Hermes'
+messaging platforms (Telegram, Slack and the like). It reaches a Hermes gateway's WebSocket only while a Hermes client
+is running or a turn is in flight, so a gateway that Hermes started on its own still exits when idle. Other harnesses
+are not supported yet.
 
 Around those agents:
 
 - **The board**: every live agent on every host in three lanes (waiting on you, working, idle), with the dialog an agent
   shows as buttons you can press, and alerts in the browser, on the Mac, on the phone and on the watch.
-- **Launch**: start Claude Code or Codex on any host, in a tmux window or headless, with a profile, a model, an effort
-  level and a prompt; folders are trusted for you so the agent does not stop at its first-run question.
+- **Launch**: start Claude Code, Codex or Hermes on any host, in a tmux window or headless, with a profile, a model, an
+  effort level and a prompt; folders are trusted for you so Claude Code and Codex do not stop at their first-run question.
 - **The truth file**: features, notes, pins, handoffs, messages and launches, appended by people and agents alike, synced
   with your dotfiles. The board, the Features view and the manager read it.
 - **MCP**: `drover mcp` gives Claude Code and Codex the same powers as the UI (the `drover_*` tools), so one agent can

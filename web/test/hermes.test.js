@@ -163,6 +163,8 @@ function homeRows() {
       { id: S.ended, title: 'closed one', cwd: '/work/d', started_at: ago(800), ended_at: ago(700), end_reason: 'cli_close', last_activity_at: ago(700) },
       { id: S.old, title: 'last month', cwd: '/work/e', started_at: ago(30 * 86400), last_activity_at: ago(30 * 86400) },
       { id: S.oneshot, cwd: '/work/f', started_at: ago(300), source: 'oneshot', created_source: 'oneshot' },
+      { id: sid(13), title: 'a telegram chat', started_at: ago(200), source: 'telegram', created_source: 'telegram' },
+      { id: sid(14), title: 'desktop chat', cwd: '/work/g', started_at: ago(250), source: 'local', created_source: 'gui' },
     ],
     messages: [
       { session_id: S.plain, role: 'user', content: 'fix the parser please' },
@@ -186,7 +188,8 @@ describe('state.db: conversations, transcripts, last replies', () => {
   test('a reset lineage and a compression chain are each one conversation; hidden sources, archived and old rows are left out', () => {
     const list = hermes.storedSessions(HOME, {});
     const byId = new Map(list.map((s) => [s.id, s]));
-    assert.deepEqual(new Set(list.map((s) => s.id)), new Set([S.plain, S.comp, S.reset, S.tui, S.ended, S.oneshot]));
+    // Local surfaces only: a messaging platform's chat (telegram) is Hermes' own business.
+    assert.deepEqual(new Set(list.map((s) => s.id)), new Set([S.plain, S.comp, S.reset, S.tui, S.ended, S.oneshot, sid(14)]));
     // The compression chain under its first id, with the newest row's cwd and activity, and both rows' messages counted.
     assert.equal(byId.get(S.comp).cwd, '/work/b'); assert.equal(byId.get(S.comp).messageCount, 4); assert.equal(byId.get(S.comp).name, 'long job');
     assert.ok(Date.parse(byId.get(S.comp).updatedAt) > Date.parse(byId.get(S.plain).updatedAt));
@@ -241,7 +244,7 @@ describe('the gateway: when a listing may ask it, live state, prompts', () => {
   const APPROVAL = { kind: 'approval', prompt_id: 'prm-1', execution_generation: 1, command: 'rm -rf ./scratch', description: 'recursive delete', choices: ['once', 'deny', 'session', 'always'] };
   before(async () => { rmSync(HOME, { recursive: true, force: true }); makeHome(HOME, homeRows()); });
   afterEach(async () => { await gw?.close(); gw = null; reset(); });
-  const start = (opts) => startFakeHermes(HOME, { live: { [S.plain]: { status: 'waiting', title: 'fix the parser', prompts: [{ ...APPROVAL }] }, [S.tui]: { status: 'idle', title: 'tui session' }, [S.comp]: { status: 'working', title: 'long job' } }, ...opts });
+  const start = (opts) => startFakeHermes(HOME, { live: { [S.plain]: { status: 'waiting', title: 'fix the parser', prompts: [{ ...APPROVAL }] }, [S.tui]: { status: 'idle', title: 'tui session' }, [S.comp]: { status: 'working', title: 'long job' }, [sid(13)]: { status: 'working', source: 'telegram' }, [sid(99)]: { status: 'working', source: 'slack' } }, ...opts });
 
   test('an idle-exit gateway with no Hermes client running is never dialed: the database answers, and nothing is live', async () => {
     gw = await start();
@@ -265,6 +268,8 @@ describe('the gateway: when a listing may ask it, live state, prompts', () => {
     assert.equal(byId.get(S.plain).summary, 'an old compacted reply');
     assert.equal(byId.get(S.comp).status, 'busy'); assert.equal(byId.get(S.tui).status, 'idle');
     assert.equal(byId.get(S.ended).live, false);
+    assert.equal(byId.has(sid(13)), false, 'a messaging platform\'s live chat is not listed (its stored row is left out)');
+    assert.equal(byId.has(sid(99)), false, 'nor one the database has no row for yet');
     // The waiting session's prompts came from a resume without its messages.
     assert.deepEqual(gw.calls.filter((c) => c.method === 'session.resume').map((c) => c.params), [{ session_id: S.plain, omit_messages: true }]);
   });

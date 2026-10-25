@@ -126,7 +126,7 @@ export async function startFakeHermes(home, { live = {}, idleExit = true, pid = 
       const p = m.params ?? {};
       const s = sessions.get(p.session_id);
       switch (m.method) {
-        case 'session.active_list': return reply(m.id, { sessions: [...sessions].filter(mine).map(([id, x]) => ({ id, session_key: id, title: x.title ?? null, model: x.model ?? 'test-model', started_at: 1792000000, last_active: 1792000100, message_count: 0, preview: '', source: 'local', status: x.status, current: false })) });
+        case 'session.active_list': return reply(m.id, { sessions: [...sessions].filter(mine).map(([id, x]) => ({ id, session_key: id, title: x.title ?? null, model: x.model ?? 'test-model', started_at: 1792000000, last_active: 1792000100, message_count: 0, preview: '', source: x.source ?? 'local', status: x.status, current: false })) });
         case 'session.resume': {
           if (!s && !existsSync(path.join(home, 'state.db'))) return fail(m.id, 'not_found');
           if (!s) sessions.set(p.session_id, { status: 'idle', prompts: [], generation: 1 });
