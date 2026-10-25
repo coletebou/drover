@@ -10,7 +10,7 @@ import { sanitize, truncate, oneLine } from '../width.js';
 import { renderMarkdown } from '../markdown.js';
 
 const TABS = [['chat', 'Chat'], ['screen', 'Screen'], ['info', 'Info']];
-const INBOX = new Set(['claude', 'codex', 'headless', 'openclaw', 'grok']);
+const INBOX = new Set(['claude', 'codex', 'headless', 'openclaw', 'grok', 'hermes']);
 const winTarget = (t) => { const m = String(t ?? '').match(/^(.+?):(@\d+)/); return m ? `${m[1]}:${m[2]}` : (t || null); };
 // As the web UI's turnKey (ui/chat-model.js): without an id, a turn's calls and results are part of what it is, so two
 // tool-only turns (Codex's thread/read gives them no id and maybe no time) stay two.
@@ -310,7 +310,7 @@ export class SessionView {
     const s = this.session ?? {}; const w = this.window ?? {}; const t = this.t;
     const sid = s.sessionId ?? s.threadId ?? this.sid() ?? '';
     const cwd = s.cwd ?? w.cwd;
-    const resume = this.engine() === 'codex' && (s.threadId ?? sid) ? `codex resume ${s.threadId ?? sid}` : sid && (this.engine() === 'claude' || !this.engine()) ? `claude --resume ${sid}` : null;
+    const resume = this.engine() === 'codex' && (s.threadId ?? sid) ? `codex resume ${s.threadId ?? sid}` : this.engine() === 'hermes' && sid ? `hermes --tui --resume ${sid}` : sid && (this.engine() === 'claude' || !this.engine()) ? `claude --resume ${sid}` : null;
     const rows = kvRows([
       ['engine', this.engine()], ['name', t.name ?? s.name], ['status', s.status ?? w.agent?.status], ['host', t.host === 'local' ? `${this.app.frontHost ?? 'local'} (this machine)` : t.host],
       ['session id', sid], ['tmux', this.win()], ['pid', s.pid ?? w.panePid], ['cwd', cwd ? tilde(cwd) : null], ['started', s.startedAt ? new Date(s.startedAt < 1e11 ? s.startedAt * 1000 : s.startedAt).toLocaleString() : null],

@@ -250,6 +250,8 @@ export async function trustCodex(dir, { env = process.env } = {}) {
 export async function trustFolder(engine, dir, opts = {}) {
   try {
     if (typeof dir !== 'string' || !path.isAbsolute(dir)) return { engine, skipped: 'cwd is not an absolute path' };
+    // Hermes asks no folder trust question at start (2026.9.24); its first run asks about telemetry, which stays the owner's.
+    if (engine === 'hermes') return { engine, skipped: 'Hermes does not ask to trust a folder' };
     return await (engine === 'codex' ? trustCodex : trustClaude)(dir, opts);
   } catch (e) {
     _deps.log(`${engine} ${dir}: ${e.message}`);

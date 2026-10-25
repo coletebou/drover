@@ -211,7 +211,7 @@ export class Drawer {
     const n = this.ctx.state.notifies?.[sid];
     if (n && Date.now() - Date.parse(n.ts) < 20 * 60_000) body.append(h('div', { class: 'notice' }, h('span', { class: 'em' }, `asked ${fmtTime(n.ts)}: `), n.message));
     if (summary?.firstPrompt) body.append(h('p', { class: 'muted small first-prompt' }, h('span', { class: 'em' }, 'First prompt: '), summary.firstPrompt.slice(0, 400)));
-    this.chat = new ChatView({ assistantLabel: this.target.engine === 'codex' ? 'codex' : 'assistant', onRetry: (t) => this.send(t.text) });
+    this.chat = new ChatView({ assistantLabel: ['codex', 'hermes'].includes(this.target.engine) ? this.target.engine : 'assistant', onRetry: (t) => this.send(t.text) });
     body.append(this.chat.el);
     this.#updateChat({ stick: true });
   }
@@ -298,6 +298,8 @@ export class Drawer {
     const t = this.target; if (!t) return null;
     const s = this.strip();
     const win = this.windowTarget();
+    // A prompt the session reports itself (a Hermes approval or question) is not drawn in the pane, so no screen read says otherwise.
+    if (s?.reported && s.lane === 'wait') return answerModel({ ...s, kind: t.kind, id: this.sessionIdForChat() ?? t.id, host: t.host ?? 'local', sessionId: this.sessionIdForChat() });
     const base = { kind: t.kind, id: t.kind === 'window' ? win : (this.sessionIdForChat() ?? t.id), tmux: win, host: t.host ?? 'local', sessionId: this.sessionIdForChat() };
     const r = this.screenRead;
     // The board lags the pane by up to a warm cycle: after a press only this drawer's own later reads say what is on
@@ -327,6 +329,7 @@ export class Drawer {
     const cwd = s.cwd ?? t.cwd ?? t.window?.cwd;
     let cmd = null;
     if (t.engine === 'codex' && (s.threadId ?? sid)) cmd = `codex resume ${s.threadId ?? sid}`;
+    else if (t.engine === 'hermes' && sid) cmd = `hermes --tui --resume ${sid}`;
     else if (sid && (t.engine === 'claude' || !t.engine)) cmd = `claude --resume ${sid}`;
     if (!cmd) return null;
     if (cwd) cmd = `cd ${shq(cwd)} && ${cmd}`;
@@ -369,7 +372,7 @@ export class Drawer {
     const ready = this.attachments.filter((a) => a.status === 'ready');
     if (!text.trim() && !ready.length) return;
     const full = ready.length ? `${text.trim()}${text.trim() ? '\n\n' : ''}Attached file${ready.length > 1 ? 's' : ''} on ${this.hostLabel()} (read ${ready.length > 1 ? 'them' : 'it'} with the Read tool):\n${ready.map((a) => `- ${a.path}`).join('\n')}` : text;
-    const viaInbox = Boolean(sid) && (t.engine === 'claude' || t.engine === 'codex' || t.engine === 'headless' || t.engine === 'grok') && this.mode !== 'pane';
+    const viaInbox = Boolean(sid) && (t.engine === 'claude' || t.engine === 'codex' || t.engine === 'headless' || t.engine === 'grok' || t.engine === 'hermes') && this.mode !== 'pane';
     let echo = null;
     try {
       if (viaInbox) {
@@ -536,7 +539,7 @@ export class Drawer {
     const prior = keep ?? this.ta?.value ?? '';
     clear(foot);
     const t = this.target; const sid = this.sessionIdForChat(); const win = this.windowTarget();
-    const canInbox = Boolean(sid) && ['claude', 'codex', 'headless', 'grok'].includes(t.engine);
+    const canInbox = Boolean(sid) && ['claude', 'codex', 'headless', 'grok', 'hermes'].includes(t.engine);
     if (!canInbox && !win) { this.ta = null; foot.append(h('div', { class: 'muted small' }, 'Nothing to send to.')); return; }
     if (this.mode === undefined) this.mode = canInbox ? 'inbox' : 'pane';
     if (!canInbox) this.mode = 'pane';
@@ -619,7 +622,7 @@ export function transcriptMarkdown(target, turns, { last, host } = {}) {
   return head + chatItems(turns).map((it) => {
     if (it.kind === 'tools') return `*${it.line}*${it.errors ? ` (${it.errors} failed)` : ''}\n\n${it.calls.map((c) => `- ${c.name}${c.summary ? `: \`${c.summary.replace(/`/g, "'")}\`` : ''}${c.result?.isError ? ' (error)' : ''}`).join('\n')}\n`;
     if (it.kind === 'user') return `### ${it.label}${when(it.turn)}\n\n${it.text}\n`;
-    if (it.kind === 'assistant') return `### ${target?.engine === 'codex' ? 'codex' : 'assistant'}${when(it.turn)}\n\n${it.text}\n`;
+    if (it.kind === 'assistant') return `### ${['codex', 'hermes'].includes(target?.engine) ? target.engine : 'assistant'}${when(it.turn)}\n\n${it.text}\n`;
     return `> ${String(it.text).split('\n').join('\n> ')}\n`;
   }).join('\n');
 }

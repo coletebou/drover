@@ -123,14 +123,17 @@ const profile = (engine, id) => PROFILES[engine].profiles.find((p) => p.id === i
 // ---------------------------------------------------------------- the allowlist
 
 describe('checkEffort', () => {
-  test('each engine takes its own levels: claude low..max, codex low..ultra', () => {
+  test('each engine takes its own levels: claude low..max, codex low..ultra, hermes none..ultra', () => {
     assert.deepEqual([...EFFORT_LEVELS.claude], ['low', 'medium', 'high', 'xhigh', 'max']);
     assert.deepEqual([...EFFORT_LEVELS.codex], ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+    assert.deepEqual([...EFFORT_LEVELS.hermes], ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
     for (const lv of EFFORT_LEVELS.claude) assert.equal(checkEffort('claude', lv), lv);
     for (const lv of EFFORT_LEVELS.codex) assert.equal(checkEffort('codex', lv), lv);
+    for (const lv of EFFORT_LEVELS.hermes) assert.equal(checkEffort('hermes', lv), lv);
     assert.throws(() => checkEffort('claude', 'ultra'), /effort "ultra" is not valid for claude: use one of low, medium, high, xhigh, max, or omit it/);
-    assert.deepEqual([...ALL_EFFORTS], ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
-    assert.deepEqual(effortLevels(), { claude: ['low', 'medium', 'high', 'xhigh', 'max'], codex: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] });
+    assert.throws(() => checkEffort('codex', 'minimal'), /effort "minimal" is not valid for codex/);
+    assert.deepEqual([...ALL_EFFORTS], ['low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'none', 'minimal']);
+    assert.deepEqual(effortLevels(), { claude: ['low', 'medium', 'high', 'xhigh', 'max'], codex: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], hermes: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] });
   });
 
   test('omitted (undefined, null, empty string) is null, for both engines', () => {
@@ -142,8 +145,10 @@ describe('checkEffort', () => {
     for (const v of bad) {
       assert.throws(() => checkEffort('claude', v), /is not valid for claude: use one of low, medium, high, xhigh, max/, `claude ${JSON.stringify(v)}`);
       assert.throws(() => checkEffort('codex', v), /is not valid for codex: use one of low, medium, high, xhigh, max, ultra/, `codex ${JSON.stringify(v)}`);
+      // Hermes takes none and minimal; every other near miss is refused there too.
+      if (v !== 'none' && v !== 'minimal') assert.throws(() => checkEffort('hermes', v), /is not valid for hermes: use one of none, minimal, low, medium, high, xhigh, max, ultra/, `hermes ${JSON.stringify(v)}`);
     }
-    assert.throws(() => checkEffort('gemini', 'max'), /unknown engine "gemini" for effort; known: claude, codex/);
+    assert.throws(() => checkEffort('gemini', 'max'), /unknown engine "gemini" for effort; known: claude, codex, hermes/);
   });
 });
 

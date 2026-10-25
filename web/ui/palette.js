@@ -104,7 +104,7 @@ export class Palette {
     if (!this.items.length) { this.results.append(h('div', { class: 'pr' }, h('span', { class: 'kind' }, ''), h('span', { class: 'lbl muted' }, 'Nothing matches'))); return; }
     this.items.forEach((it, i) => {
       const row = h('div', { class: 'pr', 'aria-selected': i === this.sel ? 'true' : 'false', onclick: () => this.#run(it), onmousemove: () => { if (this.sel !== i) { this.sel = i; this.#draw(); } } },
-        h('span', { class: 'kind' }, ['claude', 'codex', 'headless'].includes(it.kind) ? engine(it.kind) : it.kind),
+        h('span', { class: 'kind' }, ['claude', 'codex', 'hermes', 'headless'].includes(it.kind) ? engine(it.kind) : it.kind),
         h('span', { class: 'lbl' }, it.label, it.small ? h('small', null, it.small) : null),
         it.state ? h('span', { class: 'mark' }, dot(it.state), it.state) : h('span', { class: 'hint' }, it.kind === 'command' ? 'run' : 'open'));
       this.results.append(row);

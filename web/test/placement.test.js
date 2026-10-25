@@ -248,7 +248,7 @@ describe('fleet.place, fleet.vitals and launch.start host auto through the op ta
     assert.match(g.candidates.find((c) => c.name === 'box-a').why.join(), /does not take gpu-job/);
     assert.match(g.candidates.find((c) => c.name === 'box-b').why.join(), /does not take gpu-job/);
     assert.match((await api.front['fleet.place']({ class: 'gpu-job', needMemGB: 14 })).reason, /^no eligible host for gpu-job:.*box-c: memory: 15 GB available, and 14 GB for a gpu-job would leave 1 GB/);
-    await assert.rejects(api.front['fleet.place']({ class: 'nope' }), /unknown class "nope": one of claude-session, codex-session, heavy-build, macos-only, gpu-job/);
+    await assert.rejects(api.front['fleet.place']({ class: 'nope' }), /unknown class "nope": one of claude-session, codex-session, hermes-session, heavy-build, macos-only, gpu-job/);
   });
   test('fleet.vitals: this machine and the monitored hosts; a host that stops answering shows its last sample, stale, with the error', async () => {
     await setLocal(sampleOf({ host: 'box-a', checks: [{ key: 'disk:/', level: 'warn', text: 'disk / 90% full' }] }));

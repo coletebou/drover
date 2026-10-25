@@ -14,6 +14,7 @@ process.env.DROVER_STATE = STATE;
 process.env.CLAUDE_CONFIG_DIR = path.join(dir, 'claude'); // no Claude sessions
 process.env.OPENCLAW_MANAGER_STATE_DIR = path.join(dir, 'openclaw');
 process.env.CODEX_HOME = path.join(dir, 'codex-home');
+process.env.HERMES_HOME = path.join(dir, 'hermes-home'); // no Hermes sessions
 process.env.DROVER_EVENTS = path.join(dir, 'events.jsonl');
 process.env.DROVER_DOTFILES = path.join(dir, 'dotfiles');
 process.env.DROVER_HOST = 'testbox';

@@ -54,7 +54,8 @@ export function answerModel(s) {
     return { key: k, label: KEY_LABEL[k] ?? k, kind: /^[yn]$/.test(k) ? 'letter' : 'nav' };
   });
   const question = held ? `Held message from another session${s.heldFrom ? ` (${s.heldFrom})` : ''}: deliver or drop it` : dialog?.question ?? askText ?? 'A dialog is open';
-  return { mode: 'keys', question, held, heldFrom: s.heldFrom ?? null, options, buttons, hash: s.hash ?? null, id: s.kind === 'window' ? (s.tmux ?? s.id) : s.id, target: s.tmux ?? null, host: s.host ?? 'local' };
+  // A prompt the session reports itself (a Hermes approval) is not drawn in its pane: no pane to read before a press, and no tmux.answer fallback.
+  return { mode: 'keys', question, held, heldFrom: s.heldFrom ?? null, options, buttons, hash: s.hash ?? null, id: s.kind === 'window' ? (s.tmux ?? s.id) : s.id, target: s.reported ? null : s.tmux ?? null, host: s.host ?? 'local' };
 }
 
 /** What a press did, in a few words, for a toast. */

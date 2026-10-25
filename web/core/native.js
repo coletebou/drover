@@ -62,6 +62,7 @@ const ms = (v) => { const i = toIso(v); return i ? Date.parse(i) : 0; };
 const displayName = (st) => clean(st.name, 80) || String(st.sessionId ?? st.id ?? '').slice(0, 8);
 
 const YN = /\(y\/n\)|\[Y\/n\]|\[y\/N\]/i;
+const OWN_KEYS = /^(?:[1-9]|Enter|Escape|Space|y|n)$/;
 
 /**
  * How a waiting session is answered, for clients that show buttons: the dialog (question, options), the screen hash to
@@ -70,7 +71,9 @@ const YN = /\(y\/n\)|\[Y\/n\]|\[y\/N\]/i;
  * dialogs answer to Enter, Escape and digits only (core/tmux.js keyFitsDialog). An ask with nothing on screen (a
  * question in the last reply) is answered with a message. Pure.
  */
-export function answerFields({ screen, held, dialog, hash, ask } = {}, { pathless = false } = {}) {
+export function answerFields({ screen, held, dialog, hash, ask, keys: given, answer: mode } = {}, { pathless = false } = {}) {
+  // A question its session asked in text (a Hermes clarify with no choices): answered with a message, its question shown.
+  if (mode === 'reply' && dialog?.question && !held) return { answer: 'reply', dialog: { question: clean(pathless ? noPaths(dialog.question) : dialog.question, 300), options: [] }, ...(hash ? { hash: String(hash) } : {}) };
   if (screen !== 'dialog' && !held) return ask && ask.kind !== 'finished' ? { answer: 'reply' } : {};
   // The widget-token ops name no paths: a dialog's own text keeps only the last part of one ("in ~/code/x" -> "in x").
   const text = (s, max) => clean(pathless ? noPaths(s) : s, max);
@@ -83,7 +86,9 @@ export function answerFields({ screen, held, dialog, hash, ask } = {}, { pathles
   // A multi-select question draws a box per option: Space ticks the highlighted one, Enter submits.
   if (!held && (dialog?.options ?? []).some((o) => /^\s*(?:\[[ xX✓✔]?\]|[☐☑☒◯◉●○])/.test(String(o?.label ?? '')))) keys.push('Space');
   keys.push('Enter', 'Escape');
-  return { answer: 'keys', dialog: { question, options }, ...(hash ? { hash: String(hash) } : {}), keys };
+  // A session that reports its own prompt names the keys it takes (a Hermes approval has no Space, y or n).
+  const own = Array.isArray(given) ? given.filter((k) => OWN_KEYS.test(String(k))).map(String) : null;
+  return { answer: 'keys', dialog: { question, options }, ...(hash ? { hash: String(hash) } : {}), keys: own ?? keys };
 }
 
 const PATH_RUN = /(?:~|\/(?:Users|home|private|var|tmp|opt|mnt|srv|Volumes|root|etc))(?:\/[^\s/'"`)]+)+\/?/g;
@@ -179,6 +184,7 @@ export function boardStrip(st, host) {
   if (st.finished?.ts) out.finished = { text: clean(st.finished.text, 300), ts: toIso(st.finished.ts) };
   if (st.entrypoint) out.entrypoint = st.entrypoint;
   if (st.faded) out.faded = true;
+  if (st.reported) out.reported = true;   // its dialog is the session's own (a Hermes prompt), not drawn in its pane
   if (st.lane === 'wait') Object.assign(out, answerFields(st));
   return out;
 }
@@ -253,6 +259,11 @@ function decodeCursor(v) {
  */
 function alertAnswer(a) {
   if (!a?.sessionId || !a.meta?.hash) return {};
+  // A prompt its session reports itself (a Hermes approval or question): the keys it named, or a reply in text.
+  if (a.meta.reported && a.category === 'needs-you') {
+    const dialog = { question: a.ask?.text ?? a.title ?? null, options: a.meta.options ?? [] };
+    return { ...answerFields({ screen: a.meta.answer === 'reply' ? null : 'dialog', hash: a.meta.hash, dialog, keys: a.meta.keys, answer: a.meta.answer, ask: a.ask }, { pathless: true }), reported: true };
+  }
   const held = a.category === 'held';
   if (!held && !(a.category === 'needs-you' && (a.kind === 'dialog' || a.ask?.kind === 'decision'))) return {};
   return answerFields({ screen: held ? null : 'dialog', held, hash: a.meta.hash, dialog: { question: a.ask?.text ?? a.title ?? null, options: a.meta.options ?? a.ask?.options ?? [] } }, { pathless: true });
