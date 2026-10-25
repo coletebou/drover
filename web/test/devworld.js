@@ -17,6 +17,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFakeGateway } from './fake-gateway.js';
+import { startFakeHermes } from './fake-hermes.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(HERE, '..');
@@ -183,6 +184,8 @@ for (const r of remotes) {
 
 // ------------------------------------------------------------ gateway and daemon
 const gateway = await startFakeGateway({ port: GW, token: 'dev', ...(show ? { replies: show.replies } : {}) });
+// The showcase's Hermes gateway: run as a service would be (not --idle-exit), so the daemon reads its live state with no Hermes client running.
+const hermesGw = show?.hermes ? await startFakeHermes(show.hermes.home, { live: show.hermes.live, idleExit: false }) : null;
 const env = {
   ...tmuxEnv,
   DROVER_STATE: path.join(DIR, 'state'), DROVER_CACHE: path.join(DIR, 'cache'), DROVER_SHARE: path.join(DIR, 'share'),
@@ -208,6 +211,7 @@ async function stop(code = 0) {
   // A shell that sourced env.sh keeps the stand-in ssh: once stopped, it knows no host.
   try { writeFileSync(path.join(DIR, 'hosts.json'), JSON.stringify({ drover: path.join(ROOT, 'bin', 'drover'), hosts: {} }), { mode: 0o600 }); } catch { /* gone */ }
   await gateway.close().catch(() => {});
+  await hermesGw?.close().catch(() => {});
   process.exit(code);
 }
 process.on('SIGINT', () => stop(0));

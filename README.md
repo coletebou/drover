@@ -66,6 +66,9 @@ terminals and search.
   <img alt="A Codex thread in the drawer: its shell calls and replies" src="docs/screenshots/web-codex-dark.png" width="49%">
   <img alt="A Grok bot in the drawer: the message it was sent, its status reports and its reply asking for approval" src="docs/screenshots/web-grok-dark.png" width="49%">
 </p>
+<p>
+  <img alt="A Hermes Agent session in the drawer: its terminal and file calls, its reply, and the approval it waits on with the choices numbered as the Hermes TUI numbers them" src="docs/screenshots/web-hermes-dark.png" width="49%">
+</p>
 
 ### Terminal UI and CLI
 
