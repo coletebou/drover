@@ -108,6 +108,10 @@ to a Langfuse on this host (`127.0.0.1:3000`); every secret from `~/.env_secrets
 profile sets `port` and the template's `vars` (`{{OTEL_ENDPOINT}}`, `{{CLIPROXY_API_KEY}}`); pick one at
 the first install with `--profile` (later runs keep the manifest's). Another kind of manager is a new
 `profiles/<p>.json` (and a config template if it needs one), not a code change.
+A profile may also set `flags`, lowercase on/off switches the role files read as `{{#name}}...{{/name}}`
+(and `{{^name}}`) sections: `"flags": { "github": true }` lets an overlay's AGENTS.md send one fleet's
+merge-request watch to GitHub and another's to its own forge. A flag can't reuse a scope or duty name
+(`local`, `all`, `digest`); a section whose flag no profile sets reads as off.
 
 ## The private overlay
 
