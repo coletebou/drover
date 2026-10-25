@@ -800,17 +800,18 @@ export async function answer(s, key, { expect } = {}) {
  * Deliver a message into a Hermes session. Through the gateway: a question it is holding (a clarify) gets the text as
  * its answer, which is what the TUI's "Other (type your answer)" sends too, so a session blocked on a question moves on
  * instead of queueing the message behind it; anything else becomes a turn (session.resume to subscribe, then
- * prompt.submit, which queues it behind a running turn). With no gateway up, a one-shot
- * `hermes chat --resume` runs the turn and starts one. Returns the delivery for the message event.
+ * prompt.submit, which queues it behind a running turn or a pending prompt); turn: true always does that. With no
+ * gateway up, a one-shot `hermes chat --resume` runs the turn and starts one. Returns the delivery for the message event.
  */
-export async function send(s, text, { model } = {}) {
+export async function send(s, text, { model, turn = false } = {}) {
   if (typeof text !== 'string' || !text.trim()) throw new Error('empty message');
   const gw = await gatewayFor(s.home ?? rootHome());
   if (!gw) return resumeOneShot(s, text, { model });
   const gid = s.gatewayId ?? s.id;
   return withGateway(gw, async (c) => {
     const { snap, prompts } = await currentPrompt(c, gid);
-    const free = prompts.find((p) => p.kind === 'clarify');
+    // turn: a message accepted as a turn of its own before the question was asked; it stays one.
+    const free = turn ? null : prompts.find((p) => p.kind === 'clarify');
     if (free) {
       const res = await c.call('clarify.respond', { session_id: gid, execution_generation: free.execution_generation, prompt_id: free.prompt_id, answer: text }, { timeoutMs: 15_000 });
       return { ok: res?.status === 'resolved', via: 'hermes clarify.respond', answered: free.prompt_id, ...(res?.status === 'resolved' ? {} : { error: `Hermes answered ${res?.status ?? 'nothing'}` }) };
@@ -954,7 +955,7 @@ export class HeadlessHermes {
       try {
         const s = this.sessionId ? await findSession(this.sessionId) : null;
         if (!s) throw new Error('its conversation is not known yet');
-        const r = await send(s, text);
+        const r = await send(s, text, { turn: true });
         this.onEvent?.({ type: 'hermes/handoff', text: text.slice(0, 200), via: r.via ?? null, ok: r.ok !== false });
       } catch (e) { this.onEvent?.({ type: 'hermes/error', code: null, text: `a queued message could not be delivered: ${e.message}`.slice(0, 600) }); }
     }

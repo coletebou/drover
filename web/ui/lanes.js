@@ -19,8 +19,11 @@ function askOfNotify(n) {
  * the wait lane until its next status, not only while the alert it raised is fresh.
  */
 function reportedAsk(s) {
-  if (s.engine !== 'grok' || s.status !== 'waiting') return null;
-  return { kind: 'decision', label: s.state === 'blocked' ? 'is blocked' : 'needs you', text: s.summary ?? '', options: [] };
+  if (s.status !== 'waiting') return null;
+  if (s.engine === 'grok') return { kind: 'decision', label: s.state === 'blocked' ? 'is blocked' : 'needs you', text: s.summary ?? '', options: [] };
+  // A Hermes session waiting on a prompt Drover does not answer (a secret, sudo or vault prompt): it is answered at its terminal.
+  if (s.engine === 'hermes' && !s.dialog) return { kind: 'decision', label: 'needs you', text: 'waiting on a prompt in its terminal', options: [] };
+  return null;
 }
 
 /** The tail of an agent with no pane (a Grok bot): why it went stale, else the summary it last reported. */

@@ -314,14 +314,13 @@ export async function headlessSend(id, text) {
   if (e.engine === 'claude') { e.handle.send(text); e.status = 'busy'; recordHeadlessEvent(e, { type: 'user', text }); return { ok: true }; }
   if (e.engine === 'hermes') {
     recordHeadlessEvent(e, { type: 'hermes/user', text });
-    // Waiting on a human (its one-shot left an approval or a question to the gateway): the message goes there, where it
-    // answers a question or queues behind the approval, as a message to an interactive session would.
-    // With no gateway left (it finished and exited), back to one-shot turns, which this entry tracks. A message acts, so
-    // it may dial a gateway a listing would leave alone (hermes.js mayPoll).
-    if (e.status === 'waiting' && e.sessionId) {
+    // Between one-shots the conversation is the gateway's while one is up: the message goes there, where it answers a
+    // question, or queues behind a turn or an approval, as a message to any Hermes session does (and its transcript is
+    // the conversation's). With no gateway, a one-shot this entry tracks. A message acts, so it may dial a gateway a
+    // listing would leave alone (hermes.js mayPoll).
+    if (!e.handle.child && e.sessionId) {
       const s = await hermes.findSession(e.sessionId);
-      if (s && await hermes.gatewayFor(s.home ?? hermes.rootHome())) { const r = await hermes.send(s, text); if (r.ok !== false) e.status = 'busy'; return r; }
-      e.status = 'idle';
+      if (s && await hermes.gatewayFor(s.home ?? hermes.rootHome())) return hermes.send(s, text);
     }
     // A Hermes turn already running: this one waits for it (HeadlessHermes), so its output still comes back here.
     const r = e.handle.send(text); return { ok: true, ...(r.queued ? { queuedBehindTurn: true } : {}) };
@@ -330,12 +329,13 @@ export async function headlessSend(id, text) {
 }
 
 /**
- * A headless Hermes entry that waited on a person (its one-shot left a prompt to the gateway) takes the status its
- * conversation now has: busy while the gateway runs the turn on, idle once it is done or no longer live.
+ * A headless Hermes entry with no one-shot running takes the status of its conversation (waiting, busy or idle), which
+ * the gateway serves from then on: core/api.js listSessionsLocal derives it each listing. A running one-shot's own
+ * status stands.
  */
 export function headlessSettle(id, status) {
   const e = headless.get(id);
-  if (e?.engine === 'hermes' && ['waiting', 'busy'].includes(e.status) && !e.handle?.child && ['busy', 'idle'].includes(status)) e.status = status;
+  if (e?.engine === 'hermes' && e.status !== 'stopped' && !e.handle?.child && ['waiting', 'busy', 'idle'].includes(status)) e.status = status;
 }
 
 export function headlessStop(id) {
@@ -349,7 +349,7 @@ export function headlessStop(id) {
 }
 
 export function headlessList() {
-  return [...headless.values()].map((e) => ({ id: e.id, engine: e.engine, name: e.name, cwd: e.cwd, profile: e.profile, model: e.model, ...(e.effort ? { effort: e.effort } : {}), status: e.status, exitCode: e.exitCode ?? null, startedAt: e.startedAt, sessionId: e.sessionId ?? null, threadId: e.threadId ?? null, eventCount: e.events.length, credential: e.credential ?? null, failovers: e.failovers ?? 0 }));
+  return [...headless.values()].map((e) => ({ id: e.id, engine: e.engine, name: e.name, cwd: e.cwd, profile: e.profile, model: e.model, ...(e.effort ? { effort: e.effort } : {}), status: e.status, ...(e.engine === 'hermes' ? { running: Boolean(e.handle?.child) } : {}), exitCode: e.exitCode ?? null, startedAt: e.startedAt, sessionId: e.sessionId ?? null, threadId: e.threadId ?? null, eventCount: e.events.length, credential: e.credential ?? null, failovers: e.failovers ?? 0 }));
 }
 
 export function headlessGet(id) {

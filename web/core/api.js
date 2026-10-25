@@ -122,10 +122,8 @@ async function listSessionsLocal({ includeRecent = true } = {}) {
     const conv = convOf.get(h.sessionId) ?? h.sessionId;
     headlessHermes.add(conv);
     const item = hermesById.get(conv);
-    // A waiting entry settles once its conversation moved on: busy while the gateway runs the turn, else idle.
-    if (h.status === 'waiting' && !item?.hash) { const st = item?.live && item.status === 'busy' ? 'busy' : 'idle'; launchMod.headlessSettle(h.id, st); return withHermesPrompt({ ...h, status: st }, item); }
-    // Busy with no one-shot running (an answered prompt): idle once the gateway is done (headlessSettle leaves a running turn alone).
-    if (h.status === 'busy' && !(item?.live && item.status === 'busy')) launchMod.headlessSettle(h.id, 'idle');
+    // With no one-shot running, the entry is its conversation: the gateway's status while it is live, else idle.
+    if (!h.running && h.status !== 'stopped') { const st = item?.live ? item.status : 'idle'; launchMod.headlessSettle(h.id, st); return withHermesPrompt({ ...h, status: st }, item); }
     return withHermesPrompt(h, item);
   });
   const out = [
@@ -141,15 +139,11 @@ async function listSessionsLocal({ includeRecent = true } = {}) {
   return { sessions: out, codexError: Array.isArray(cx) ? null : cx.error, host: hosts.localShortName() };
 }
 
-/**
- * A headless Hermes entry with what its conversation's live item says: while the entry waits (its one-shot left a
- * prompt to the gateway) or the item holds one, the item's status and prompt (dialog, hash, keys, answer, prompt).
- */
+/** A headless Hermes entry with the prompt its conversation holds (dialog, hash, keys, answer, prompt), when it holds one. */
 function withHermesPrompt(entry, item) {
-  if (!item?.live) return entry;
-  if (!item.hash && entry.status !== 'waiting') return entry;
+  if (!item?.live || !item.hash) return entry;
   const { dialog, hash, keys, answer, prompt } = item;
-  return { ...entry, status: item.hash ? 'waiting' : item.status, ...(item.hash ? { dialog, hash, keys, answer, prompt } : {}) };
+  return { ...entry, status: 'waiting', dialog, hash, keys, answer, prompt };
 }
 
 /** The Hermes conversation a headless Hermes entry made, live state included, or null before it reported one. */
@@ -304,12 +298,7 @@ export const local = {
     // answer). A headless Hermes entry answers for the conversation it made.
     const h = WINDOW_TARGET.test(sid) || !hermes.configured() || (await claude.findSession(sid)) ? null
       : (await headlessHermesSession(launchMod.headlessGet(sid))) ?? await hermes.findSession(sid).catch(() => null);
-    if (h) {
-      const r = await answerHermes(h, str(key, 'key', { max: 20 }), expect, actor);
-      // The turn goes on in the gateway: the headless entry that waited on it is busy now.
-      if (r.ok && launchMod.headlessGet(sid)) launchMod.headlessSettle(sid, 'busy');
-      return r;
-    }
+    if (h) return answerHermes(h, str(key, 'key', { max: 20 }), expect, actor);
     const target = await answerTarget(sid);
     return { ...(await local['tmux.answer']({ target, key, expect, actor })), target };
   },

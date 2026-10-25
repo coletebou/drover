@@ -615,7 +615,14 @@ describe('launch.start engine hermes', () => {
     const listed = (await api.dispatch('sessions.list', { includeRecent: false })).sessions.find((x) => x.id === r.headlessId);
     assert.deepEqual([listed.status, listed.hash], ['waiting', 'hl-2'], 'no Hermes client runs, but the turn in flight lets the listing see the prompt');
     await api.dispatch('sessions.answer', { id: r.headlessId, key: '1', expect: 'hl-2' });
-    assert.equal(launchMod.headlessGet(r.headlessId).status, 'busy', 'answered: the gateway runs the turn on');
+    hermes.clearCaches();
+    assert.equal((await api.dispatch('sessions.list', { includeRecent: false })).sessions.find((x) => x.id === r.headlessId).status, 'busy', 'answered: the gateway runs the turn on');
+    assert.equal(launchMod.headlessGet(r.headlessId).status, 'busy');
+    // A message now goes to the gateway (it queues behind the running turn), not to a one-shot of its own.
+    const runsNow = (await readFile(RUN_LOG, 'utf8')).trim().split('\n').length;
+    const m = await api.dispatch('sessions.message', { id: r.headlessId, text: 'then the changelog' });
+    assert.equal(m.via, 'hermes prompt.submit');
+    assert.equal((await readFile(RUN_LOG, 'utf8')).trim().split('\n').length, runsNow, 'no one-shot was started');
     gw.live.get(sessionId).status = 'idle'; psText = '  555 /x/hermes chat'; hermes.clearCaches();
     await api.dispatch('sessions.list', { includeRecent: false });
     assert.equal(launchMod.headlessGet(r.headlessId).status, 'idle', 'the gateway is done: idle');
