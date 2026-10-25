@@ -312,13 +312,21 @@ export async function launch(req, { actor = 'drover' } = {}) {
 export async function headlessSend(id, text) {
   const e = headless.get(id); if (!e) throw new Error('no such headless session');
   if (e.engine === 'claude') { e.handle.send(text); e.status = 'busy'; recordHeadlessEvent(e, { type: 'user', text }); return { ok: true }; }
-  // A Hermes turn already running: this one waits for it (HeadlessHermes), so its output still comes back here.
-  if (e.engine === 'hermes') { recordHeadlessEvent(e, { type: 'hermes/user', text }); const r = e.handle.send(text); return { ok: true, ...(r.queued ? { queuedBehindTurn: true } : {}) }; }
+  if (e.engine === 'hermes') {
+    recordHeadlessEvent(e, { type: 'hermes/user', text });
+    // Waiting on a human (its one-shot left an approval or a question to the gateway): the message goes there, where it
+    // answers a question or queues behind the approval, as a message to an interactive session would.
+    if (e.status === 'waiting' && e.sessionId) { const s = await hermes.findSession(e.sessionId); if (s) return hermes.send(s, text); }
+    // A Hermes turn already running: this one waits for it (HeadlessHermes), so its output still comes back here.
+    const r = e.handle.send(text); return { ok: true, ...(r.queued ? { queuedBehindTurn: true } : {}) };
+  }
   const r = await codex.sendTurn(e.threadId, text, { cwd: e.cwd }); e.status = 'busy'; recordHeadlessEvent(e, { type: 'user', text }); return r;
 }
 
 export function headlessStop(id) {
   const e = headless.get(id); if (!e) throw new Error('no such headless session');
+  // A Hermes turn belongs to the gateway, which runs it on with its client gone: stop it there too.
+  if (e.engine === 'hermes' && e.sessionId) hermes.findSession(e.sessionId).then((s) => (s?.live ? hermes.interrupt(s) : null)).catch(() => {});
   if (e.engine === 'claude' || e.engine === 'hermes') e.handle.stop(); else { e.unsub?.(); codex.interruptTurn(e.threadId).catch(() => {}); }
   e.status = 'stopped';
   if (e.credential) credentials.release(e.credential, e.id);

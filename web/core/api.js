@@ -109,8 +109,10 @@ async function listSessionsLocal({ includeRecent = true } = {}) {
   const live = new Set(cl.map((s) => s.sessionId));
   const codexThreads = Array.isArray(cx) ? cx : [];
   const codexIds = new Set(codexThreads.map((t) => t.threadId));
-  const headless = launchMod.headlessList();
-  // A headless Hermes session is listed once, as its headless entry (core/launch.js), not again as the conversation it made.
+  // A headless Hermes session is listed once, as its headless entry (core/launch.js), not again as the conversation it
+  // made; a prompt that conversation holds (a one-shot that needed a human left it to the gateway) comes with the entry.
+  const hermesById = new Map(hermesSessions.map((s) => [s.id, s]));
+  const headless = launchMod.headlessList().map((h) => (h.engine === hermes.ENGINE && h.sessionId ? withHermesPrompt(h, hermesById.get(h.sessionId)) : h));
   const headlessHermes = new Set(headless.filter((h) => h.engine === hermes.ENGINE && h.sessionId).map((h) => h.sessionId));
   const out = [
     ...cl.map((s) => ({ ...s, id: s.sessionId, engine: 'claude', live: s.alive })),
@@ -123,6 +125,22 @@ async function listSessionsLocal({ includeRecent = true } = {}) {
   for (const r of recent) if (!live.has(r.sessionId)) out.push({ ...r, id: r.sessionId, engine: 'claude', live: false, status: 'transcript', cwd: null });
   for (const r of rollouts) if (!codexIds.has(r.threadId)) out.push({ ...r, id: r.threadId, engine: 'codex', live: false, status: 'rollout', cwd: null });
   return { sessions: out, codexError: Array.isArray(cx) ? null : cx.error, host: hosts.localShortName() };
+}
+
+/**
+ * A headless Hermes entry with what its conversation's live item says: while the entry waits (its one-shot left a
+ * prompt to the gateway) or the item holds one, the item's status and prompt (dialog, hash, keys, answer, prompt).
+ */
+function withHermesPrompt(entry, item) {
+  if (!item?.live) return entry;
+  if (!item.hash && entry.status !== 'waiting') return entry;
+  const { dialog, hash, keys, answer, prompt } = item;
+  return { ...entry, status: item.hash ? 'waiting' : item.status, ...(item.hash ? { dialog, hash, keys, answer, prompt } : {}) };
+}
+
+/** The Hermes conversation a headless Hermes entry made, live state included, or null before it reported one. */
+async function headlessHermesSession(h) {
+  return h?.engine === hermes.ENGINE && h.sessionId && hermes.configured() ? hermes.findSession(h.sessionId).catch(() => null) : null;
 }
 
 async function sessionById(id) {
@@ -268,8 +286,10 @@ export const local = {
    */
   async 'sessions.answer'({ id, key, expect, actor = OWNER }) {
     const sid = str(id, 'id', { max: 200 });
-    // A Hermes session's approval or question is held by its gateway, not drawn in a pane: answered there (core/hermes.js answer).
-    const h = WINDOW_TARGET.test(sid) || !hermes.configured() || (await claude.findSession(sid)) ? null : await hermes.findSession(sid).catch(() => null);
+    // A Hermes session's approval or question is held by its gateway, not drawn in a pane: answered there (core/hermes.js
+    // answer). A headless Hermes entry answers for the conversation it made.
+    const h = WINDOW_TARGET.test(sid) || !hermes.configured() || (await claude.findSession(sid)) ? null
+      : (await headlessHermesSession(launchMod.headlessGet(sid))) ?? await hermes.findSession(sid).catch(() => null);
     if (h) return answerHermes(h, str(key, 'key', { max: 20 }), expect, actor);
     const target = await answerTarget(sid);
     return { ...(await local['tmux.answer']({ target, key, expect, actor })), target };
@@ -293,6 +313,12 @@ export const local = {
   async 'sessions.transcript'({ id, since = 0, limit = 200, thread }) {
     const s = await sessionById(str(id, 'id'));
     if (!s) throw new Error('session not found');
+    // A headless Hermes session reads its conversation from the database once it has one: that also has what the gateway
+    // ran after its one-shot left (an approval answered here, then the rest of the turn).
+    if (s.headless && s.engine === hermes.ENGINE && s.sessionId && hermes.configured()) {
+      const h = await hermes.findSession(s.sessionId).catch(() => null);
+      if (h) return { ...hermes.transcript(h, { since, limit }), headless: true };
+    }
     if (s.headless) return { engine: s.engine, headless: true, turns: headlessTurns(s.events), offset: s.events.length };
     if (s.engine === 'openclaw') return openclaw.transcript({ since, limit, thread });
     if (s.engine === grok.ENGINE) return grok.transcript(s.id, { since, limit });
@@ -313,7 +339,9 @@ export const local = {
     const s = await sessionById(str(id, 'id'));
     if (!s) throw new Error('session not found');
     let r = null;
-    if (s.headless) {
+    const hh = s.headless ? await headlessHermesSession(s) : null;
+    if (hh) r = hermes.lastReply(hh);
+    else if (s.headless) {
       const evs = launchMod.headlessGet(s.id)?.events ?? [];
       const turns = headlessTurns(evs).filter((t) => (t.role === 'assistant' || t.role === 'result') && t.text?.trim() && !t.delta);
       const t = turns.at(-1); if (t) r = { text: t.text, ts: t.ts ?? null };

@@ -57,17 +57,17 @@ export function rootHome(env = _deps.env()) {
   return env.HERMES_HOME ? path.resolve(env.HERMES_HOME) : path.join(env.HOME ?? '', '.hermes');
 }
 
-/** This host keeps Hermes sessions: its home has a session database. */
-export function configured(env = _deps.env()) { return existsSync(path.join(rootHome(env), 'state.db')); }
+/** This host keeps Hermes sessions: its home, or one of its named profiles, has a session database. */
+export function configured(env = _deps.env()) { return homes(env).length > 0; }
 
 /**
  * The homes to read, { home, profile }: the root, then each named profile under it (~/.hermes/profiles/<name>,
- * hermes profile create) that has a database. profile is null for the root.
+ * hermes profile create), each when it has a database: a named profile keeps its own, so it may have one while the
+ * root has none. profile is null for the root.
  */
 export function homes(env = _deps.env()) {
   const root = rootHome(env);
-  if (!existsSync(path.join(root, 'state.db'))) return [];
-  const out = [{ home: root, profile: null }];
+  const out = existsSync(path.join(root, 'state.db')) ? [{ home: root, profile: null }] : [];
   let names = [];
   try { names = readdirSync(path.join(root, 'profiles'), { withFileTypes: true }); } catch { /* no named profiles */ }
   for (const e of names) {
@@ -344,19 +344,30 @@ function conversationOf(db, id, lin) {
   let cur = id;
   for (let i = 0; i < 100; i++) {
     const r = parentOf.get(cur);
-    if (!r?.parent || r.reason !== 'compression') break;
+    // Hermes' own edge (hermes_state_common.py _COMPRESSION_CHILD_SQL) is a child of a row that ended in compression;
+    // a branch of that row carries the same parent, so only its continuation, the newest child, goes on in it.
+    if (!r?.parent || r.reason !== 'compression' || continuationOf(db, r.parent) !== cur) break;
     cur = r.parent;
   }
   return lin.owners.get(cur) ?? cur;
 }
 
-/** Every row of a conversation, oldest first: its lineage, else the row and the compression children it went on in. */
+/** The row a compression-ended row went on in: its newest child (a branch made before the compression is older), or null. */
+function continuationOf(db, id) {
+  return db.prepare("SELECT c.id FROM sessions c JOIN sessions p ON p.id = c.parent_session_id WHERE c.parent_session_id = ? AND p.end_reason = 'compression' ORDER BY c.started_at DESC, c.rowid DESC LIMIT 1").get(id)?.id ?? null;
+}
+
+/** Every row of a conversation, oldest first: its lineage, else the row and the compression continuations it went on in. */
 function rowsOf(db, id, lin) {
   if (lin.chains.has(id)) return lin.chains.get(id);
   const out = [id];
-  const next = db.prepare("SELECT c.id FROM sessions c JOIN sessions p ON p.id = c.parent_session_id WHERE c.parent_session_id = ? AND p.end_reason = 'compression' ORDER BY c.started_at LIMIT 1");
-  for (let i = 0; i < 100; i++) { const r = next.get(out.at(-1)); if (!r?.id || out.includes(r.id)) break; out.push(r.id); }
+  for (let i = 0; i < 100; i++) { const next = continuationOf(db, out.at(-1)); if (!next || out.includes(next)) break; out.push(next); }
   return out;
+}
+
+/** id -> the conversation it belongs to, for ids the gateway names (a live one may be a later segment). */
+export function conversationsOf(home, ids) {
+  return withDb(home, (db) => { const lin = lineages(db); return new Map(ids.map((id) => [id, conversationOf(db, id, lin)])); }, new Map(ids.map((id) => [id, id])));
 }
 
 const marks = (n) => Array.from({ length: n }, () => '?').join(', ');
@@ -585,6 +596,22 @@ async function gatewayLive(gw) {
   });
 }
 
+const RANK = { waiting: 3, busy: 2, starting: 2, idle: 1 };
+/**
+ * Live entries keyed by conversation: the gateway may name a later segment of one (a compressed or reset session).
+ * Two entries for one conversation keep the one that asks the most of the owner (waiting, then busy), with the
+ * gateway's own id (gatewayId), which is what session.resume and every answer must name.
+ */
+function foldLive(live, convs) {
+  const out = new Map();
+  for (const [gid, l] of live) {
+    const conv = convs.get(gid) ?? gid;
+    const was = out.get(conv);
+    if (!was || (RANK[l.status] ?? 0) > (RANK[was.status] ?? 0)) out.set(conv, { ...l, gatewayId: gid });
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------- which tmux window a session is in
 
 const PANES_FILE = () => path.join(stateDir(), 'hermes-panes.json');
@@ -666,6 +693,7 @@ async function listSessionsUncached({ includeRecent = true, days = 4, limit = 20
     let live = null;
     if (gw && (await mayPoll(gw, { busy: busy.size > 0 }).catch(() => false))) live = await gatewayLive(gw).catch(() => null);
     if (!live) live = new Map([...busy].map(([id]) => [id, { status: 'busy', source: null, prompts: [] }]));
+    live = foldLive(live, conversationsOf(home, [...live.keys()]));
     const stored = storedSessions(home, { profile, days, limit });
     const byId = new Map(stored.map((s) => [s.id, s]));
     const missing = [...live.keys()].filter((id) => !byId.has(id));
@@ -678,7 +706,7 @@ async function listSessionsUncached({ includeRecent = true, days = 4, limit = 20
       const pending = l.prompts.map(promptDialog).find(Boolean);
       const last = lastAssistant(home, id);
       items.push({
-        ...base, live: true, status: l.status, model: l.model ?? base.model ?? null, updatedAt: base.updatedAt ?? l.lastActive ?? null, statusUpdatedAt: base.statusUpdatedAt ?? l.lastActive ?? null,
+        ...base, live: true, status: l.status, ...(l.gatewayId && l.gatewayId !== id ? { gatewayId: l.gatewayId } : {}), model: l.model ?? base.model ?? null, updatedAt: base.updatedAt ?? l.lastActive ?? null, statusUpdatedAt: base.statusUpdatedAt ?? l.lastActive ?? null,
         ...(last?.text ? { summary: last.text.split('\n').map((x) => x.trim()).filter(Boolean).at(-1)?.slice(0, 200) ?? null } : {}),
         ...(pending ? { dialog: pending.dialog, hash: pending.hash, keys: pending.keys, answer: pending.answer, prompt: { kind: pending.kind, id: pending.hash } } : {}),
       });
@@ -753,14 +781,15 @@ async function currentPrompt(c, id) {
 export async function answer(s, key, { expect } = {}) {
   const gw = await gatewayOrThrow(s);
   return withGateway(gw, async (c) => {
-    const { prompts } = await currentPrompt(c, s.id);
+    const gid = s.gatewayId ?? s.id;
+    const { prompts } = await currentPrompt(c, gid);
     const shown = prompts.map((p) => ({ p, d: promptDialog(p) })).filter((x) => x.d);
     if (!shown.length) return { ok: false, refused: true, reason: 'no Hermes prompt is waiting any more' };
     const hit = expect ? shown.find((x) => x.p.prompt_id === expect) : shown.length === 1 ? shown[0] : null;
     if (!hit) return { ok: false, refused: true, reason: expect ? 'the prompt changed since you read it; read it again' : 'more than one prompt is waiting: pass the one you mean as expect', dialog: shown[0].d.dialog, hash: shown[0].d.hash, keys: shown[0].d.keys };
     const r = promptResponse(hit.p, key);
     if (r.refused) return { ok: false, refused: true, reason: r.refused, dialog: hit.d.dialog, hash: hit.d.hash, keys: hit.d.keys };
-    const res = await c.call(r.method, { session_id: s.id, execution_generation: hit.p.execution_generation, prompt_id: hit.p.prompt_id, [r.field]: r.value }, { timeoutMs: 15_000 });
+    const res = await c.call(r.method, { session_id: gid, execution_generation: hit.p.execution_generation, prompt_id: hit.p.prompt_id, [r.field]: r.value }, { timeoutMs: 15_000 });
     if (res?.status !== 'resolved') return { ok: false, refused: true, reason: res?.status === 'already_resolved' ? 'that prompt was already answered' : `Hermes answered ${JSON.stringify(res?.status ?? null)}`, dialog: hit.d.dialog, hash: hit.d.hash };
     return { ok: true, key, [r.field]: r.value, dialog: hit.d.dialog, hash: hit.d.hash, via: `hermes ${r.method}` };
   });
@@ -777,14 +806,15 @@ export async function send(s, text, { model } = {}) {
   if (typeof text !== 'string' || !text.trim()) throw new Error('empty message');
   const gw = await gatewayFor(s.home ?? rootHome());
   if (!gw) return resumeOneShot(s, text, { model });
+  const gid = s.gatewayId ?? s.id;
   return withGateway(gw, async (c) => {
-    const { snap, prompts } = await currentPrompt(c, s.id);
+    const { snap, prompts } = await currentPrompt(c, gid);
     const free = prompts.find((p) => p.kind === 'clarify');
     if (free) {
-      const res = await c.call('clarify.respond', { session_id: s.id, execution_generation: free.execution_generation, prompt_id: free.prompt_id, answer: text }, { timeoutMs: 15_000 });
+      const res = await c.call('clarify.respond', { session_id: gid, execution_generation: free.execution_generation, prompt_id: free.prompt_id, answer: text }, { timeoutMs: 15_000 });
       return { ok: res?.status === 'resolved', via: 'hermes clarify.respond', answered: free.prompt_id, ...(res?.status === 'resolved' ? {} : { error: `Hermes answered ${res?.status ?? 'nothing'}` }) };
     }
-    const receipt = await c.call('prompt.submit', { session_id: s.id, text, input_id: `drover-${randomUUID()}` }, { timeoutMs: 30_000 });
+    const receipt = await c.call('prompt.submit', { session_id: gid, text, input_id: `drover-${randomUUID()}` }, { timeoutMs: 30_000 });
     return { ok: true, via: 'hermes prompt.submit', admissionId: receipt?.admission_id ?? null, status: receipt?.status ?? null, ...(snap?.running ? { queuedBehindTurn: true } : {}) };
   });
 }
@@ -793,8 +823,9 @@ export async function send(s, text, { model } = {}) {
 export async function interrupt(s) {
   const gw = await gatewayOrThrow(s);
   return withGateway(gw, async (c) => {
-    await c.call('session.resume', { session_id: s.id, omit_messages: true }, { timeoutMs: 15_000 });
-    return c.call('session.interrupt', { session_id: s.id }, { timeoutMs: 15_000 });
+    const gid = s.gatewayId ?? s.id;
+    await c.call('session.resume', { session_id: gid, omit_messages: true }, { timeoutMs: 15_000 });
+    return c.call('session.interrupt', { session_id: gid }, { timeoutMs: 15_000 });
   });
 }
 
@@ -906,6 +937,9 @@ export class HeadlessHermes {
         this.child = null;
         if (code !== 0 || !sawResult) this.onEvent?.({ type: 'hermes/error', code, text: stderr.trim().split('\n').slice(-3).join('\n').slice(0, 600) });
         if (this.stopped) return;
+        // 3: the turn needs a human (an approval or a question; gateway_chat_view.py _detach), which the gateway holds
+        // for whoever attaches. It is answered through the gateway (sessions.answer, a message), not a new one-shot.
+        if (code === 3) { this.queue = []; this.onStatus?.('waiting'); return; }
         const next = this.queue.shift();
         if (next !== undefined) this.#turn(next);
         else this.onStatus?.('idle');

@@ -224,6 +224,30 @@ describe('state.db: conversations, transcripts, last replies', () => {
     assert.equal(hermes.lastReply(await hermes.findSession(S.comp)).text, 'long job finished');
   });
 
+  test('a branch of a row that ended in compression is its own conversation; the continuation (the newest child) folds in', () => {
+    const home = path.join(tmp, 'branch-home');
+    rmSync(home, { recursive: true, force: true });
+    makeHome(home, { sessions: [
+      { id: sid(51), title: 'trunk', started_at: NOW - 900, ended_at: NOW - 300, end_reason: 'compression' },
+      { id: sid(52), title: 'a branch', started_at: NOW - 600, parent_session_id: sid(51), last_activity_at: NOW - 500 },
+      { id: sid(53), started_at: NOW - 299, parent_session_id: sid(51), last_activity_at: NOW - 10 },
+    ], messages: [
+      { session_id: sid(51), role: 'user', content: 'trunk first' }, { session_id: sid(52), role: 'user', content: 'on the branch' }, { session_id: sid(53), role: 'assistant', content: 'trunk goes on' },
+    ] });
+    const ids = hermes.storedSessions(home, {}).map((x) => x.id).sort();
+    assert.deepEqual(ids, [sid(51), sid(52)].sort());
+    assert.deepEqual(hermes.transcriptOf(home, sid(51), {}).turns.map((t) => t.text), ['trunk first', 'trunk goes on']);
+    assert.deepEqual(hermes.transcriptOf(home, sid(52), {}).turns.map((t) => t.text), ['on the branch']);
+    assert.deepEqual([...hermes.conversationsOf(home, [sid(52), sid(53)])], [[sid(52), sid(52)], [sid(53), sid(51)]]);
+  });
+
+  test('a named profile with a database is found when the root has none', () => {
+    const root = path.join(tmp, 'profiles-only');
+    makeHome(path.join(root, 'profiles', 'work'), { sessions: [{ id: sid(61), title: 'work only', started_at: NOW - 60 }] });
+    assert.deepEqual(hermes.homes({ HERMES_HOME: root, HOME: tmp }).map((h) => h.profile), ['work']);
+    assert.equal(hermes.configured({ HERMES_HOME: root, HOME: tmp }), true);
+  });
+
   test('a host without Hermes state lists nothing and reads nothing', async () => {
     const was = process.env.HERMES_HOME;
     process.env.HERMES_HOME = path.join(tmp, 'no-hermes-here');
@@ -335,6 +359,16 @@ describe('the gateway: when a listing may ask it, live state, prompts', () => {
     assert.equal(again.refused, true); assert.match(again.reason, /no Hermes prompt is waiting/);
   });
 
+  test('a live id that is a later segment (the gateway names the compression continuation) is listed under its conversation and answered by its own id', async () => {
+    gw = await startFakeHermes(HOME, { live: { [S.compChild]: { status: 'waiting', prompts: [{ ...APPROVAL, prompt_id: 'seg-1' }] } } });
+    psText = '  555 /x/hermes chat';
+    const list = await hermes.listSessions({ includeRecent: true });
+    assert.deepEqual(list.filter((x) => [S.comp, S.compChild].includes(x.id)).map((x) => [x.id, x.live, x.gatewayId, x.hash]), [[S.comp, true, S.compChild, 'seg-1']], 'one item, under the conversation, not a second stored one');
+    const r = await hermes.answer(await hermes.findSession(S.comp), '4', { expect: 'seg-1' });
+    assert.deepEqual([r.ok, r.choice], [true, 'deny']);
+    assert.deepEqual(gw.live.get(S.compChild).answered, [{ prompt_id: 'seg-1', choice: 'deny' }]);
+  });
+
   test('answer: Escape denies, Enter allows once; a clarify takes its choice digit', async () => {
     gw = await startFakeHermes(HOME, { live: {
       [S.plain]: { status: 'waiting', prompts: [{ ...APPROVAL, prompt_id: 'a-esc' }] },
@@ -418,6 +452,8 @@ let input = ''; process.stdin.on('data', (d) => { input += d; }); process.stdin.
   fs.appendFileSync(${JSON.stringify(RUN_LOG)}, JSON.stringify({ argv: process.argv.slice(2), input, env: process.env.HERMES_HOME || null }) + '\\n');
   process.stderr.write('Session: ' + id + '\\n');
   const out = (o) => process.stdout.write(JSON.stringify(o) + '\\n');
+  // "needs-human": the turn stops at an approval, which the gateway holds; the one-shot leaves it there (exit 3).
+  if (input.startsWith('needs-human')) { out({ type: 'system', subtype: 'init', model: '', session_id: '' }); out({ type: 'result', session_id: id, exit_code: 3, failed: true, error: 'waiting for approval' }); process.stderr.write('This turn is waiting for approval\\n'); process.exitCode = 3; return; }
   setTimeout(() => {
     out({ type: 'system', subtype: 'init', model: '', session_id: '' });
     out({ type: 'tool_use', name: 'terminal', tool_call_id: 't1', input: { command: 'ls' } });
@@ -487,6 +523,8 @@ describe('ops: sessions.list, get, transcript, lastReply, message and answer rea
 
 describe('launch.start engine hermes', () => {
   const windows = [];
+  let gw = null;
+  afterEach(async () => { await gw?.close(); gw = null; reset(); });
   before(() => {
     process.env.DROVER_HERMES_BIN = FAKE_BIN;
     launchMod._deps.newWindow = async (o) => { windows.push(o); return { target: `${o.session}:5` }; };
@@ -526,6 +564,34 @@ describe('launch.start engine hermes', () => {
     assert.ok(runs.at(-1).argv.includes(`--resume=${sessionId}`));
     const listed = (await api.dispatch('sessions.list', { includeRecent: true })).sessions.filter((s) => s.id === sessionId);
     assert.deepEqual(listed, [], 'a headless Hermes session is listed once, as its headless entry');
+  });
+
+  test('headless: a turn that needs a human waits with the gateway\'s prompt, answered and read through the conversation; stop interrupts the gateway\'s turn', async () => {
+    rmSync(HOME, { recursive: true, force: true }); makeHome(HOME, homeRows()); reset();
+    const r = await api.dispatch('launch.start', { engine: 'hermes', mode: 'headless', cwd: tmp, prompt: 'needs-human: delete the build folder' });
+    const t0 = Date.now();
+    while (launchMod.headlessGet(r.headlessId).status !== 'waiting' && Date.now() - t0 < 10_000) await new Promise((res) => setTimeout(res, 20));
+    const sessionId = launchMod.headlessGet(r.headlessId).sessionId;
+    assert.equal(launchMod.headlessGet(r.headlessId).status, 'waiting');
+    // The gateway holds the conversation (the fake binary wrote no rows; the gateway's turn does).
+    gw = await startFakeHermes(HOME, { live: { [sessionId]: { status: 'waiting', prompts: [{ kind: 'approval', prompt_id: 'hl-1', execution_generation: 1, command: 'rm -rf build', choices: ['once', 'deny'] }] } } });
+    gw.writeTurn(sessionId, 'needs-human: delete the build folder');
+    psText = '  555 /x/hermes chat'; hermes.clearCaches();
+    const listed = (await api.dispatch('sessions.list', { includeRecent: true })).sessions;
+    const entry = listed.find((x) => x.id === r.headlessId);
+    assert.deepEqual([entry.status, entry.hash, entry.kind], ['waiting', 'hl-1', 'headless']);
+    assert.equal(listed.filter((x) => x.id === sessionId).length, 0, 'listed once, as the headless entry');
+    const a = await api.dispatch('sessions.answer', { id: r.headlessId, key: '1', expect: 'hl-1' });
+    assert.deepEqual([a.ok, a.choice, a.target], [true, 'once', sessionId]);
+    const t = await api.dispatch('sessions.transcript', { id: r.headlessId });
+    assert.equal(t.headless, true); assert.equal(t.turns.at(-1).text, 'echo: needs-human: delete the build folder', 'read from the conversation');
+    gw.live.get(sessionId).status = 'working';
+    hermes.clearCaches();
+    await api.dispatch('headless.stop', { id: r.headlessId });
+    const t1 = Date.now();
+    while (!gw.calls.some((c) => c.method === 'session.interrupt') && Date.now() - t1 < 5_000) await new Promise((res) => setTimeout(res, 20));
+    assert.deepEqual(gw.calls.filter((c) => c.method === 'session.interrupt').map((c) => c.params), [{ session_id: sessionId }]);
+    await gw.close(); gw = null;
   });
 
   test('a host with no hermes on the PATH refuses before anything starts', async () => {
