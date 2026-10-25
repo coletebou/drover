@@ -22,11 +22,23 @@ import * as credentials from './credpool.js';
 
 function expandHome(s) { return typeof s === 'string' ? s.replace(/^~(?=$|\/)/, process.env.HOME) : s; }
 
-/** The launch profiles: DROVER_PROFILES (a leading ~ is this user's home), else the profiles.json beside web/core. */
-export const PROFILES_FILE = expandHome(envvar('PROFILES')) || path.join(dirname(fileURLToPath(import.meta.url)), '..', 'profiles.json');
+/** The profiles.json beside web/core: the default, and what a custom file falls back to for an engine it has no section for. */
+const SHIPPED_PROFILES = path.join(dirname(fileURLToPath(import.meta.url)), '..', 'profiles.json');
+/** The launch profiles: DROVER_PROFILES (a leading ~ is this user's home), else the shipped profiles.json. */
+export const PROFILES_FILE = expandHome(envvar('PROFILES')) || SHIPPED_PROFILES;
+/** The engines a profiles file has a section for. */
+const ENGINE_SECTIONS = ['claude', 'codex', 'hermes'];
 
+/**
+ * The profiles file. A custom one (DROVER_PROFILES) written before an engine existed, as a fleet's own file usually is
+ * when Hermes arrives, gets that engine's shipped section, so the engine launches without the file being edited; a
+ * section the file has is always its own.
+ */
 export async function loadProfiles() {
-  return JSON.parse(await readFile(PROFILES_FILE, 'utf8'));
+  const own = JSON.parse(await readFile(PROFILES_FILE, 'utf8'));
+  if (PROFILES_FILE === SHIPPED_PROFILES || ENGINE_SECTIONS.every((e) => own[e])) return own;
+  const shipped = JSON.parse(await readFile(SHIPPED_PROFILES, 'utf8'));
+  return { ...own, ...Object.fromEntries(ENGINE_SECTIONS.filter((e) => !own[e] && shipped[e]).map((e) => [e, shipped[e]])) };
 }
 
 /** The tmux session a tmux launch that names none opens its window in, used when the profiles name none either. */

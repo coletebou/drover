@@ -705,9 +705,21 @@ describe('where a tmux launch opens its window, and which profiles file is read'
     };
     const [file, keys] = read({ DROVER_PROFILES: '~/profiles.json' });
     assert.equal(file, path.join(home, 'profiles.json'));
-    assert.deepEqual(keys, Object.keys(PROFILES), 'the file under the home was read');
+    // The file under the home was read; it predates Hermes, so the shipped hermes section is added to it.
+    assert.deepEqual(keys, [...Object.keys(PROFILES), 'hermes'], 'the file under the home was read');
     const [shipped] = read({});
     assert.equal(shipped, path.join(import.meta.dirname, '..', 'profiles.json'));
+  });
+
+  test('a custom profiles file keeps its own engine sections; only an engine it has none for gets the shipped one', async () => {
+    const real = JSON.parse(await readFile(new URL('../profiles.json', import.meta.url), 'utf8'));
+    const p = await launchMod.loadProfiles();
+    assert.deepEqual(p.claude, PROFILES.claude, 'its own claude section, not the shipped one');
+    assert.deepEqual(p.hermes, real.hermes);
+    const own = { ...structuredClone(PROFILES), hermes: { models: [], profiles: [{ id: 'hermes-mine', label: 'mine', argv: ['--cli'], env: {}, default: true }] } };
+    await writeFile(process.env.DROVER_PROFILES, JSON.stringify(own));
+    try { assert.deepEqual((await launchMod.loadProfiles()).hermes, own.hermes); }
+    finally { await writeFile(process.env.DROVER_PROFILES, JSON.stringify(PROFILES)); }
   });
 });
 

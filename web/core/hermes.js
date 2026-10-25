@@ -505,11 +505,18 @@ export function transcriptOf(home, id, { since = 0, limit = 200 } = {}) {
 
 // ---------------------------------------------------------------- prompts the gateway is holding
 
-const CHOICE_LABEL = { once: 'Allow once', session: 'Allow for this session', always: 'Always allow', deny: 'Deny' };
+const CHOICE_LABEL = { once: 'Allow once', session: 'Allow this session', always: 'Always allow', deny: 'Deny' };
+// The order the Hermes TUI numbers an approval's choices in, Deny last (ui-tui/src/components/prompts.tsx
+// APPROVAL_OPTS), keeping only those the gateway offers. The gateway's own list is in another order (once, deny,
+// session, always), so numbering by it would make a digit pressed here mean another choice than the same digit in
+// the pane: 4 would allow always where the pane says deny.
+const APPROVAL_ORDER = ['once', 'session', 'always', 'deny'];
+const approvalChoices = (p) => APPROVAL_ORDER.filter((c) => Array.isArray(p?.choices) && p.choices.includes(c));
 
 /**
  * A pending gateway prompt as a dialog Drover's clients answer like a pane's: { dialog: { question, options },
- * hash, keys, answer }. An approval's choices become 1..n (Enter picks the first, once; Escape denies); a clarify
+ * hash, keys, answer }. An approval's choices become 1..n in the TUI's order (Enter picks the first, once; Escape
+ * denies); a clarify
  * with choices becomes 1..n;
  * a clarify without them, or one that takes several choices, is answered with a message (answer: "reply"). hash is
  * the prompt id, the `expect` an answer must carry. null for a prompt Drover does not answer (a secret, sudo or
@@ -518,7 +525,7 @@ const CHOICE_LABEL = { once: 'Allow once', session: 'Allow for this session', al
 export function promptDialog(p) {
   if (!p || typeof p.prompt_id !== 'string') return null;
   if (p.kind === 'approval') {
-    const choices = (Array.isArray(p.choices) ? p.choices : []).filter((c) => typeof c === 'string').slice(0, 9);
+    const choices = approvalChoices(p);
     const what = [p.command, p.description ? `(${p.description})` : ''].filter(Boolean).join(' ');
     // Option 1 (Hermes lists once first) counts as highlighted, so Enter (a notification's Approve) picks it, as in a pane.
     const options = choices.map((c, i) => ({ n: i + 1, label: CHOICE_LABEL[c] ?? c, ...(i === 0 ? { selected: true } : {}) }));
@@ -536,15 +543,16 @@ export function promptDialog(p) {
 
 /** What answering a prompt with one key sends, { method, field, value } or { refused: reason }. Pure. */
 export function promptResponse(p, key) {
-  const choices = (Array.isArray(p?.choices) ? p.choices : []).filter((c) => typeof c === 'string');
   const n = /^[1-9]$/.test(String(key)) ? Number(key) : null;
   if (p?.kind === 'approval') {
+    const choices = approvalChoices(p);
     if (key === 'Escape' && choices.includes('deny')) return { method: 'approval.respond', field: 'choice', value: 'deny' };
     if (key === 'Enter' && choices.length) return { method: 'approval.respond', field: 'choice', value: choices[0] };
     if (n && n <= choices.length) return { method: 'approval.respond', field: 'choice', value: choices[n - 1] };
     return { refused: `this approval takes ${choices.map((_, i) => i + 1).join(', ')}, Enter (${choices[0] ?? 'the first'})${choices.includes('deny') ? ' or Escape (deny)' : ''}` };
   }
   if (p?.kind === 'clarify') {
+    const choices = (Array.isArray(p.choices) ? p.choices : []).filter((c) => typeof c === 'string');
     if (n && n <= choices.length && !p.multi_select) return { method: 'clarify.respond', field: 'answer', value: choices[n - 1] };
     return { refused: choices.length && !p.multi_select ? `this question takes ${choices.map((_, i) => i + 1).join(', ')}` : 'this question is answered with a message' };
   }
@@ -754,9 +762,10 @@ export async function answer(s, key, { expect } = {}) {
 }
 
 /**
- * Deliver a message into a Hermes session. Through the gateway: a question it is holding that takes free text (a
- * clarify with no choices, or several) gets the text as its answer; anything else becomes a turn (session.resume to
- * subscribe, then prompt.submit, which queues it behind a running turn). With no gateway up, a one-shot
+ * Deliver a message into a Hermes session. Through the gateway: a question it is holding (a clarify) gets the text as
+ * its answer, which is what the TUI's "Other (type your answer)" sends too, so a session blocked on a question moves on
+ * instead of queueing the message behind it; anything else becomes a turn (session.resume to subscribe, then
+ * prompt.submit, which queues it behind a running turn). With no gateway up, a one-shot
  * `hermes chat --resume` runs the turn and starts one. Returns the delivery for the message event.
  */
 export async function send(s, text, { model } = {}) {
@@ -765,7 +774,7 @@ export async function send(s, text, { model } = {}) {
   if (!gw) return resumeOneShot(s, text, { model });
   return withGateway(gw, async (c) => {
     const { snap, prompts } = await currentPrompt(c, s.id);
-    const free = prompts.find((p) => p.kind === 'clarify' && promptDialog(p)?.answer === 'reply');
+    const free = prompts.find((p) => p.kind === 'clarify');
     if (free) {
       const res = await c.call('clarify.respond', { session_id: s.id, execution_generation: free.execution_generation, prompt_id: free.prompt_id, answer: text }, { timeoutMs: 15_000 });
       return { ok: res?.status === 'resolved', via: 'hermes clarify.respond', answered: free.prompt_id, ...(res?.status === 'resolved' ? {} : { error: `Hermes answered ${res?.status ?? 'nothing'}` }) };

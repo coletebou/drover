@@ -57,14 +57,18 @@ const S = { plain: sid(1), comp: sid(2), compChild: sid(3), reset: sid(4), reset
 // ---------------------------------------------------------------- pure shapes
 
 describe('pure: prompts, keys, argv, turns, clients', () => {
-  test('an approval is a dialog: its choices as 1..n with option 1 highlighted, Enter picks it, Escape denies; the hash is the prompt id', () => {
+  test('an approval is a dialog: its choices as 1..n in the order the TUI numbers them, option 1 highlighted, Enter picks it, Escape denies; the hash is the prompt id', () => {
+    // The gateway lists once, deny, session, always; the TUI numbers once, session, always, deny (Deny last), and a
+    // digit must mean here what it means in the pane.
     const d = hermes.promptDialog({ kind: 'approval', prompt_id: 'p1', execution_generation: 3, command: 'rm -rf ./scratch', description: 'recursive delete', choices: ['once', 'deny', 'session', 'always'] });
     assert.equal(d.dialog.question, 'Run rm -rf ./scratch (recursive delete)?');
-    assert.deepEqual(d.dialog.options, [{ n: 1, label: 'Allow once', selected: true }, { n: 2, label: 'Deny' }, { n: 3, label: 'Allow for this session' }, { n: 4, label: 'Always allow' }]);
+    assert.deepEqual(d.dialog.options, [{ n: 1, label: 'Allow once', selected: true }, { n: 2, label: 'Allow this session' }, { n: 3, label: 'Always allow' }, { n: 4, label: 'Deny' }]);
     assert.deepEqual(d.keys, ['1', '2', '3', '4', 'Enter', 'Escape']);
     assert.equal(d.hash, 'p1'); assert.equal(d.answer, 'keys'); assert.equal(d.kind, 'approval');
     // A smart-denied approval offers once and deny only (session_pending_controls.py).
     assert.deepEqual(hermes.promptDialog({ kind: 'approval', prompt_id: 'p2', choices: ['once', 'deny'] }).keys, ['1', '2', 'Enter', 'Escape']);
+    // No permanent allow offered: always drops out and deny moves up, as in the TUI.
+    assert.deepEqual(hermes.promptDialog({ kind: 'approval', prompt_id: 'p3', choices: ['once', 'deny', 'session'] }).dialog.options.map((o) => o.label), ['Allow once', 'Allow this session', 'Deny']);
   });
 
   test('a clarify with choices takes their digits; one without, or a multi-select, is answered in text; a secret prompt is not Drover\'s', () => {
@@ -79,7 +83,9 @@ describe('pure: prompts, keys, argv, turns, clients', () => {
 
   test('a key becomes the response the gateway takes, and anything else is refused with what would work', () => {
     const a = { kind: 'approval', choices: ['once', 'deny', 'session', 'always'] };
-    assert.deepEqual(hermes.promptResponse(a, '3'), { method: 'approval.respond', field: 'choice', value: 'session' });
+    assert.deepEqual(hermes.promptResponse(a, '2'), { method: 'approval.respond', field: 'choice', value: 'session' });
+    assert.deepEqual(hermes.promptResponse(a, '3'), { method: 'approval.respond', field: 'choice', value: 'always' });
+    assert.deepEqual(hermes.promptResponse(a, '4'), { method: 'approval.respond', field: 'choice', value: 'deny' });
     assert.deepEqual(hermes.promptResponse(a, 'Enter'), { method: 'approval.respond', field: 'choice', value: 'once' });
     assert.deepEqual(hermes.promptResponse(a, 'Escape'), { method: 'approval.respond', field: 'choice', value: 'deny' });
     assert.match(hermes.promptResponse(a, '9').refused, /takes 1, 2, 3, 4, Enter \(once\) or Escape \(deny\)/);
@@ -317,7 +323,7 @@ describe('the gateway: when a listing may ask it, live state, prompts', () => {
     assert.equal(stale.refused, true); assert.match(stale.reason, /changed since you read it/); assert.equal(stale.hash, 'prm-1');
     const wrong = await hermes.answer(s, 'y', { expect: 'prm-1' });
     assert.equal(wrong.refused, true); assert.match(wrong.reason, /takes 1, 2, 3, 4/);
-    const ok = await hermes.answer(s, '3', { expect: 'prm-1' });
+    const ok = await hermes.answer(s, '2', { expect: 'prm-1' });
     assert.deepEqual([ok.ok, ok.choice, ok.via], [true, 'session', 'hermes approval.respond']);
     assert.deepEqual(gw.live.get(S.plain).answered, [{ prompt_id: 'prm-1', choice: 'session' }]);
     const again = await hermes.answer(s, '1', { expect: 'prm-1' });
@@ -350,12 +356,17 @@ describe('the gateway: when a listing may ask it, live state, prompts', () => {
     await assert.rejects(hermes.send(s, '   '), /empty message/);
   });
 
-  test('send: a question the session asked in text gets the message as its answer, not a new turn', async () => {
+  test('send: a question the session is waiting on gets the message as its answer (free text, or "Other" for one with choices), not a new turn', async () => {
     gw = await startFakeHermes(HOME, { live: { [S.tui]: { status: 'waiting', prompts: [{ kind: 'clarify', prompt_id: 'q-free', execution_generation: 1, question: 'What should I call it?', choices: [] }] } } });
     const r = await hermes.send(await hermes.findSession(S.tui), 'call it parser-v2');
     assert.deepEqual([r.ok, r.via, r.answered], [true, 'hermes clarify.respond', 'q-free']);
     assert.deepEqual(gw.live.get(S.tui).answered, [{ prompt_id: 'q-free', answer: 'call it parser-v2' }]);
     assert.equal(gw.submitted.length, 0);
+    await gw.close(); reset();
+    gw = await startFakeHermes(HOME, { live: { [S.tui]: { status: 'waiting', prompts: [{ kind: 'clarify', prompt_id: 'q-pick', execution_generation: 1, question: 'Which fixture?', choices: ['small', 'large'] }] } } });
+    const other = await hermes.send(await hermes.findSession(S.tui), 'medium, please');
+    assert.deepEqual([other.via, other.answered], ['hermes clarify.respond', 'q-pick']);
+    assert.deepEqual(gw.live.get(S.tui).answered, [{ prompt_id: 'q-pick', answer: 'medium, please' }]);
   });
 
   test('a named profile the root gateway multiplexes is reached through the root socket with its own profile id', async () => {
