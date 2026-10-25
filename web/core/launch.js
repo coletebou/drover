@@ -316,11 +316,26 @@ export async function headlessSend(id, text) {
     recordHeadlessEvent(e, { type: 'hermes/user', text });
     // Waiting on a human (its one-shot left an approval or a question to the gateway): the message goes there, where it
     // answers a question or queues behind the approval, as a message to an interactive session would.
-    if (e.status === 'waiting' && e.sessionId) { const s = await hermes.findSession(e.sessionId); if (s) return hermes.send(s, text); }
+    // With no gateway left (it finished and exited), back to one-shot turns, which this entry tracks. A message acts, so
+    // it may dial a gateway a listing would leave alone (hermes.js mayPoll).
+    if (e.status === 'waiting' && e.sessionId) {
+      const s = await hermes.findSession(e.sessionId);
+      if (s && await hermes.gatewayFor(s.home ?? hermes.rootHome())) { const r = await hermes.send(s, text); if (r.ok !== false) e.status = 'busy'; return r; }
+      e.status = 'idle';
+    }
     // A Hermes turn already running: this one waits for it (HeadlessHermes), so its output still comes back here.
     const r = e.handle.send(text); return { ok: true, ...(r.queued ? { queuedBehindTurn: true } : {}) };
   }
   const r = await codex.sendTurn(e.threadId, text, { cwd: e.cwd }); e.status = 'busy'; recordHeadlessEvent(e, { type: 'user', text }); return r;
+}
+
+/**
+ * A headless Hermes entry that waited on a person (its one-shot left a prompt to the gateway) takes the status its
+ * conversation now has: busy while the gateway runs the turn on, idle once it is done or no longer live.
+ */
+export function headlessSettle(id, status) {
+  const e = headless.get(id);
+  if (e?.engine === 'hermes' && ['waiting', 'busy'].includes(e.status) && !e.handle?.child && ['busy', 'idle'].includes(status)) e.status = status;
 }
 
 export function headlessStop(id) {

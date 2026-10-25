@@ -140,9 +140,11 @@ export async function startFakeHermes(home, { live = {}, idleExit = true, pid = 
           if (!subscribed.has(p.session_id)) return fail(m.id, 'permission_denied');
           submitted.push({ session_id: p.session_id, text: p.text, input_id: p.input_id });
           const x = sessions.get(p.session_id);
-          const was = x.status;
-          x.status = 'working';
-          setTimeout(() => { writeTurn(p.session_id, p.text); if (x.status === 'working') x.status = was === 'waiting' ? 'waiting' : 'idle'; }, replyDelayMs);
+          // Behind a pending prompt the turn waits its turn (queued); otherwise it runs and replies.
+          if (!x.prompts.length) {
+            x.status = 'working';
+            setTimeout(() => { writeTurn(p.session_id, p.text); if (x.status === 'working') x.status = 'idle'; }, replyDelayMs);
+          }
           return reply(m.id, { admission_id: randomUUID().replace(/-/g, ''), status: 'queued', sequence: submitted.length });
         }
         case 'approval.respond': case 'clarify.respond': {

@@ -111,9 +111,23 @@ async function listSessionsLocal({ includeRecent = true } = {}) {
   const codexIds = new Set(codexThreads.map((t) => t.threadId));
   // A headless Hermes session is listed once, as its headless entry (core/launch.js), not again as the conversation it
   // made; a prompt that conversation holds (a one-shot that needed a human left it to the gateway) comes with the entry.
+  // Matched by conversation: a resumed one-shot may report a later segment, and the list keys conversations.
   const hermesById = new Map(hermesSessions.map((s) => [s.id, s]));
-  const headless = launchMod.headlessList().map((h) => (h.engine === hermes.ENGINE && h.sessionId ? withHermesPrompt(h, hermesById.get(h.sessionId)) : h));
-  const headlessHermes = new Set(headless.filter((h) => h.engine === hermes.ENGINE && h.sessionId).map((h) => h.sessionId));
+  const rawHeadless = launchMod.headlessList();
+  const hermesIds = rawHeadless.filter((h) => h.engine === hermes.ENGINE && h.sessionId).map((h) => h.sessionId);
+  const convOf = hermesIds.length && hermes.configured() ? hermes.conversationsOf(hermes.rootHome(), hermesIds) : new Map();
+  const headlessHermes = new Set();
+  const headless = rawHeadless.map((h) => {
+    if (h.engine !== hermes.ENGINE || !h.sessionId) return h;
+    const conv = convOf.get(h.sessionId) ?? h.sessionId;
+    headlessHermes.add(conv);
+    const item = hermesById.get(conv);
+    // A waiting entry settles once its conversation moved on: busy while the gateway runs the turn, else idle.
+    if (h.status === 'waiting' && !item?.hash) { const st = item?.live && item.status === 'busy' ? 'busy' : 'idle'; launchMod.headlessSettle(h.id, st); return withHermesPrompt({ ...h, status: st }, item); }
+    // Busy with no one-shot running (an answered prompt): idle once the gateway is done (headlessSettle leaves a running turn alone).
+    if (h.status === 'busy' && !(item?.live && item.status === 'busy')) launchMod.headlessSettle(h.id, 'idle');
+    return withHermesPrompt(h, item);
+  });
   const out = [
     ...cl.map((s) => ({ ...s, id: s.sessionId, engine: 'claude', live: s.alive })),
     ...codexThreads.map((t) => ({ ...t, id: t.threadId, engine: 'codex', live: t.loaded || /active|running|busy/i.test(t.status) })),
@@ -290,7 +304,12 @@ export const local = {
     // answer). A headless Hermes entry answers for the conversation it made.
     const h = WINDOW_TARGET.test(sid) || !hermes.configured() || (await claude.findSession(sid)) ? null
       : (await headlessHermesSession(launchMod.headlessGet(sid))) ?? await hermes.findSession(sid).catch(() => null);
-    if (h) return answerHermes(h, str(key, 'key', { max: 20 }), expect, actor);
+    if (h) {
+      const r = await answerHermes(h, str(key, 'key', { max: 20 }), expect, actor);
+      // The turn goes on in the gateway: the headless entry that waited on it is busy now.
+      if (r.ok && launchMod.headlessGet(sid)) launchMod.headlessSettle(sid, 'busy');
+      return r;
+    }
     const target = await answerTarget(sid);
     return { ...(await local['tmux.answer']({ target, key, expect, actor })), target };
   },

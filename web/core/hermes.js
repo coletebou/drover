@@ -651,7 +651,8 @@ async function windowsOf(home, live) {
     if (!m) continue;
     let crumb;
     try { crumb = JSON.parse(readFileSync(path.join(dir, n), 'utf8')); } catch { continue; }
-    const s = live.find((x) => x.id === crumb?.session_id && !out.has(x.id));
+    // The breadcrumb names the segment the REPL runs, which the gateway names too (gatewayId once folded).
+    const s = live.find((x) => (x.id === crumb?.session_id || x.gatewayId === crumb?.session_id) && !out.has(x.id));
     if (!s) continue;
     panes ??= await _deps.paneTtys().catch(() => []);
     // The breadcrumb names the tty as Hermes sanitized it: /dev/ttys003 -> dev-ttys003.
@@ -939,13 +940,24 @@ export class HeadlessHermes {
         if (this.stopped) return;
         // 3: the turn needs a human (an approval or a question; gateway_chat_view.py _detach), which the gateway holds
         // for whoever attaches. It is answered through the gateway (sessions.answer, a message), not a new one-shot.
-        if (code === 3) { this.queue = []; this.onStatus?.('waiting'); return; }
+        if (code === 3) { const queued = this.queue; this.queue = []; this.onStatus?.('waiting'); this.#handOff(queued); return; }
         const next = this.queue.shift();
         if (next !== undefined) this.#turn(next);
         else this.onStatus?.('idle');
       },
     });
     this.child.stdin.end(text);
+  }
+  /** Messages sent while a turn ran that then left a prompt to the gateway: they go to the gateway, in order, behind it. */
+  async #handOff(texts) {
+    for (const text of texts) {
+      try {
+        const s = this.sessionId ? await findSession(this.sessionId) : null;
+        if (!s) throw new Error('its conversation is not known yet');
+        const r = await send(s, text);
+        this.onEvent?.({ type: 'hermes/handoff', text: text.slice(0, 200), via: r.via ?? null, ok: r.ok !== false });
+      } catch (e) { this.onEvent?.({ type: 'hermes/error', code: null, text: `a queued message could not be delivered: ${e.message}`.slice(0, 600) }); }
+    }
   }
   stop() {
     this.stopped = true; this.queue = [];

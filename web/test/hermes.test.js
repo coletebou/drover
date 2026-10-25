@@ -338,11 +338,14 @@ describe('the gateway: when a listing may ask it, live state, prompts', () => {
     await hermes.rememberPane('fix the parser', 'agents:@7', { home: HOME });
     mkdirSync(path.join(HOME, 'terminal-sessions'), { recursive: true });
     writeFileSync(path.join(HOME, 'terminal-sessions', 'tty-dev-ttys009'), JSON.stringify({ session_id: S.tui, cwd: '/work/tui', ts: NOW }));
-    panes = [{ tty: '/dev/ttys004', window: 'main:@1' }, { tty: '/dev/ttys009', window: 'main:@3' }];
+    // A compressed REPL session: the breadcrumb names the segment the gateway names, which folds into its conversation.
+    gw.live.set(S.compChild, { status: 'idle', prompts: [], generation: 1 }); gw.live.delete(S.comp);
+    writeFileSync(path.join(HOME, 'terminal-sessions', 'tty-dev-ttys011'), JSON.stringify({ session_id: S.compChild, ts: NOW }));
+    panes = [{ tty: '/dev/ttys004', window: 'main:@1' }, { tty: '/dev/ttys009', window: 'main:@3' }, { tty: '/dev/ttys011', window: 'main:@4' }];
     const list = await hermes.listSessions({ includeRecent: false });
     assert.equal(list.find((s) => s.id === S.plain).tmux, 'agents:@7');
     assert.equal(list.find((s) => s.id === S.tui).tmux, 'main:@3');
-    assert.equal(list.find((s) => s.id === S.comp).tmux, undefined);
+    assert.deepEqual([list.find((s) => s.id === S.comp).gatewayId, list.find((s) => s.id === S.comp).tmux], [S.compChild, 'main:@4']);
   });
 
   test('answer: the prompt the hash names, with exactly the params the gateway checks; anything else is refused with the dialog as it is now', async () => {
@@ -453,7 +456,7 @@ let input = ''; process.stdin.on('data', (d) => { input += d; }); process.stdin.
   process.stderr.write('Session: ' + id + '\\n');
   const out = (o) => process.stdout.write(JSON.stringify(o) + '\\n');
   // "needs-human": the turn stops at an approval, which the gateway holds; the one-shot leaves it there (exit 3).
-  if (input.startsWith('needs-human')) { out({ type: 'system', subtype: 'init', model: '', session_id: '' }); out({ type: 'result', session_id: id, exit_code: 3, failed: true, error: 'waiting for approval' }); process.stderr.write('This turn is waiting for approval\\n'); process.exitCode = 3; return; }
+  if (input.startsWith('needs-human')) { setTimeout(() => { out({ type: 'system', subtype: 'init', model: '', session_id: '' }); out({ type: 'result', session_id: id, exit_code: 3, failed: true, error: 'waiting for approval' }); process.stderr.write('This turn is waiting for approval\\n'); process.exitCode = 3; }, input.includes('slow') ? 300 : 10); return; }
   setTimeout(() => {
     out({ type: 'system', subtype: 'init', model: '', session_id: '' });
     out({ type: 'tool_use', name: 'terminal', tool_call_id: 't1', input: { command: 'ls' } });
@@ -592,6 +595,37 @@ describe('launch.start engine hermes', () => {
     while (!gw.calls.some((c) => c.method === 'session.interrupt') && Date.now() - t1 < 5_000) await new Promise((res) => setTimeout(res, 20));
     assert.deepEqual(gw.calls.filter((c) => c.method === 'session.interrupt').map((c) => c.params), [{ session_id: sessionId }]);
     await gw.close(); gw = null;
+  });
+
+  test('headless: a message sent mid-turn reaches the gateway when the turn leaves a prompt; the entry settles busy, then idle, then runs one-shots again', async () => {
+    // The gateway owns the conversation before the one-shot leaves it (the fake binary's next id is predictable), and its
+    // turn, waiting on the approval, is in flight (a started admission), as Hermes keeps it.
+    const runs = (await readFile(RUN_LOG, 'utf8').catch(() => '')).split('\n').filter(Boolean).length;
+    const sessionId = `local-${'f'.repeat(60)}${String(runs).padStart(4, '0')}`;
+    rmSync(HOME, { recursive: true, force: true }); makeHome(HOME, { ...homeRows(), admissions: [{ session_id: sessionId, status: 'started' }] }); reset();
+    gw = await startFakeHermes(HOME, { live: { [sessionId]: { status: 'waiting', prompts: [{ kind: 'approval', prompt_id: 'hl-2', execution_generation: 1, command: 'rm -rf build', choices: ['once', 'deny'] }] } } });
+    gw.writeTurn(sessionId, 'needs-human: slow start');
+    const r = await api.dispatch('launch.start', { engine: 'hermes', mode: 'headless', cwd: tmp, prompt: 'needs-human: slow start' });
+    await api.dispatch('sessions.message', { id: r.headlessId, text: 'and then the docs' });   // queued behind the running one-shot
+    const t0 = Date.now();
+    while (!gw.submitted.length && Date.now() - t0 < 10_000) await new Promise((res) => setTimeout(res, 20));
+    assert.deepEqual(gw.submitted.map((x) => [x.session_id, x.text]), [[sessionId, 'and then the docs']], `the queued message went to the gateway, behind the prompt; events: ${JSON.stringify(launchMod.headlessGet(r.headlessId).events.map((e) => [e.type, e.code ?? '', String(e.text ?? '').slice(0, 80)]))}`);
+    assert.equal(launchMod.headlessGet(r.headlessId).status, 'waiting');
+    hermes.clearCaches();
+    const listed = (await api.dispatch('sessions.list', { includeRecent: false })).sessions.find((x) => x.id === r.headlessId);
+    assert.deepEqual([listed.status, listed.hash], ['waiting', 'hl-2'], 'no Hermes client runs, but the turn in flight lets the listing see the prompt');
+    await api.dispatch('sessions.answer', { id: r.headlessId, key: '1', expect: 'hl-2' });
+    assert.equal(launchMod.headlessGet(r.headlessId).status, 'busy', 'answered: the gateway runs the turn on');
+    gw.live.get(sessionId).status = 'idle'; psText = '  555 /x/hermes chat'; hermes.clearCaches();
+    await api.dispatch('sessions.list', { includeRecent: false });
+    assert.equal(launchMod.headlessGet(r.headlessId).status, 'idle', 'the gateway is done: idle');
+    await gw.close(); gw = null; hermes.clearCaches();
+    const before = (await readFile(RUN_LOG, 'utf8')).trim().split('\n').length;
+    await api.dispatch('sessions.message', { id: r.headlessId, text: 'one more' });
+    const t1 = Date.now();
+    while ((await readFile(RUN_LOG, 'utf8')).trim().split('\n').length === before && Date.now() - t1 < 10_000) await new Promise((res) => setTimeout(res, 20));
+    assert.ok(JSON.parse((await readFile(RUN_LOG, 'utf8')).trim().split('\n').at(-1)).argv.includes(`--resume=${sessionId}`), 'with no gateway, a one-shot this entry tracks');
+    launchMod.headlessStop(r.headlessId);
   });
 
   test('a host with no hermes on the PATH refuses before anything starts', async () => {
