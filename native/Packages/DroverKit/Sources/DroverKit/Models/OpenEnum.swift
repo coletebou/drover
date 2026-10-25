@@ -15,6 +15,8 @@ public struct Engine: RawRepresentable, Sendable, Hashable, Codable, CustomStrin
     public static let codex = Engine("codex")
     public static let headless = Engine("headless")
     public static let openclaw = Engine("openclaw")
+    /// A Hermes Agent session (Nous Research), read and answered through its gateway.
+    public static let hermes = Engine("hermes")
     public static let shell = Engine("shell")
 }
 
