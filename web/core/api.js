@@ -115,7 +115,8 @@ async function listSessionsLocal({ includeRecent = true } = {}) {
   const hermesById = new Map(hermesSessions.map((s) => [s.id, s]));
   const rawHeadless = launchMod.headlessList();
   const hermesIds = rawHeadless.filter((h) => h.engine === hermes.ENGINE && h.sessionId).map((h) => h.sessionId);
-  const convOf = hermesIds.length && hermes.configured() ? hermes.conversationsOf(hermes.rootHome(), hermesIds) : new Map();
+  // In whichever profile has it: a headless launch may run under a named profile's HERMES_HOME.
+  const convOf = new Map(hermesIds.length && hermes.configured() ? hermesIds.map((id) => [id, hermes.conversationIdOf(id)]) : []);
   const headlessHermes = new Set();
   const headless = rawHeadless.map((h) => {
     if (h.engine !== hermes.ENGINE || !h.sessionId) return h;
@@ -324,8 +325,10 @@ export const local = {
     // A headless Hermes session reads its conversation from the database once it has one: that also has what the gateway
     // ran after its one-shot left (an approval answered here, then the rest of the turn).
     if (s.headless && s.engine === hermes.ENGINE && s.sessionId && hermes.configured()) {
+      // A full read each time (offset 0, as a Codex thread's): before its conversation is known this entry answered from
+      // its own events, whose offsets are not row ids, so a cursor from one would be wrong in the other.
       const h = await hermes.findSession(s.sessionId).catch(() => null);
-      if (h) return { ...hermes.transcript(h, { since, limit }), headless: true };
+      if (h) return { ...hermes.transcript(h, { limit }), offset: 0, headless: true };
     }
     if (s.headless) return { engine: s.engine, headless: true, turns: headlessTurns(s.events), offset: s.events.length };
     if (s.engine === 'openclaw') return openclaw.transcript({ since, limit, thread });

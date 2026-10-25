@@ -318,6 +318,7 @@ export async function headlessSend(id, text) {
     // question, or queues behind a turn or an approval, as a message to any Hermes session does (and its transcript is
     // the conversation's). With no gateway, a one-shot this entry tracks. A message acts, so it may dial a gateway a
     // listing would leave alone (hermes.js mayPoll).
+    if (e.status === 'stopped') throw new Error('this headless Hermes session was stopped');
     if (!e.handle.child && e.sessionId) {
       const s = await hermes.findSession(e.sessionId);
       if (s && await hermes.gatewayFor(s.home ?? hermes.rootHome())) return hermes.send(s, text);

@@ -365,6 +365,24 @@ function rowsOf(db, id, lin) {
   return out;
 }
 
+/**
+ * The id the gateway knows a conversation by, when no live listing named one: the conversation's own id when the gateway
+ * keeps a policy row for it (its logical id, which it follows to the current row), else the newest row it went on in.
+ */
+function addressOf(db, conv, lin) {
+  try { if (db.prepare('SELECT 1 FROM state_meta WHERE key = ?').get(POLICY_PREFIX + conv)) return conv; } catch { /* no state_meta */ }
+  return rowsOf(db, conv, lin).at(-1);
+}
+
+/** The conversation an id belongs to in whichever home has it (the root, then the named profiles); the id itself when none does. */
+export function conversationIdOf(id) {
+  for (const h of homes()) {
+    const conv = withDb(h.home, (db) => (db.prepare('SELECT 1 FROM sessions WHERE id = ?').get(id) ? conversationOf(db, id, lineages(db)) : null), null);
+    if (conv) return conv;
+  }
+  return id;
+}
+
 /** id -> the conversation it belongs to, for ids the gateway names (a live one may be a later segment). */
 export function conversationsOf(home, ids) {
   return withDb(home, (db) => { const lin = lineages(db); return new Map(ids.map((id) => [id, conversationOf(db, id, lin)])); }, new Map(ids.map((id) => [id, id])));
@@ -745,9 +763,11 @@ export async function findSession(idOrTitle) {
   const conv = h.id;
   const all = await listSessions({ includeRecent: false }).catch(() => []);
   const live = all.find((s) => s.id === conv);
-  if (live) return { ...live, home: h.home };
+  const gatewayId = live?.gatewayId ?? withDb(h.home, (db) => addressOf(db, conv, lineages(db)), conv);
+  const at = (s) => ({ ...s, home: h.home, ...(gatewayId && gatewayId !== conv ? { gatewayId } : {}) });
+  if (live) return at(live);
   const [stored] = storedSessions(h.home, { profile: h.profile, ids: [conv] });
-  return stored ? { ...stored, home: h.home } : null;
+  return stored ? at(stored) : null;
 }
 
 export function transcript(s, { since = 0, limit = 200 } = {}) {

@@ -218,6 +218,11 @@ describe('state.db: conversations, transcripts, last replies', () => {
     assert.equal((await hermes.findSession(S.compChild))?.id, S.comp);
     assert.equal((await hermes.findSession('fix the parser'))?.id, S.plain);
     assert.equal(await hermes.findSession('no such session'), null);
+    // With no live listing to name it, the gateway is addressed by what it knows: a compression chain's newest row, or
+    // the conversation's own id when it keeps a policy row for it (its logical id).
+    assert.equal((await hermes.findSession(S.comp)).gatewayId, S.compChild);
+    assert.equal((await hermes.findSession(S.reset)).gatewayId, undefined);
+    assert.equal(hermes.conversationIdOf(S.compChild), S.comp);
     assert.equal(await hermes.findSession(''), null);
     const s = await hermes.findSession(S.plain);
     assert.equal(hermes.lastReply(s).text, 'an old compacted reply');
@@ -376,7 +381,8 @@ describe('the gateway: when a listing may ask it, live state, prompts', () => {
     gw = await startFakeHermes(HOME, { live: {
       [S.plain]: { status: 'waiting', prompts: [{ ...APPROVAL, prompt_id: 'a-esc' }] },
       [S.tui]: { status: 'waiting', prompts: [{ ...APPROVAL, prompt_id: 'a-enter' }] },
-      [S.comp]: { status: 'waiting', prompts: [{ kind: 'clarify', prompt_id: 'q-1', execution_generation: 1, question: 'Which fixture?', choices: ['small', 'large'] }] },
+      // A compressed conversation: the gateway holds it under its newest row.
+      [S.compChild]: { status: 'waiting', prompts: [{ kind: 'clarify', prompt_id: 'q-1', execution_generation: 1, question: 'Which fixture?', choices: ['small', 'large'] }] },
     } });
     assert.equal((await hermes.answer(await hermes.findSession(S.plain), 'Escape', { expect: 'a-esc' })).choice, 'deny');
     assert.equal((await hermes.answer(await hermes.findSession(S.tui), 'Enter', {})).choice, 'once', 'one prompt waiting: no expect needed');
@@ -586,14 +592,19 @@ describe('launch.start engine hermes', () => {
     assert.equal(listed.filter((x) => x.id === sessionId).length, 0, 'listed once, as the headless entry');
     const a = await api.dispatch('sessions.answer', { id: r.headlessId, key: '1', expect: 'hl-1' });
     assert.deepEqual([a.ok, a.choice, a.target], [true, 'once', sessionId]);
-    const t = await api.dispatch('sessions.transcript', { id: r.headlessId });
+    const t = await api.dispatch('sessions.transcript', { id: r.headlessId, since: 3 });
     assert.equal(t.headless, true); assert.equal(t.turns.at(-1).text, 'echo: needs-human: delete the build folder', 'read from the conversation');
+    assert.equal(t.offset, 0, 'a full read: an earlier event-count cursor means nothing to the database');
+    assert.equal(t.turns[0].text, 'needs-human: delete the build folder', 'since is not read as a row id');
     gw.live.get(sessionId).status = 'working';
     hermes.clearCaches();
     await api.dispatch('headless.stop', { id: r.headlessId });
     const t1 = Date.now();
     while (!gw.calls.some((c) => c.method === 'session.interrupt') && Date.now() - t1 < 5_000) await new Promise((res) => setTimeout(res, 20));
     assert.deepEqual(gw.calls.filter((c) => c.method === 'session.interrupt').map((c) => c.params), [{ session_id: sessionId }]);
+    const submits = gw.submitted.length;
+    await assert.rejects(api.dispatch('sessions.message', { id: r.headlessId, text: 'after stop' }), /stopped/);
+    assert.equal(gw.submitted.length, submits, 'a stopped session sends nothing, even with its gateway up');
     await gw.close(); gw = null;
   });
 
