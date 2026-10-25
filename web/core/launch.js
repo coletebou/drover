@@ -223,6 +223,8 @@ export async function launch(req, { actor = 'drover' } = {}) {
   // loginShellPath. Spread before the profile env, so a profile that names a PATH keeps it. A headless Codex
   // thread runs in the shared app-server (core/codex.js) and keeps that process's PATH, so it skips this.
   const agentPath = mode === 'tmux' || engine !== 'codex' ? await _deps.agentPath() : undefined;
+  // A Hermes launch with no hermes to run would open a window that only says "command not found", or a headless session whose every turn fails.
+  if (engine === 'hermes' && !hermes.findBin(profile.env.PATH ?? agentPath)) throw new Error(`hermes is not on this host's PATH (${hermes.hermesBin()}): install Hermes Agent there, or set DROVER_HERMES_BIN to it; nothing was started`);
   const base = { type: 'launch', engine, mode, profile: profile.id, model: model ?? null, ...withEffort, cwd, prompt: req.prompt ? String(req.prompt).slice(0, 2000) : null, credential: cred?.id ?? null };
 
   if (mode === 'tmux') {

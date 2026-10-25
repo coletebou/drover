@@ -450,6 +450,9 @@ export const local = {
     };
   },
 
+  // ---- Hermes Agent (core/hermes.js)
+  async 'hermes.status'() { return hermes.status(); },
+
   // ---- terminals (ttyd)
   async 'terminals.list'() { return { available: await terminals.ttydAvailable(), terminals: terminals.list() }; },
   async 'terminals.open'({ target, readOnly = false }) { return terminals.open(target, { readOnly }); },
@@ -1007,14 +1010,16 @@ async function answerOn(host, args) {
 
 /**
  * Before a Hermes launch goes to another host, make sure the code that will run it launches Hermes: older code reads
- * any engine but codex as claude and would start a Claude session. Code that launches Hermes lists its levels in
- * launch.efforts (which also covers an effort on the launch); older code lists none, or does not know the op.
+ * any engine but codex as claude and would start a Claude session. Code that launches Hermes knows hermes.status (an
+ * effort on the launch is covered too: it came with efforts), and callOn first retires a peer that predates the
+ * host's update, so only a host that really runs old code is refused, and nothing is started there.
  */
 async function requireHermesLaunch(host) {
-  let levels = null;
-  try { levels = await callOn(host, 'launch.efforts', {}, dispatchLocal, { timeoutMs: 60_000 }); }
-  catch (e) { if (!/unknown op launch\.efforts/.test(e?.message ?? '')) throw e; }
-  if (!Array.isArray(levels?.hermes)) throw new Error(`${host} runs Drover code that cannot launch Hermes (it would start Claude instead), so nothing was started; update Drover there (${UPDATE_HINT})`);
+  try { await callOn(host, 'hermes.status', {}, dispatchLocal, { timeoutMs: 60_000 }); }
+  catch (e) {
+    if (/unknown op hermes\.status/.test(e?.message ?? '')) throw new Error(`${host} runs Drover code that cannot launch Hermes (it would start Claude instead), so nothing was started; update Drover there (${UPDATE_HINT})`);
+    throw e;
+  }
 }
 
 /**
@@ -1045,7 +1050,7 @@ export const CACHE_POLICY = {
   'reflections.list': 30_000, 'reflections.repos': 30_000, 'terminals.list': 5_000, 'headless.list': 3_000,
   'credentials.status': 3_000, 'survey.list': 10_000,
   'files.roots': 30_000, 'openclaw.status': 30_000, 'openclaw.check': 30_000, 'openclaw.feed': 10_000, 'native.summary': 5_000, 'native.board': 3_000, 'openclaw.threads': 3_000,
-  'docker.stacks': 30_000,
+  'docker.stacks': 30_000, 'hermes.status': 10_000,
 };
 const INVALIDATES = {
   'tmux.send': ['tmux.'], 'tmux.keys': ['tmux.'], 'tmux.new': ['tmux.', 'fleet.'], 'tmux.kill': ['tmux.', 'fleet.'], 'tmux.rename': ['tmux.', 'fleet.'],

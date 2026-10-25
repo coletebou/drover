@@ -11,7 +11,7 @@
 // 2026-10-25. None of this is a published Hermes API, so every read here fails soft: a host whose Hermes answers
 // differently lists its sessions from the database, or none, and never breaks the rest of the list.
 import net from 'node:net';
-import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, statSync, accessSync, constants } from 'node:fs';
 import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -42,6 +42,15 @@ export const _deps = {
 
 /** The hermes executable: DROVER_HERMES_BIN, else `hermes` on the PATH. */
 export const hermesBin = () => envvar('HERMES_BIN', _deps.env())?.trim() || 'hermes';
+
+/** The hermes executable as it would run with this PATH: an absolute path, or null when there is none. */
+export function findBin(PATH = _deps.env().PATH ?? '') {
+  const bin = hermesBin();
+  const ok = (f) => { try { if (!statSync(f).isFile()) return false; accessSync(f, constants.X_OK); return true; } catch { return false; } };
+  if (bin.includes('/')) return ok(path.resolve(bin)) ? path.resolve(bin) : null;
+  for (const dir of String(PATH).split(path.delimiter)) if (dir && path.isAbsolute(dir) && ok(path.join(dir, bin))) return path.join(dir, bin);
+  return null;
+}
 
 /** The Hermes home: HERMES_HOME, else ~/.hermes (hermes_constants.get_hermes_home). */
 export function rootHome(env = _deps.env()) {
@@ -151,8 +160,11 @@ export async function gatewayFor(home, root = rootHome()) {
 // ---------------------------------------------------------------- may a listing reach the gateway?
 
 // A Hermes client among the first argv words: the hermes, hermes-agent or hermes-acp script, python -m
-// hermes_cli, or the TUI's node entry (ui-tui/dist/entry.js). The gateway itself (gateway run) is not a client.
+// hermes_cli, or the TUI's node entry (ui-tui/dist/entry.js). The gateway itself (gateway run) is not a client, and
+// neither is a shell that started one (`sh -c "hermes chat"`): the client is its own process, and the shell can
+// outlive it.
 const CLIENT_WORD = /(?:^|\/)hermes(?:-agent|-acp)?$|(?:^|[/.])hermes_cli(?:[/.]|$)|\/ui-tui\/dist\/entry\.js$/;
+const SHELL = /(?:^|\/)-?(?:sh|bash|zsh|fish|dash|ksh)$/;
 
 /** Pids of the Hermes clients in a `ps -o pid=,command=` listing, leaving out the pids in exclude. Pure. */
 export function clientPids(psText, { exclude = [] } = {}) {
@@ -161,7 +173,8 @@ export function clientPids(psText, { exclude = [] } = {}) {
   for (const line of String(psText ?? '').split('\n')) {
     const m = line.trim().match(/^(\d+)\s+(.+)$/);
     if (!m || skip.has(Number(m[1])) || /\sgateway\s+(?:run|start|ensure|stop|restart)\b/.test(m[2])) continue;
-    if (m[2].split(/\s+/).slice(0, 3).some((w) => CLIENT_WORD.test(w))) out.push(Number(m[1]));
+    const words = m[2].split(/\s+/);
+    if (!SHELL.test(words[0]) && words.slice(0, 3).some((w) => CLIENT_WORD.test(w))) out.push(Number(m[1]));
   }
   return out;
 }
@@ -621,7 +634,8 @@ async function windowsOf(home, live) {
  */
 const LIST_MEMO_MS = 2_000;
 let listMemo = new Map();   // includeRecent -> { at, value }
-export function clearListMemo() { listMemo = new Map(); }
+/** Forget the shared listing and the process list (tests, and a caller that just changed what Hermes holds). */
+export function clearCaches() { listMemo = new Map(); psCache = { at: -Infinity, text: '' }; }
 export function listSessions(opts = {}) {
   const key = JSON.stringify([opts.includeRecent !== false, opts.days ?? 4, opts.limit ?? 200]);
   const m = listMemo.get(key);
@@ -890,6 +904,26 @@ export class HeadlessHermes {
     const c = this.child;
     if (c) { c.kill('SIGTERM'); setTimeout(() => { if (c.exitCode === null && c.signalCode === null) c.kill('SIGKILL'); }, 3_000).unref?.(); }
   }
+}
+
+/**
+ * What Drover sees of Hermes on this host, for hermes.status: whether it keeps Hermes state, its named profiles, each
+ * home's gateway (up, pid, whether it exits when idle) and the hermes executable on this process's PATH. Paths under
+ * the home are shown with ~. Also the probe a front daemon makes before a Hermes launch goes to another host: code
+ * that predates Hermes does not know the op.
+ */
+export async function status() {
+  const root = rootHome(), home = _deps.env().HOME ?? '';
+  const tilde = (p) => (p && home && (p === home || p.startsWith(`${home}/`)) ? `~${p.slice(home.length)}` : p);
+  const hs = homes();
+  const gateways = [];
+  for (const h of hs) {
+    const gw = await gatewayFor(h.home, root).catch(() => null);
+    let idleExit = null;
+    if (gw) { try { const argv = (await control(gw.socket, 'status')).argv; idleExit = Array.isArray(argv) ? argv.includes('--idle-exit') : null; } catch { /* unknown */ } }
+    gateways.push({ profile: h.profile, up: Boolean(gw), pid: gw?.pid ?? null, idleExit });
+  }
+  return { configured: hs.length > 0, home: tilde(root), profiles: hs.filter((h) => h.profile).map((h) => h.profile), gateways, bin: tilde(findBin()) };
 }
 
 /** A stream-json tool_use line (a headless turn) as a chat's tool call: { id, name, input, summary }. */
