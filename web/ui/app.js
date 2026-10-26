@@ -5,7 +5,7 @@
 // Views live in ./views/*.js and expose { id, label, key, topics?, mount(root, ctx, params) -> ctrl }.
 import './legacy-storage.js';
 import * as api from './api.js';
-import { h, clear, dot } from './dom.js';
+import { h, clear, dot, setHomes } from './dom.js';
 import { Drawer } from './drawer.js';
 import { Palette } from './palette.js';
 import { Notifier } from './notifier.js';
@@ -254,6 +254,7 @@ async function loadHosts() {
     if (e.status === 401) { api.setToken(''); showTokenGate('The server rejected the stored token.'); return false; }
     state.hosts = [{ name: 'local', display: 'local', source: 'local' }]; toast(`host.list: ${e.message}`, 'error');
   }
+  setHomes([state.hosts.find((x) => x.name === 'local')?.home]);
   if (!state.hosts.some((x) => x.name === api.getHost())) api.setHost('local');
   drawHosts();
   return true;

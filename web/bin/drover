@@ -294,7 +294,8 @@ async function main() {
       if (has('json')) console.log(JSON.stringify(r, null, 2));
       else {
         const { formatStacks } = await import(path.join(ROOT, 'core', 'docker-format.js'));
-        process.stdout.write(formatStacks(r, { color: process.stdout.isTTY, loose: has('all') }));
+        const { homedir } = await import('node:os');
+        process.stdout.write(formatStacks(r, { color: process.stdout.isTTY, loose: has('all'), homes: [homedir()] }));
       }
       const { stopAll } = await import(path.join(ROOT, 'core', 'remote.js')); stopAll();
       return;

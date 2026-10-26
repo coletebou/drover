@@ -53,6 +53,7 @@ struct StateBadge: View {
 
     var body: some View {
         Label(text ?? state.label, systemImage: state.symbol)
+            .labelStyle(BadgeLabelStyle())
             .font(.caption.weight(.semibold))
             .foregroundStyle(Theme.color(for: state))
             .padding(.horizontal, 8)
@@ -60,6 +61,17 @@ struct StateBadge: View {
             .background(Theme.color(for: state).opacity(Palette.badgeOpacity), in: Capsule())
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(text ?? state.label)
+    }
+}
+
+/// Symbol and text side by side. In a List the default style reserves an icon column, which widened every badge
+/// in a row and wrapped "Question" mid-word on a phone.
+private struct BadgeLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            configuration.icon
+            configuration.title
+        }
     }
 }
 

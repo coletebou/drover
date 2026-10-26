@@ -4,6 +4,9 @@ import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { execFile } from 'node:child_process';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { promisify } from 'node:util';
 import * as terminals from '../core/terminals.js';
 
@@ -24,12 +27,24 @@ function upgrade(port, origin) {
 }
 
 describe('terminals', { skip: ready ? false : 'needs ttyd and tmux' }, () => {
-  let t;
+  let t, tdir, saved;
+  // A private tmux server (its own TMUX_TMPDIR, no TMUX variable): ttyd's tmux attach inherits this env, so neither the
+  // session nor the terminal reaches the user's own server. The kill names that server's socket.
+  const sock = () => path.join(tdir, `tmux-${process.getuid()}`, 'default');
   before(async () => {
-    await run('tmux', ['new-session', '-d', '-s', SESSION, 'sleep 120']);
+    saved = Object.fromEntries(['TMUX', 'TMUX_PANE', 'TMUX_TMPDIR'].map((k) => [k, process.env[k]]));
+    tdir = await mkdtemp(path.join(tmpdir(), 'droverttyd-'));
+    delete process.env.TMUX; delete process.env.TMUX_PANE;
+    process.env.TMUX_TMPDIR = tdir;
+    await run('tmux', ['-f', '/dev/null', 'new-session', '-d', '-s', SESSION, 'sleep 120']);
     t = await terminals.open(SESSION);
   });
-  after(async () => { if (t) terminals.close(t.id); await run('tmux', ['kill-session', '-t', SESSION]).catch(() => {}); });
+  after(async () => {
+    if (t) terminals.close(t.id);
+    if (tdir) await run('tmux', ['-S', sock(), 'kill-server']).catch(() => {});
+    for (const [k, v] of Object.entries(saved ?? {})) if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    if (tdir) await rm(tdir, { recursive: true, force: true });
+  });
 
   test('a page from another origin is refused the websocket', async () => {
     assert.equal(t.alive, true);

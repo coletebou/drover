@@ -53,6 +53,12 @@ test('normalizeSummary: junk entries', () => {
   assert.deepEqual(s.hosts, [{ name: 'h1', up: true, waiting: 0, working: 0, idle: 2 }]);
 });
 
+test('normalizeSummary: a Grok bot keeps its engine', () => {
+  const s = normalizeSummary({ waiting: [{ id: 'grok:alpha', name: 'Alpha', host: 'local', engine: 'grok', kind: 'decision', headline: 'publish the notes?' }], working: [{ id: 'grok:beta', name: 'Beta', engine: 'grok' }] });
+  assert.equal(s.waiting[0].engine, 'grok');
+  assert.equal(s.working[0].engine, 'grok');
+});
+
 test('normalizeSummary: negative counts become 0', () => {
   const s = normalizeSummary({ totals: { waiting: -1, working: -2, idle: -3, hosts: -4 } });
   assert.deepEqual(s.totals, { waiting: 0, working: 0, idle: 0, hosts: 0 });

@@ -180,3 +180,10 @@ test('memory table: a daemon with no default repo refuses a list that names none
   const down = { client: { call: async () => { throw new Error('the daemon at x is not answering'); } } };
   await assert.rejects(def.load(down, { state: { ...def.state } }), /not answering/);
 });
+
+test('events table: an agent\'s own status report reads as a sentence, not as JSON', async () => {
+  const { summarizeEvent } = await import('../tui/views/tables.js');
+  const ev = { id: 'x', ts: '2026-10-20T12:00:00Z', host: 'devbox', actor: 'grok:alpha', type: 'status', agent: 'grok:alpha', state: 'needs-owner', summary: 'the release notes are ready', name: 'Alpha' };
+  assert.equal(summarizeEvent(ev), 'Alpha needs-owner: the release notes are ready');
+  assert.equal(summarizeEvent({ ...ev, name: undefined, summary: undefined }), 'grok:alpha needs-owner');
+});

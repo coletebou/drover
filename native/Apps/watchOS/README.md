@@ -76,6 +76,8 @@ blocks plain HTTP to non-local names.
 - Logic tests, compiled and run on macOS: `Apps/watchOS/Tests/run-logic-tests.sh` (also decodes the repo
   `Fixtures/` written by core)
 - Full build once the license is accepted: `xcodegen generate && xcodebuild -scheme DroverWatch -destination 'generic/platform=watchOS Simulator' build`
+- `--mock` runs on `PreviewData` with no network, no Keychain access, no background refresh and no notification
+  prompt; `--mock-session <id>` opens that waiting item. `script/screenshots.sh` photographs the app that way.
 - Signing: set `DEVELOPMENT_TEAM`, and register the App Group `group.dev.drover` and the Keychain group
   for `dev.drover.app.watchkitapp`. The iOS target embeds the watch app with `- target: DroverWatch`.
 - The app icon set is an empty 1024 slot: add `AppIcon.png` before shipping.

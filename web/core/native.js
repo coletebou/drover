@@ -16,6 +16,7 @@
 // with the read-only widget token (server/http.js), so they never return cwd, tmux
 // targets, transcript paths or anything that looks like a secret; native.board names
 // windows and working dirs and needs the main token. Text goes through clean() first.
+import { homedir } from 'node:os';
 import { notifier } from './notify.js';
 import { stripsFor } from '../ui/lanes.js';
 import { OWNER } from './owner.js';
@@ -67,6 +68,9 @@ const REDACTIONS = [
     }],
 ];
 const HOME_PATH = /\/(?:Users|home)\/[^\/\s]+/g;
+// This daemon's own home, wherever it is (/root, /var/home/<name>), reads ~ too, before the usual homes do.
+const OWN_HOME = (() => { const h = homedir().replace(/\/+$/, ''); return h.length > 1 ? new RegExp(`${h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w.-])`, 'g') : null; })();
+const homesToTilde = (s) => (OWN_HOME ? s.replace(OWN_HOME, '~') : s).replace(HOME_PATH, '~');
 const LONG_RUN = /[A-Za-z0-9+/=_-]{32,}/g;
 // Session and event ids (UUIDs) stay searchable. Bare hex runs do not: a 32-hex Datadog API key or a 40-hex
 // application key looks exactly like a digest or a commit SHA (short SHAs are under 32 chars and never redacted).
@@ -117,7 +121,7 @@ export function redactArgv(argv, opts) {
 export function clean(text, max = 140) {
   if (text == null) return '';
   let s = String(text).replace(ANSI, '').replace(CONTROL, ' ').replace(/\s+/g, ' ').trim();
-  s = redactSecrets(s.replace(HOME_PATH, '~'));
+  s = redactSecrets(homesToTilde(s));
   return s.length > max ? s.slice(0, max - 1) + '…' : s;
 }
 
@@ -162,7 +166,7 @@ export function answerFields({ screen, held, dialog, hash, ask } = {}, { pathles
 const PATH_RUN = /(?:~|\/(?:Users|home|private|var|tmp|opt|mnt|srv|Volumes|root|etc))(?:\/[^\s/'"`)]+)+\/?/g;
 /** Paths down to their last part, so text naming a file or project keeps the name and not where it lives. */
 export function noPaths(s) {
-  return String(s ?? '').replace(HOME_PATH, '~').replace(PATH_RUN, (m) => m.replace(/\/+$/, '').split('/').at(-1) || m);
+  return homesToTilde(String(s ?? '')).replace(PATH_RUN, (m) => m.replace(/\/+$/, '').split('/').at(-1) || m);
 }
 
 /** The latest needs-you ask and finished alert per session, from the detector's alerts (muted and test ones left out). */

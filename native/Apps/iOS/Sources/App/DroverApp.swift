@@ -12,8 +12,16 @@ final class DroverAppDelegate: NSObject, UIApplicationDelegate {
 @main
 struct DroverApp: App {
     @UIApplicationDelegateAdaptor(DroverAppDelegate.self) private var appDelegate
-    @State private var model = AppModel()
+    @State private var model: AppModel
     @Environment(\.scenePhase) private var scenePhase
+    /// `--mock` runs on synthetic data (MockDroverAPI) with no network, no Keychain access, no background refresh and
+    /// no notification polling. `AppModel.mock(arguments:)` reads the screen arguments.
+    private let mock: Bool
+
+    init() {
+        mock = CommandLine.arguments.contains("--mock")
+        _model = State(initialValue: mock ? AppModel.mock(arguments: CommandLine.arguments) : AppModel())
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -21,6 +29,7 @@ struct DroverApp: App {
                 .environment(model)
                 .onOpenURL { model.handle(url: $0) }
                 .task {
+                    guard !mock else { return }
                     NotificationManager.shared.activate(model: model)
                     WatchTokenSync.shared.activate()
                 }
@@ -31,17 +40,17 @@ struct DroverApp: App {
                 model.startLive()
                 Task {
                     await model.refreshAll()
-                    await NotificationManager.shared.pollNow()
+                    if !mock { await NotificationManager.shared.pollNow() }
                 }
             case .background:
                 model.stopLive()
-                BackgroundRefresh.schedule()
+                if !mock { BackgroundRefresh.schedule() }
             default:
                 break
             }
         }
-        .backgroundTask(.appRefresh(DroverIDs.refreshTaskID)) {
-            await BackgroundRefresh.run()
+        .backgroundTask(.appRefresh(DroverIDs.refreshTaskID)) { [mock] in
+            if !mock { await BackgroundRefresh.run() }
         }
     }
 }

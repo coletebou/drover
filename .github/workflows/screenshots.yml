@@ -1,0 +1,46 @@
+# Simulator screenshots of the iPhone and Apple Watch apps on their synthetic data (native/script/screenshots.sh),
+# uploaded as an artifact. Manual runs, and pushes to screenshots/** branches. Hosted macOS is free on a public
+# repository. No secrets and no signing: the apps are built unsigned for the simulator.
+# Actions are pinned by commit SHA (Dependabot keeps them current, .github/dependabot.yml).
+name: screenshots
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["screenshots/**"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: screenshots-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apple:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Select newest Xcode
+        run: |
+          newest=$(ls -d /Applications/Xcode_*.app | sort -V | tail -n 1)
+          echo "Using $newest"
+          sudo xcode-select -s "$newest/Contents/Developer"
+          xcodebuild -version
+
+      - name: Screenshots
+        run: native/script/screenshots.sh "$RUNNER_TEMP/screenshots"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: apple-screenshots
+          path: ${{ runner.temp }}/screenshots
+          if-no-files-found: error
