@@ -103,6 +103,25 @@ describe('pure parts', () => {
     assert.equal(install.overlayFromEnv({}), undefined, 'unset is not the same as none');
   });
 
+  test('a profile\'s flags switch role-file sections; a bad or clashing flag is refused', async () => {
+    const dir = await makeOverlay({ 'profiles/box-b.json': { ...boxB(), flags: { github: true } } });
+    const b = install.loadProfile('box-b', install.SRC, dir);
+    assert.deepEqual(b.flags, { github: true });
+    assert.deepEqual(install.loadProfile('default').flags, {}, 'no flags: every flag section reads as off');
+    const role = install.loadRole('manager');
+    const sc = install.resolveScope({ scope: 'all', digest: true, actor: 'manager', host: 'box-a' });
+    const text = '{{#digest}}MRs: {{#github}}gh{{/github}}{{^github}}drover_mrs_list{{/github}}{{/digest}}';
+    assert.equal(install.renderTemplate(text, install.roleView(role, sc, 'box-a', { flags: b.flags }).vars), 'MRs: gh');
+    assert.equal(install.renderTemplate(text, install.roleView(role, sc, 'box-a').vars), 'MRs: drover_mrs_list', 'a profile without the flag keeps the old orders');
+    assert.throws(() => install.roleView(role, sc, 'box-a', { flags: { digest: true } }), /flag digest clashes/);
+    assert.throws(() => install.roleView(role, sc, 'box-a', { flags: { local: true } }), /flag local clashes/);
+    for (const [flags, re] of [[{ Git: true }, /bad flag Git/], [{ github: 'yes' }, /flag github must be true or false/], [['github'], /flags must be an object/]]) {
+      await writeFile(path.join(dir, 'profiles', 'box-b.json'), JSON.stringify({ ...boxB(), flags }));
+      assert.throws(() => install.loadProfile('box-b', install.SRC, dir), re);
+    }
+    await rm(dir, { recursive: true, force: true });
+  });
+
   test('a profile must name a source or generate for every secret, and always the gateway token', async () => {
     const src = await mkdtemp(path.join(tmpdir(), 'drover-oc-src-'));
     await mkdir(path.join(src, 'profiles'));

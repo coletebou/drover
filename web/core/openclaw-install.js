@@ -157,10 +157,18 @@ export function loadProfile(name, src = SRC, overlay = envOverlay()) {
   const port = p.port ?? PORT;
   if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error(`profile ${name}: port must be an integer in 1024-65535, not ${JSON.stringify(p.port)}`);
   for (const k of Object.keys(p.vars ?? {})) if (!/^[A-Z_]+$/.test(k)) throw new Error(`profile ${name}: bad template var ${k}`);
+  // Role flags: lowercase on/off switches the role files read as {{#flag}}...{{/flag}} sections, for what differs
+  // between one fleet's managers and another's (which forge holds the owner's merge requests, say).
+  const flags = p.flags ?? {};
+  if (typeof flags !== 'object' || Array.isArray(flags)) throw new Error(`profile ${name}: flags must be an object of name: true|false`);
+  for (const [k, v] of Object.entries(flags)) {
+    if (!/^[a-z]+$/.test(k)) throw new Error(`profile ${name}: bad flag ${k} (lowercase letters only)`);
+    if (typeof v !== 'boolean') throw new Error(`profile ${name}: flag ${k} must be true or false`);
+  }
   // Template tokens the profile fills ({{PORT}}, {{OTEL_ENDPOINT}}, {{CLIPROXY_API_KEY}}): what differs between one fleet's boxes and another's.
   const vars = { ...(p.vars ?? {}), PORT: port };
   const configRel = p.config ?? 'openclaw.json';
-  return { name, file, summary: p.summary ?? '', config: sourceFile(configRel, { src, overlay }) ?? path.join(src, configRel), env: p.env ?? {}, secrets, egress: p.egress ?? { allow: [] }, port, vars };
+  return { name, file, summary: p.summary ?? '', config: sourceFile(configRel, { src, overlay }) ?? path.join(src, configRel), env: p.env ?? {}, secrets, egress: p.egress ?? { allow: [] }, port, vars, flags };
 }
 
 export function loadRole(name, src = SRC, overlay = envOverlay()) {
@@ -224,7 +232,7 @@ export function droverRepo(lay, src = SRC) {
  * of duties it does not own, and the automations it owns or must keep off. The owner (DROVER_OWNER, prose name
  * DROVER_OWNER_NAME) is a template value, so the orders name whoever runs this fleet.
  */
-export function roleView(role, sc, host, { repo = path.resolve(SRC, '..', '..') } = {}) {
+export function roleView(role, sc, host, { repo = path.resolve(SRC, '..', '..'), flags = {} } = {}) {
   const short = sc.hosts === 'local' ? 'this host only' : `every host it reaches${sc.exclude.length ? `, except ${sc.exclude.join(', ')}` : ''}`;
   const vars = {
     ACTOR: sc.actor, HOST: host, SCOPE_SHORT: short, HOME: process.env.HOME ?? os.homedir(), OWNER, OWNER_NAME, DROVER_REPO: repo,
@@ -233,6 +241,11 @@ export function roleView(role, sc, host, { repo = path.resolve(SRC, '..', '..') 
     local: sc.hosts === 'local', all: sc.hosts === 'all',
   };
   const duties = Object.entries(role.duties ?? {});
+  // The profile's flags; a scope or duty section keeps its meaning (a flag cannot turn the digest on).
+  for (const [k, v] of Object.entries(flags)) {
+    if (k in vars || duties.some(([d]) => d === k)) throw new Error(`profile flag ${k} clashes with a scope or duty section of the same name`);
+    vars[k] = v;
+  }
   for (const [d] of duties) vars[d] = Boolean(sc[d]);
   return {
     // The sweep's effort: OpenClaw's heartbeat config has no thinking level (a /think directive does not reach it
@@ -346,7 +359,7 @@ export function expectedConfig({ manifest, live, lay = layout(), src = SRC, over
   try {
     const role = loadRole(LEGACY_ROLES[manifest.role] ? 'manager' : manifest.role, src, overlay); const profile = loadProfile(manifest.profile ?? role.profile, src, overlay);
     const template = JSON.parse(readFileSync(profile.config, 'utf8'));
-    const view = roleView(role, resolveScope({ prev: manifest, host: lay.host }), lay.host, { repo: droverRepo(lay, src) });
+    const view = roleView(role, resolveScope({ prev: manifest, host: lay.host }), lay.host, { repo: droverRepo(lay, src), flags: profile.flags });
     return renderConfig({ template, role: view, vars: { ...profile.vars, NODE: manifest.node.path, DROVER_BIN: lay.droverBin, HOME: lay.home }, live });
   } catch { return null; }
 }
@@ -883,9 +896,9 @@ export async function setup({ role: name = 'manager', profile: profileName, over
   }
   const role = loadRole(name, src, overlay);
   const sc = resolveScope({ prev, scope, exclude, digest, actor, host: lay.host });
-  const view = roleView(role, sc, lay.host, { repo: droverRepo(lay, src) });
   // --profile picks what the gateway talks to; later runs keep the manifest's, like the scope.
   const profile = loadProfile(profileName ?? prev?.profile ?? role.profile, src, overlay);
+  const view = roleView(role, sc, lay.host, { repo: droverRepo(lay, src), flags: profile.flags });
   // The workspace seeds, each from the overlay when it has one. A profile may carry its own (workspace/<profile>/):
   // what the owner works on differs between one fleet's boxes and another's.
   const seed = (f) => sourceFile(path.join('workspace', profile.name, f), { src, overlay }) ?? sourceFile(path.join('workspace', f), { src, overlay });
