@@ -10,6 +10,8 @@ export function summarizeEvent(e) {
   switch (e.type) {
     case 'feature': s = [e.fid, e.state, e.title].filter(Boolean).join(' / '); break;
     case 'note': s = `${e.about}: ${e.text ?? ''}`; break;
+    // An agent's own report (a Grok bot through the bot gateway): its name, state and what it says it is doing.
+    case 'status': s = `${e.name ?? e.agent} ${e.state}${e.summary ? `: ${e.summary}` : ''}`; break;
     case 'pin': case 'unpin': s = String(e.target ?? ''); break;
     case 'message': case 'chat': {
       const to = e.to ?? {};

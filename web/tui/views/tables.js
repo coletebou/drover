@@ -20,6 +20,7 @@ export function summarizeEvent(e) {
   switch (e.type) {
     case 'feature': s = [e.fid, e.state, e.title].filter(Boolean).join(' / '); break;
     case 'note': s = `${e.about}: ${e.text ?? ''}`; break;
+    case 'status': s = `${e.name ?? e.agent} ${e.state}${e.summary ? `: ${e.summary}` : ''}`; break;
     case 'pin': case 'unpin': s = String(e.target ?? ''); break;
     case 'message': { const to = e.to ?? {}; const d = e.delivery ? (e.delivery.ok ? '' : ` (failed: ${e.delivery.error ?? 'unknown'})`) : ''; s = `to ${to.name ?? to.id ?? to.kind ?? ''}${e.thread ? ` [${e.thread}]` : ''}${d}: ${e.text ?? ''}`; break; }
     case 'chat': s = `${e.from ?? e.actor ?? ''}${e.thread ? ` [${e.thread}]` : ''}${e.error ? ` did not answer: ${e.error}` : `: ${e.text ?? ''}`}`; break;

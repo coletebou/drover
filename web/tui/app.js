@@ -15,7 +15,7 @@ import { SessionView } from './views/session.js';
 import { TableView } from './views/table.js';
 import { TABLES } from './views/tables.js';
 import { Help, Palette, Prompt } from './views/overlays.js';
-import { block } from './ui.js';
+import { block, setHomes } from './ui.js';
 import { strWidth, truncate, oneLine } from './width.js';
 
 export const TOPICS = ['board', 'alerts', 'turn', 'manager', 'mutation'];
@@ -156,7 +156,7 @@ export class App {
     this.boardSoon = setTimeout(() => { this.loadBoard().then(() => toast && this.toast('board refreshed', 'ok', 1500)); }, ms);
   }
   async loadHosts() {
-    try { const list = await this.client.call('host.list', {}); this.hosts = (Array.isArray(list) ? list : []).filter((x) => x.source !== 'ssh-config'); }
+    try { const list = await this.client.call('host.list', {}); this.hosts = (Array.isArray(list) ? list : []).filter((x) => x.source !== 'ssh-config'); setHomes([this.hosts.find((x) => x.name === 'local')?.home]); }
     catch { this.hosts = [{ name: 'local', display: 'local' }]; }
   }
   cycleHost(dir) {

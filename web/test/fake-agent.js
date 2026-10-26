@@ -4,6 +4,8 @@
 // transcript current, answers keys the way the real one does, and reads its inbox socket: a message arrives as
 // a peer turn and gets a reply with a tool call, so a chat updates live. Synthetic text only.
 //   node test/fake-agent.js --mode dialog|question|busy|idle --name demo-build --sid <uuid> --dir <devworld dir>
+//     [--cwd <folder it works in, default <dir>/work/<name>>] [--task <what the busy spinner says>] [--done <the idle screen's last word>]
+//     [--socks <folder for its inbox socket, default <dir>/socks>]
 import { appendFileSync, mkdirSync, writeFileSync, unlinkSync, existsSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { execFileSync } from 'node:child_process';
@@ -14,11 +16,13 @@ const arg = (k, d) => { const i = process.argv.indexOf(`--${k}`); return i >= 0 
 const MODE = arg('mode', 'idle'), NAME = arg('name', 'demo'), SID = arg('sid', randomUUID()), DIR = arg('dir', process.cwd());
 const RESHOW_MS = Number(arg('reshow', 12_000));
 const CLAUDE = path.join(DIR, 'claude');
-const CWD = path.join(DIR, 'work', NAME);
+const CWD = arg('cwd', path.join(DIR, 'work', NAME));
+const TASK = arg('task', 'Compiling the parser');
+const DONE = arg('done', 'Done. The parser builds and the tests pass.');
 mkdirSync(CWD, { recursive: true });
 const TRANSCRIPT = path.join(CLAUDE, 'projects', CWD.replace(/[\\/:]/g, '-'), `${SID}.jsonl`);
 mkdirSync(path.dirname(TRANSCRIPT), { recursive: true });
-const SOCKET = path.join(DIR, 'socks', `${process.pid}.sock`);
+const SOCKET = path.join(arg('socks', path.join(DIR, 'socks')), `${process.pid}.sock`);
 mkdirSync(path.dirname(SOCKET), { recursive: true });
 const REGISTRY = path.join(CLAUDE, 'sessions', `${process.pid}.json`);
 mkdirSync(path.dirname(REGISTRY), { recursive: true });
@@ -38,19 +42,19 @@ const setStatus = (s) => { status = s; registry(); };
 // ------------------------------------------------------------ screens
 const W = () => Math.max(60, Math.min(process.stdout.columns || 100, 140));
 const rule = () => '─'.repeat(W() - 2);
-let runs = 0;   // each appearance of a dialog differs (its run number), so each raises its own alert with its own hash
+let runs = 0;   // each appearance of a dialog after the first carries its run number, so each raises its own alert with its own hash
 const PERMISSION = [' Bash command', '', '   npm test', '   Run the unit tests', '', ' Do you want to proceed?', ' ❯ 1. Yes', "   2. Yes, and don't ask again for npm test commands in this project", '   3. No, and tell Claude what to do differently (esc)', '', ' Esc to cancel'];
 const QUESTION = [' ☐ Fixtures', '', ' Should the review cover the test fixtures too?', '', ' ❯ 1. Yes, all of them (Recommended)', '     Review every fixture file under test/fixtures', '   2. Only the new ones', '   3. No, skip fixtures', '   4. Type something.', '', ' Enter to select · ↑/↓ to navigate · Esc to cancel'];
 function draw() {
   const out = ['\x1b[2J\x1b[H', `⏺ ${NAME}: working in ${CWD.replace(process.env.HOME ?? '\0', '~')}`, ''];
   if (screen === 'dialog' || screen === 'question') {
-    const lines = (screen === 'dialog' ? PERMISSION : QUESTION).map((l) => l.replace(/^   npm test$/, `   npm test   # run ${runs}`).replace(/^ Should the review cover the test fixtures too\?$/, ` Should the review cover the test fixtures too (ask ${runs})?`)).map((l) => l.replace(/^ ( *)(❯ |  )(\d)\./, (m, sp, mark, n) => ` ${sp}${Number(n) - 1 === selected ? '❯ ' : '  '}${n}.`));
+    const lines = (screen === 'dialog' ? PERMISSION : QUESTION).map((l) => (runs < 2 ? l : l.replace(/^   npm test$/, `   npm test   # run ${runs}`).replace(/^ Should the review cover the test fixtures too\?$/, ` Should the review cover the test fixtures too (ask ${runs})?`))).map((l) => l.replace(/^ ( *)(❯ |  )(\d)\./, (m, sp, mark, n) => ` ${sp}${Number(n) - 1 === selected ? '❯ ' : '  '}${n}.`));
     // As Claude Code draws a dialog: a rule above, the lines flush left, no side borders.
     out.push(rule(), ...lines);
   } else if (screen === 'busy') {
-    out.push('⏺ Bash(npm run build)', '  ⎿  compiling 14 modules', '', `${'✻✳✢·'[spin % 4]} Compiling the parser… (${Math.round((Date.now() - startedAt) / 1000)}s · esc to interrupt)`);
+    out.push('⏺ Bash(npm run build)', '  ⎿  compiling 14 modules', '', `${'✻✳✢·'[spin % 4]} ${TASK}… (${Math.round((Date.now() - startedAt) / 1000)}s · esc to interrupt)`);
   } else {
-    out.push('Done. The parser builds and the tests pass.', '', `╭${rule()}╮`, `│ > ${' '.repeat(W() - 6)}│`, `╰${rule()}╯`, '  ? for shortcuts                                             bypass permissions on');
+    out.push(DONE, '', `╭${rule()}╮`, `│ > ${' '.repeat(W() - 6)}│`, `╰${rule()}╯`, '  ? for shortcuts                                             bypass permissions on');
   }
   process.stdout.write(out.join('\r\n'));
 }

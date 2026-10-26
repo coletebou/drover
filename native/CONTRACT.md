@@ -21,7 +21,7 @@ speak the same HTTP+SSE API that the Drover browser UI uses. Server code lives i
 | op | use |
 |---|---|
 | `fleet.summary` | per-host counts, waiting/working/idle |
-| `sessions.list` `{host?}` | sessions (id, engine claude/codex/headless/openclaw, name, status, cwd, tmux) |
+| `sessions.list` `{host?}` | sessions (id, engine claude/codex/headless/openclaw/grok, name, status, cwd, tmux) |
 | `sessions.transcript` `{id, since?, limit?}` | chat turns, `offset` for incremental reads |
 | `sessions.message` `{id, text, actor}` | send a message into a session (`actor`: see "The owner" below) |
 | `tmux.capture` `{target, lines?}` / `tmux.send` | peek at / type into a pane |

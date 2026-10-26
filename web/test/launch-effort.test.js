@@ -458,7 +458,9 @@ describe('real tmux: a launch reaches the agent as the exact argv, with no shell
     launchMod._deps.newWindow = fakeNewWindow;
     // env is set only once TMUX is unset and TMUX_TMPDIR is private. after() also runs when before() fails earlier,
     // and a kill-server without that env would reach the user's own tmux server.
-    if (env) tmuxCmd(['kill-server']);
+    // The kill names the private server's socket: with TMUX_TMPDIR alone, a missing folder would send it to the
+    // user's default server.
+    if (env) tmuxCmd(['-S', path.join(tdir, `tmux-${process.getuid()}`, 'default'), 'kill-server']);
     await rm(tdir, { recursive: true, force: true });
   });
 

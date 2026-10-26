@@ -48,7 +48,9 @@ describe('real tmux: sessions.answer presses one key on the dialog the session s
     assert.equal(tmuxCmd(['-f', '/dev/null', 'new-session', '-d', '-s', SESSION, '-x', '120', '-y', '40', 'sleep', '3600']).status, 0);
   });
   after(async () => {
-    if (env) tmuxCmd(['kill-server']);
+    // The kill names the private server's socket: with TMUX_TMPDIR alone, a missing folder would send it to the
+    // user's default server.
+    if (env) tmuxCmd(['-S', path.join(tdir, `tmux-${process.getuid()}`, 'default'), 'kill-server']);
     if (tdir) await rm(tdir, { recursive: true, force: true });
   });
   /** A window that draws a dialog and logs every key; a registry entry for a session in it. */
