@@ -57,6 +57,8 @@ export function stripsFor(hostSummary, notifyMap = {}, now = Date.now(), finishe
       ask: waits ? ask : null, finished,
       tail: waits ? [ask.text, ...(w?.tail ?? []).slice(-1)].filter(Boolean) : finished?.text ? [finished.text] : (w?.tail ?? reportedTail(s)), question: waits ? ask.text : null,
       since: asked && !w?.held && screen !== 'dialog' ? Date.parse(n.ts) : (s.statusUpdatedAt ?? s.updatedAt ?? s.startedAt ?? w?.activityTs), cwd: s.cwd ?? w?.cwd, kind: 'session', asked: Boolean(waits),
+      // A Grok bot's replies the owner has not read (read receipts, core/bots/grok.js).
+      ...(s.engine === 'grok' && Number(s.unread) > 0 ? { unread: Number(s.unread) } : {}),
     });
     if (w) seen.add(w.target);
   }

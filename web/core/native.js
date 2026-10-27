@@ -179,6 +179,7 @@ export function boardStrip(st, host) {
   if (st.finished?.ts) out.finished = { text: clean(st.finished.text, 300), ts: toIso(st.finished.ts) };
   if (st.entrypoint) out.entrypoint = st.entrypoint;
   if (st.faded) out.faded = true;
+  if (st.unread) out.unread = st.unread;   // a Grok bot's replies the owner has not read
   if (st.lane === 'wait') Object.assign(out, answerFields(st));
   return out;
 }

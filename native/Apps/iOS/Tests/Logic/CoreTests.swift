@@ -36,6 +36,12 @@ extension Suites {
         expect(page.offset == 4096 && page.turns.count == 2, "transcript page")
         expect(page.turns[0].toolNames == ["Bash"], "tool names")
 
+        // Reading a Grok bot's thread here reads its replies (seenBy); any other session's read names no reader.
+        let botArgs = HTTPDroverAPI.transcriptArgs(SessionRef(id: "grok:alpha", host: "local"), since: 3, limit: 50)
+        expect(botArgs["seenBy"] == .string("ios") && botArgs["since"] == .number(3) && botArgs["host"] == nil, "bot transcript names its reader")
+        let otherArgs = HTTPDroverAPI.transcriptArgs(SessionRef(id: "abc", host: "box-a"), since: nil, limit: 50)
+        expect(otherArgs["seenBy"] == nil && otherArgs["host"] == .string("box-a"), "other transcripts name none")
+
         let msg = try decode(MessageResult.self, #"{"delivery":{"ok":true,"queuedBehindTurn":true}}"#)
         expect(msg.ok == true && msg.queuedBehindTurn == true, "nested delivery")
         let feed = try decode(NotificationFeed.self, #"{"cursor":42,"items":[{"id":"n1","title":"t","sessionId":"s","host":"local"}]}"#)

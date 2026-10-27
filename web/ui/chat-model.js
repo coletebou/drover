@@ -8,6 +8,8 @@
 //  - chatItems turns a list into what a chat shows: consecutive tool-only assistant turns become one group with
 //    a verb line ("Ran 3 commands, read 2 files"), each result under its call (by id, else in order); thinking,
 //    titles, whitespace-only text and (unless asked) meta turns are hidden; user turns name who sent them.
+//  - withReceipts brings a Grok bot thread's read receipts (sessions.transcript receipts) onto turns already shown:
+//    a client that reads only new turns still sees an older message get read or answered.
 import { owner, isOwner } from './owner.js';
 
 const norm = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
@@ -249,7 +251,7 @@ export function chatItems(turns, { showMeta = false } = {}) {
     if (role === 'assistant') {
       const text = typeof t.text === 'string' ? t.text : '';
       const tools = Array.isArray(t.tools) ? t.tools : [];
-      if (text.trim() || ((t.pending || t.error) && !tools.length)) { group = null; items.push({ kind: 'assistant', key: turnKey(t), turn: t, text, pending: Boolean(t.pending), error: t.error ?? null, model: t.model ?? null }); }
+      if (text.trim() || ((t.pending || t.error) && !tools.length)) { group = null; items.push({ kind: 'assistant', key: turnKey(t), turn: t, text, pending: Boolean(t.pending), error: t.error ?? null, model: t.model ?? null, receipt: t.receipt ?? null }); }
       if (tools.length) {
         if (!group) { group = { kind: 'tools', key: `tools:${turnKey(t)}`, calls: [], ts: t.ts ?? null, endTs: t.ts ?? null }; items.push(group); }
         tools.forEach((u, n) => {
@@ -281,7 +283,7 @@ export function chatItems(turns, { showMeta = false } = {}) {
       const text = peer ? peer.body : String(t.text ?? '');
       if (!text.trim() && !t.local) continue;
       group = null;
-      items.push({ kind: 'user', key: turnKey(t), turn: t, label: sp.label, actor: sp.actor, via: sp.via, text, local: Boolean(t.local), failed: t.failed ?? null, meta: Boolean(t.meta) });
+      items.push({ kind: 'user', key: turnKey(t), turn: t, label: sp.label, actor: sp.actor, via: sp.via, text, local: Boolean(t.local), failed: t.failed ?? null, meta: Boolean(t.meta), receipt: t.receipt ?? null });
       continue;
     }
     if (role === 'tool') { group = null; items.push({ kind: 'system', key: turnKey(t), turn: t, sub: 'tool', text: String(t.text ?? '') }); continue; }
@@ -294,12 +296,70 @@ export function chatItems(turns, { showMeta = false } = {}) {
   return items;
 }
 
+/**
+ * Turns with the receipts a bot transcript sent (id -> receipt, for its last turns) laid on the turns they belong to,
+ * matched by event id. Returns the same array when nothing changed, so an idle poll rebuilds nothing.
+ */
+export function withReceipts(turns, receipts) {
+  if (!receipts || typeof receipts !== 'object' || !Array.isArray(turns)) return turns;
+  let changed = false;
+  const out = turns.map((t) => {
+    const r = t?.id != null && Object.hasOwn(receipts, t.id) ? receipts[t.id] : null;
+    if (!r || receiptSig(r) === receiptSig(t.receipt)) return t;
+    changed = true;
+    return { ...t, receipt: r };
+  });
+  return changed ? out : turns;
+}
+
+/**
+ * The last reply on screen that is for the owner and not read yet (its event id), or null: the drawer marks the thread
+ * read up to it once the page is visible (a read while the page was hidden named no reader). you(actor): the owner?
+ */
+export function lastUnreadReply(turns, you = isOwner) {
+  const t = (turns ?? []).findLast((x) => x?.role === 'assistant' && x.id != null && x.receipt && x.receipt.state !== 'read' && you(x.receipt.to));
+  return t?.id ?? null;
+}
+
+/** What a receipt shows, for comparing two of them: its state and when each step happened. */
+export function receiptSig(r) {
+  if (!r || typeof r !== 'object') return '';
+  return [r.state, r.delivered?.at, r.delivered?.via, r.read?.at, r.read?.by, r.answered?.at, r.failed, r.to].map((x) => x ?? '').join('|');
+}
+
+/**
+ * The line a receipt adds under a turn of a Grok bot's thread, or null. A message to the bot: how far it got
+ * (queued in its inbox, delivered by its Routine, read, answered). A reply: whether who it is for has read it.
+ * name: the bot as shown; you(actor): whether an actor is the owner.
+ */
+export function receiptLine(r, { name = 'the bot', you = isOwner, at = (ts) => ts } = {}) {
+  if (!r || typeof r !== 'object') return null;
+  if ('to' in r && !('answered' in r)) {
+    const who = you(r.to) ? 'you' : r.to;
+    return r.read ? `read by ${who} ${at(r.read.at)}` : you(r.to) ? 'not read yet' : `for ${who}, not read yet`;
+  }
+  const parts = [];
+  if (r.failed) parts.push(`its Routine refused it (${r.failed}); it waits in the inbox`);
+  if (r.delivered) parts.push(r.delivered.via === 'routine' ? `delivered by its Routine ${at(r.delivered.at)}` : `picked up from the inbox ${at(r.delivered.at)}`);
+  else if (!r.failed) parts.push(`queued in ${name}'s inbox`);
+  if (r.read && r.read.via !== 'reply') parts.push(`read ${at(r.read.at)}`);
+  if (r.answered) parts.push(`answered ${at(r.answered.at)}`);
+  return parts.join(' · ');
+}
+
+/** One line for a receipt event in a timeline: "grok:alpha read 2 messages", "cole read a reply from grok:alpha". */
+export function receiptText(e) {
+  const n = typeof e?.of === 'string' ? 1 : Array.isArray(e?.of) ? e.of.length : 0;
+  const many = (one, more) => (n === 1 ? `a ${one}` : `${n} ${more}`);
+  return e?.by && e.by === e.thread ? `${e.by} read ${many('message', 'messages')}` : `${e?.by ?? '?'} read ${many('reply', 'replies')} from ${e?.thread ?? 'a bot'}`;
+}
+
 /** A stable signature of what an item shows: unchanged signature, unchanged DOM. */
 export function itemSig(it) {
   switch (it.kind) {
     case 'tools': return `t|${it.calls.length}|${it.calls.map((c) => `${c.key}:${c.result ? (c.result.isError ? 'e' : 'r') + c.result.text.length : '-'}`).join(',')}`;
-    case 'assistant': return `a|${it.pending ? 1 : 0}|${it.error ?? ''}|${it.text.length}|${it.text.slice(-64)}`;
-    case 'user': return `u|${it.local ? 1 : 0}|${it.failed ?? ''}|${it.label}|${it.text.length}|${it.text.slice(0, 64)}`;
+    case 'assistant': return `a|${it.pending ? 1 : 0}|${it.error ?? ''}|${it.text.length}|${it.text.slice(-64)}|${receiptSig(it.receipt)}`;
+    case 'user': return `u|${it.local ? 1 : 0}|${it.failed ?? ''}|${it.label}|${it.text.length}|${it.text.slice(0, 64)}|${receiptSig(it.receipt)}`;
     default: return `${it.kind}|${it.text.length}|${String(it.text).slice(0, 64)}`;
   }
 }

@@ -207,6 +207,7 @@ select { padding-right: 24px; }
 .strip.new { animation: arrive 1.4s ease-out 1; }
 @keyframes arrive { 0% { background: var(--amber-bg); } 100% { background: var(--bg-2); } }
 .strip .title { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.strip .title .unread { font-size: var(--fs-0); font-family: var(--mono); color: var(--steel); background: var(--steel-bg); border-radius: 999px; padding: 0 7px; white-space: nowrap; }
 .strip .name { font-size: var(--fs-2); color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .strip .where { grid-column: 1; font-family: var(--mono); font-size: var(--fs-0); color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .strip .age { grid-column: 2; grid-row: 1; font-family: var(--mono); font-size: var(--fs-0); color: var(--ink-3); white-space: nowrap; }
@@ -318,6 +319,9 @@ select { padding-right: 24px; }
 .turn.user.failed .text { border-left-color: var(--brick); }
 .turn.user.other .text { border-left-style: dashed; }
 .turn-err { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: var(--fs-1); color: var(--brick); }
+/* A Grok bot thread's read receipt (chat-model.js receiptLine): quiet until read, then the colour of done. */
+.turn .receipt { font-size: var(--fs-0); color: var(--ink-3); font-family: var(--mono); }
+.turn .receipt.done { color: var(--moss); }
 .turn.system.error, .turn.system .state-brick { color: var(--brick); }
 .turn .btn.more { justify-self: start; }
 .turns-tail:empty { display: none; }

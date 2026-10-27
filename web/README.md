@@ -552,7 +552,7 @@ gives the owner's bots Drover anyway, in both directions.
   message for its inbox when it has none; the bot answers with `drover_reply`, which lands as a `chat` event threaded
   under the message, and reports `drover_status`, which shows on the board. A reply raises a "finished" alert;
   `needs-owner` and `blocked` raise "needs you" and put the bot in the waiting lane until its next status (a bot taught
-  the earlier `needs-<DROVER_OWNER>` is read the same). A bot is
+  the earlier `needs-<DROVER_OWNER>` is read the same). Messages and replies carry read receipts (below). A bot is
   live when it was heard from, or its Routine accepted a message, in the last day (a Routine alone makes it reachable,
   not live). One that should be acting and has gone silent, its last status `working` or a message its Routine
   accepted still unanswered, turns `stale` after `DROVER_BOTS_STALE_MINUTES` (default 30) and says why; waiting on
@@ -597,7 +597,7 @@ then passes through that bot's chat once, so OAuth is the better path).
 
 | Scope | Tools |
 |---|---|
-| `drover.read` | `drover_whoami`, `drover_fleet`, `drover_search`, `drover_inbox`, `drover_features`, `drover_reflections` (list, search, show), and with a brain plugin `drover_brain_search`, `drover_brain_get` |
+| `drover.read` | `drover_whoami`, `drover_fleet`, `drover_search`, `drover_inbox`, `drover_sent`, `drover_features`, `drover_reflections` (list, search, show), and with a brain plugin `drover_brain_search`, `drover_brain_get` |
 | `drover.write` | `drover_status`, `drover_reply`, `drover_note`, `drover_feature_upsert`, and with a brain plugin `drover_brain_note` (kinds memory and handoff, filed under `agent:grok-<bot>`) |
 | `drover.notify` | `drover_notify_owner`, also served as `drover_notify_<DROVER_OWNER>` for bots taught that name (12 alerts an hour per bot, counting `needs-owner` statuses) |
 
@@ -610,6 +610,36 @@ agents see, and messages reach them as written. `core/bots/policy.js` cleans eve
 out: secrets redacted, home paths as `~`, long text cut. No tool takes `host`, messages or launches other agents, or
 reads raw transcripts or the raw truth file. Reflections are read-only for bots and brain notes cannot be decisions,
 because both reach every Claude session's context.
+
+### Read receipts
+
+Every message to a bot and every reply from one says how far it got. Drover writes the receipts itself, as `receipt`
+events (`{ of: [ids], thread, state: "read", by, via }`, `core/bots/grok.js`), and folds them per thread.
+
+- A message to a bot is `queued` (in its inbox, no Routine), `delivered` (its Routine accepted it, or the bot picked it
+  up from its inbox), `read` (the bot got it from `drover_inbox`, or started on it with `drover_status` naming it as
+  the task) and `answered` (its reply threads under it). A Routine that refused it says why; the message waits in
+  the inbox.
+- A reply is delivered once it is recorded: the owner's screens get an alert unless they muted the bot, and an agent
+  finds it in the bot's thread. It is read when whoever it is for sees it: the owner when the drawer shows the bot's
+  chat on a visible page or the iPhone app opens it, an agent when it reads the bot's thread through MCP
+  (`drover_session_transcript`, `drover_sessions_lastReply`) or `drover op` (as `cli`). A reply is for whoever sent
+  the message it answers; a message on the bot's own thread is for the owner. The owner's clients are one reader.
+- A receipt counts only when its event's actor is the reader it names, so an agent cannot mark a reply read for the
+  owner: MCP and the CLI always read (and mark) as themselves, the `events.append` op refuses receipt events (only
+  Drover writes them) and stamps every event's actor, id, time and host itself (a body cannot name its own), a reply
+  records who it is for as the bot sends it, and no bot reads another bot's thread. A read marks only the replies up to the last one its
+  page returned; the drawer marks a reply read once it is on screen while the page is visible (one that arrived
+  while the tab was hidden is marked when the tab shows it).
+- Bots see receipts in `drover_inbox` (`readAt`, and `reply.read` for their answer), `drover_sent` (their replies,
+  newest first, with `to` and `read`), `drover_whoami` (`inbox.unread`, and `replies.unread` over the last week),
+  `drover_search` (hits in their own thread carry `event` and `receipt`) and `drover_reply` (`to`, and `delivery`:
+  `alert`, with `muted` when the owner muted the bot, or `thread`). The owner sees them under each turn of the bot's
+  chat in the drawer, and a bot's session carries `unread`, the replies the owner has not read.
+- Ops: `sessions.transcript` turns carry `id` and `receipt` and the answer's `receipts` repeats them for the thread's
+  last turns (an incremental reader updates turns it already shows); `seenBy` on `sessions.transcript` and
+  `sessions.lastReply` records a read by that reader; `sessions.seen` marks a thread read without reading it (its
+  receipt is the record, so it writes no `op` event).
 
 ### Security
 
@@ -817,7 +847,10 @@ hosts and a fake manager gateway that streams (`test/fake-gateway.js`; a message
 8 s, "fail " fails, "echo " echoes). Tokens are copied from the real state dir, so a paired client works against it.
 A dialog comes back about 12 s after it is answered. Nothing in it can reach a real session, pane or host: its
 codex, docker and ssh are stand-ins (`test/showcase/fake-*.js`), every tmux server it starts or stops is named by
-socket, and it stops unless the daemon sees only its own hosts, no plugin and only its own tmux session.
+socket, and it stops unless the daemon sees only its own hosts, no plugin and only its own tmux session. `--bots
+<port>` also runs the bot gateway on that loopback port (its own public origin, plain http) and keeps the bots in the
+world's state, so a script can be a Grok bot end to end: sign in, get approved with the world's `drover bots`, call the
+tools, and take Routine webhooks on loopback.
 
 `--showcase` builds the showcase world instead (`test/showcase/world.js`): three hosts (studio runs the daemon, devbox
 answers through the stand-in ssh, spare is down) under a HOME of its own, Claude Code sessions on both, Codex threads,
