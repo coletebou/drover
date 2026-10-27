@@ -134,7 +134,8 @@ const candidateOf = (chain, g, state) => ({ chain: chain.name, gen: g.gen, id: g
 /**
  * Where the work of a session that is not live went. The successor is the newest generation after it that got
  * started (one whose launch never got that far is passed over), and it is delivered to only when it is live here,
- * target names a generation of exactly one chain, and no other session answers to target: answering lists the ids of
+ * target names a generation of exactly one chain, that generation does not itself run here (a renamed session still
+ * answers to its old name in the chain record), and no other session answers to target: answering lists the ids of
  * the sessions the caller found under it (a name or an id prefix), each of which must be that generation. A live
  * generation in between handed off to the successor, so it is not a candidate.
  *
@@ -155,20 +156,26 @@ export async function successor(target, { sessionId = null, registry = [], answe
     const head = later.find((x) => x.state !== 'not started') ?? null;
     // What the sender is shown: the head, and every other later generation still live here or started elsewhere.
     const shown = later.filter((x) => x === head || ['live', 'no messaging socket', 'elsewhere'].includes(x.state)).map((x) => candidateOf(chain, x.g, x.state));
-    return { chain, from, later, head, shown };
+    return { chain, from, fromState: stateOf(from, reg), later, head, shown };
   });
   const inChains = new Set(rows.map((r) => r.from.sessionId));
   const outside = [...new Set(answering)].filter((x) => !inChains.has(x));
-  if (rows.length === 1 && !outside.length && rows[0].head?.state === 'live') {
+  // The generation the target names may still run under another name (a session can be renamed): it is live, so its
+  // message is not sent on.
+  const stillRuns = rows.filter((r) => r.fromState === 'live' || r.fromState === 'no messaging socket');
+  if (rows.length === 1 && !outside.length && !stillRuns.length && rows[0].head?.state === 'live') {
     const { chain, from, later, head } = rows[0];
     const passed = later.filter((x) => x !== head && x.state === 'live').map((x) => x.g.name ?? x.g.sessionId);
     const why = `generation ${from.gen} of handoff chain ${chain.name}, whose newest live generation is ${head.g.name ?? head.g.sessionId} (generation ${head.g.gen})`
       + (passed.length ? `; ${passed.join(', ')} ${passed.length > 1 ? 'are' : 'is'} live too but handed off` : '');
     return { to: { session: reg.get(head.g.sessionId), gen: head.g.gen, id: head.g.sessionId, name: head.g.name }, chain: chain.name, from, why };
   }
-  const candidates = rows.flatMap((r) => r.shown);
+  const candidates = [...stillRuns.map((r) => candidateOf(r.chain, r.from, r.fromState)), ...rows.flatMap((r) => r.shown)];
   let note;
-  if (outside.length) {
+  if (stillRuns.length) {
+    note = stillRuns.map((r) => `${label(r.from)} of handoff chain ${r.chain.name} still runs here${r.from.name === target ? ' under another name' : ''}`).join('; ')
+      + ', so nothing was redirected: send to its session id';
+  } else if (outside.length) {
     note = `${target} also names ${outside.length > 1 ? `${outside.length} sessions` : 'a session'} in no handoff chain (${outside.join(', ')}), so nothing was redirected: `
       + rows.map((r) => `chain ${r.chain.name}: ${label(r.from)}${r.shown.length ? `, then ${r.shown.map(describe).join('; ')}` : ' is its newest generation'}`).join(' | ');
   } else if (rows.length > 1) {

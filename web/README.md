@@ -153,6 +153,7 @@ is never followed.
 | The target | What happens |
 |---|---|
 | live (its process runs) | delivered to it, as before, even when a newer generation is live too |
+| a name the chain record keeps for a generation that was renamed and still runs | fails as before, naming that session's id to send to; never sent on to its successor |
 | not live, in no chain | fails as before (`session not found`, `no messaging socket`, `not alive`) |
 | not live, in one chain whose newest started generation after it is live here | delivered there, through any number of handoffs; `resolvedFrom`, `resolvedTo` and `resolvedWhy` in the result and in the `message` event, whose `to` is the session that got it |
 | not live, its chain's newest generation after it ended, has no messaging socket, or was started on another host | fails as before, and the error lists those generations (`candidates` on the error in process): an `elsewhere` one names the host to resend with |

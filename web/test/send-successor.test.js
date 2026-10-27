@@ -263,6 +263,20 @@ describe('sessions.message reaches a handoff successor', () => {
     assert.equal(in3.got.length, 0);
   });
 
+  test('a generation that still runs under another name is not passed over for its successor', async () => {
+    const [m1, m2] = [1, 2].map((n) => sid('b1b1', n));
+    await chain('mike-chain', [{ id: m1, name: 'mike' }, { id: m2, name: 'mike-2' }]);
+    const in1 = await inbox('m1'), in2 = await inbox('m2');
+    // Generation 1 was renamed after its handoff and still runs; the chain record keeps the name it had.
+    await register({ id: m1, name: 'mike-renamed', socket: in1.file });
+    await register({ id: m2, name: 'mike-2', socket: in2.file });
+    const e = await send('mike').then(() => null, (x) => x);
+    assert.equal(e.message, `session not found; mike (generation 1, ${m1}) of handoff chain mike-chain still runs here under another name, so nothing was redirected: send to its session id`);
+    assert.deepEqual(e.candidates.map((c) => [c.id, c.state]), [[m1, 'live'], [m2, 'live']]);
+    await settle();
+    assert.equal(in1.got.length + in2.got.length, 0);
+  });
+
   test('a marker that cannot be read stops the redirect: nothing is sent, and the error says why', async () => {
     const [k1, k2, k3] = [1, 2, 3].map((n) => sid('e1e1', n));
     await chain('kilo-chain', [{ id: k1, name: 'kilo' }, { id: k2, name: 'kilo-2' }, { id: k3, name: 'kilo-3' }]);
