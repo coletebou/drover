@@ -424,8 +424,11 @@ reason }`, and a slow or failing brain leaves the index's answer as it was. `kin
 kinds without `brain` skip it. Work never reaches the brain: nothing is sent from a machine whose dotfiles identity is
 work (`DF_IDENTITY` in the environment or `~/.df-profile`), or for a query, `project`, `repoIdentity`, host named or
 caller's working directory (`callerCwd`, set by the MCP server and the CLI and dropped before any host sees the
-search) that matches the dotfiles' brain-sync pattern (acme, ini-tech, acme-dev, privcloud, acme-beta, dev pods...).
-`DROVER_SEARCH_BRAIN=off` turns the brain leg off on a host.
+search) that matches `DROVER_WORK_CONTEXT`. That is the operator's pattern for what is work: a regular expression,
+matched case-insensitively and written without slashes, set like any other setting in a `~/.config/drover/*.env`
+file. It fails closed: while it is unset or does not compile, a front asks no remote source at all (`remote.brain`
+says why), and `DROVER_WORK_CONTEXT=none` is the explicit way to say that nothing is work. `DROVER_SEARCH_BRAIN=off`
+turns the brain leg off on a host.
 
 Reflections come from the reflections CLI (`reflections export`), not a file: each pass reads what
 changed in the last day, and once per UTC day everything, so derived `stale` statuses refresh. One
