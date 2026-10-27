@@ -9,7 +9,9 @@
 //                         optional long poll (`wait` seconds) for the next alert.
 //   native.board          the compact board for rich clients (main token only): every live agent as a
 //                         strip with what answering it needs. Waiting items, strips and dialog alerts carry
-//                         answerFields (dialog, screen hash, keys) for sessions.answer.
+//                         answerFields (dialog, screen hash, keys) for sessions.answer; a Grok bot's approval
+//                         request carries answer "approval" and approval (approvalFields), answered with
+//                         POST /api/approvals/answer (main token; core/bots/approvals.js).
 //
 // The shaping is pure (buildSummary, buildBoard, buildNotifications, headline, toIso:
 // tested in test/native.test.js). native.summary and native.notifications are accepted
@@ -86,6 +88,38 @@ export function answerFields({ screen, held, dialog, hash, ask } = {}, { pathles
   return { answer: 'keys', dialog: { question, options }, ...(hash ? { hash: String(hash) } : {}), keys };
 }
 
+/**
+ * How a Grok bot's approval request is answered: answer "approval", and approval { id, bot, kind, question, options
+ * [{ n, label }], details, createdAt, expiresAt } for POST /api/approvals/answer { id, choice: n }. Its words are the
+ * bot's (untrusted: true): cleaned, and pathless for the widget-token ops. detailsMax: how much of the details to keep.
+ * moreApprovals: requests from the same bot waiting behind this one. Pure.
+ */
+export function approvalFields(a, { pathless = false, detailsMax = 600, more = 0 } = {}) {
+  if (!a?.id) return {};
+  const text = (s, max) => clean(pathless ? noPaths(s) : s, max);
+  const opts = (a.options ?? []).filter((o) => Number.isInteger(o?.n)).slice(0, 4);
+  // Options that differ only in a path ("Restart /srv/production/api", "... /srv/staging/api") keep it: two choices
+  // that read the same would answer two ways. Cleaned either way (secrets redacted, home as ~).
+  let labels = opts.map((o) => text(o.label, 60));
+  if (pathless && new Set(labels.map((l) => l.toLowerCase())).size < labels.length) labels = opts.map((o) => clean(o.label, 60));
+  // Details keep their line breaks (a list, the terms, read as the bot wrote them; the store keeps at most one blank
+  // line in a row): each line is cleaned as everything here, then the whole is cut to max.
+  const lines = (s, max, f) => { const t = String(s).replace(/\r\n?/g, '\n').split('\n').map((l) => f(l, 100_000)).join('\n').trim(); return t.length > max ? `${t.slice(0, max - 1)}…` : t; };
+  const question = text(a.question, 300), details = a.details ? lines(a.details, detailsMax, text) : null;
+  // complete: this shows the request whole, nothing shortened or cut (cleaned as everywhere). Only then may a client
+  // answer it from here; otherwise it opens the whole request first (GET /api/approvals?id=).
+  const whole = (s) => clean(s, 100_000);
+  const complete = question === whole(a.question) && (!a.details || details === lines(a.details, 100_000, clean)) && opts.every((o, i) => labels[i] === whole(o.label));
+  return {
+    answer: 'approval',
+    approval: {
+      id: String(a.id), bot: a.bot ?? null, kind: a.kind ?? 'other', question, options: opts.map((o, i) => ({ n: o.n, label: labels[i] })),
+      ...(details ? { details } : {}), createdAt: toIso(a.createdAt), expiresAt: toIso(a.expiresAt), complete, untrusted: true,
+    },
+    ...(more > 0 ? { moreApprovals: more } : {}),
+  };
+}
+
 const PATH_RUN = /(?:~|\/(?:Users|home|private|var|tmp|opt|mnt|srv|Volumes|root|etc))(?:\/[^\s/'"`)]+)+\/?/g;
 /** Paths down to their last part, so text naming a file or project keeps the name and not where it lives. */
 export function noPaths(s) {
@@ -124,7 +158,7 @@ export function buildSummary(fleet, alerts = [], { now = Date.now(), managerLast
       const engine = st.engine ?? 'claude';
       if (st.lane === 'wait') {
         counts.waiting++;
-        waiting.push({ id: st.sessionId ?? st.id, name: displayName(st), host: hs.host, engine, since: toIso(st.since), kind: st.ask?.kind === 'question' ? 'question' : 'decision', headline: headline(st.ask?.text || st.question || (st.tail ?? []).join(' ')), ...answerFields(st, { pathless: true }) });
+        waiting.push({ id: st.sessionId ?? st.id, name: displayName(st), host: hs.host, engine, since: toIso(st.since), kind: st.ask?.kind === 'question' ? 'question' : 'decision', headline: headline(st.ask?.text || st.question || (st.tail ?? []).join(' ')), ...answerFields(st, { pathless: true }), ...approvalFields(st.approval, { pathless: true, detailsMax: 300, more: st.moreApprovals }) });
       } else if (st.lane === 'work') {
         counts.working++;
         const last = [...(st.tail ?? [])].reverse().find((l) => l && String(l).trim());
@@ -180,7 +214,8 @@ export function boardStrip(st, host) {
   if (st.entrypoint) out.entrypoint = st.entrypoint;
   if (st.faded) out.faded = true;
   if (st.unread) out.unread = st.unread;   // a Grok bot's replies the owner has not read
-  if (st.lane === 'wait') Object.assign(out, answerFields(st));
+  // The board is the owner's (main token): it carries the whole request, so its card can answer it.
+  if (st.lane === 'wait') Object.assign(out, answerFields(st), approvalFields(st.approval, { more: st.moreApprovals, detailsMax: 2000 }));
   return out;
 }
 
@@ -253,6 +288,8 @@ function decodeCursor(v) {
  * (answerFields: dialog, the screen hash it was raised on, the keys); sessions.answer refuses once that screen is gone.
  */
 function alertAnswer(a) {
+  // A Grok bot's approval request (core/bots/approvals.js) is answered by its id, not on a screen.
+  if (a?.kind === 'approval' && a.category === 'needs-you' && a.meta?.approval?.id) return approvalFields(a.meta.approval, { pathless: true, detailsMax: 300 });
   if (!a?.sessionId || !a.meta?.hash) return {};
   const held = a.category === 'held';
   if (!held && !(a.category === 'needs-you' && (a.kind === 'dialog' || a.ask?.kind === 'decision'))) return {};

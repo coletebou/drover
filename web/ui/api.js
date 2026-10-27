@@ -180,6 +180,27 @@ export const botsPending = () => botsFetch('pending');
 export const botsDecide = (code, approve, bot) => botsFetch(approve ? 'approve' : 'deny', approve ? { code, bot } : { code });
 
 /**
+ * Answer a Grok bot's approval request (core/bots/approvals.js): option choice (its n) of request id. A main-token
+ * route on the daemon that keeps the bots, never an op, so it does not ride ssh rpc: a bot on another host is answered
+ * through that host's direct peer (its own main token), or on its own Drover page. A refusal (already answered,
+ * withdrawn, expired) throws with the request as it is now (error.approval).
+ */
+export async function approvalsAnswer(id, choice, { host = 'local', via = 'web' } = {}) {
+  let base = '', token = getToken();
+  if (host && host !== 'local') {
+    const peer = peerFor(host);
+    if (!peer) throw new ApiError(`${host} keeps this bot: answer it on ${host}'s own Drover page, or add ${host} as a direct peer (Settings)`, { remote: true });
+    base = peer.url.replace(/\/$/, ''); token = peer.token;
+  }
+  let res;
+  try { res = await fetch(`${base}/api/approvals/answer`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` }, body: JSON.stringify({ id, choice, via }), ...(base ? { mode: 'cors' } : {}) }); }
+  catch (e) { throw new ApiError(`network error: ${e.message}`, { network: true }); }
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok || j.ok === false) throw new ApiError(j.error ?? `HTTP ${res.status}`, { status: res.status, approval: j.approval ?? null });
+  return j.result;
+}
+
+/**
  * Open the SSE stream. onEvent(type, data); onState('open'|'reconnecting'|'closed'). topics: a comma list of the
  * events wanted (the daemon then sends only those, plus hello and pings; one that predates topics sends all).
  */
