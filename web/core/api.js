@@ -145,14 +145,19 @@ async function sessionById(id) {
  * Where a message to a Claude session that is not live goes instead: its handoff chain's live successor
  * (core/lineage.js), plus state, why the session itself cannot take it. null when that does not apply: the session
  * runs, or is not a Claude session. findSession returns a running session ahead of any other that matches, so a
- * target it returns that does not run means none that answers to id does.
+ * target it returns that does not run means none that answers to id does. Only a full session id narrows the chains
+ * to that session's own; a name or prefix is looked up across every chain, beside every session listed under it, so
+ * one that names several sessions is not narrowed to whichever the lookup found first.
  */
 async function handoffSuccessor(id, s) {
   if (s ? s.engine !== 'claude' || s.headless || claude.running(s) : grok.isGrokTarget(id) || openclaw.isManagerId(id)) return null;
   const state = !s ? 'session not found' : !s.socket ? 'no messaging socket' : 'process not alive';
+  const exact = s?.sessionId === id;
   let r;
-  try { r = await lineage.successor(id, { sessionId: s?.sessionId ?? null, registry: await claude.listRegistry() }); }
-  catch (e) { return { to: null, note: `the handoff chains could not be read, so nothing was redirected (${e.message})`, candidates: [], state }; }
+  try {
+    const answering = s && !exact ? (await claude.listSessions()).filter((x) => x.sessionId === id || x.name === id || x.sessionId.startsWith(id)).map((x) => x.sessionId) : [];
+    r = await lineage.successor(id, { sessionId: exact ? id : null, answering, registry: await claude.listRegistry() });
+  } catch (e) { return { to: null, note: `the handoff chains could not be read, so nothing was redirected (${e.message})`, candidates: [], state }; }
   if (!r.to && !r.note) return null;
   return { ...r, state };
 }
@@ -338,7 +343,7 @@ export const local = {
       else if (s.engine === grok.ENGINE) delivery = await grok.send(s.id, text, { actor });
       else if (s.engine === 'claude') delivery = await claude.sendToSession(s, text, { fromName: `drover (${actor})` });
       else delivery = await codex.sendTurn(s.threadId, text, { cwd: s.cwd });
-    } catch (e) { delivery = { ok: false, error: withNote(e.message, handoff?.to ? null : handoff) }; }
+    } catch (e) { delivery = { ok: false, error: resolved ? `${e.message} (sent on: ${resolved.resolvedWhy})` : withNote(e.message, handoff) }; }
     const to = { kind: s.engine, host: hosts.localShortName(), id: s.id ?? s.sessionId ?? s.threadId, name: s.name ?? null };
     // A Grok bot answers later, through the bot gateway, quoting ref (its inbox reads this event).
     const ev = await events.append({ type: 'message', to, text, ...(delivery.ref ? { ref: delivery.ref } : {}), delivery, ...resolved }, { actor });

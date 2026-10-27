@@ -145,9 +145,10 @@ now. It reads the handoff tool's own record of the chain (`core/lineage.js`), ne
 <chain dir>/gen-NN/session.json  {"session_id", "name", "ssh_alias", "started_at", "first_response_at", ...}
 ```
 
-`<markers>` is `DROVER_HANDOFF_CHAINS`, else `HANDOFF_CHAIN_STATE_DIR`, else `~/.claude/state/handoff-chain`. The
-target is matched by session id; when no session answers to it, also by an id prefix of 8 hex digits or more, or by a
-generation's name.
+`<markers>` is `DROVER_HANDOFF_CHAINS`, else `HANDOFF_CHAIN_STATE_DIR`, else `~/.claude/state/handoff-chain`. A
+full session id is matched to that session's own chain. A name, or an id prefix of 8 hex digits or more, is looked up
+in every chain, and must name one generation of one chain and no other session Drover lists under it; a shorter prefix
+is never followed.
 
 | The target | What happens |
 |---|---|
@@ -156,7 +157,8 @@ generation's name.
 | not live, in one chain whose newest started generation after it is live here | delivered there, through any number of handoffs; `resolvedFrom`, `resolvedTo` and `resolvedWhy` in the result and in the `message` event, whose `to` is the session that got it |
 | not live, its chain's newest generation after it ended, has no messaging socket, or was started on another host | fails as before, and the error lists those generations (`candidates` on the error in process): an `elsewhere` one names the host to resend with |
 | not live, and the newest generation of its chain | fails as before, saying nothing continues it |
-| a name or id prefix found in more than one chain | fails as before and lists each chain's later generations: nothing is sent, even when only one chain has a live successor |
+| a name or id prefix found in more than one chain, or that also names a session in no chain | fails as before and lists each chain's later generations: nothing is sent, even when only one chain has a live successor |
+| a marker or chain record that cannot be read (anything but absent: no permission, not JSON) | fails as before, saying so: a chain that could not be read might have named the target too |
 
 A later generation whose launch never started (no `started_at`, never seen here) is passed over. A generation that
 handed off but is still open (its window is kept while its jobs finish) is not a successor while a newer one is live.

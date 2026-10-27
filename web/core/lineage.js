@@ -25,13 +25,14 @@ const ID_PREFIX = /^[0-9a-f]{8}[0-9a-f-]*$/i;
 const GEN_DIR = /^gen-(\d+)$/;
 // The writer's file name for a session id.
 const safeId = (sid) => String(sid).replace(/[^A-Za-z0-9._-]/g, '_');
-// Absent, or not JSON: nothing there. Any other failure (no file descriptor left, no permission) throws, so a chain
-// that could not be read is never taken for one that is not there, which could hide an ambiguity.
+// Absent: nothing there. Anything else that keeps a file from being read (no file descriptor left, no permission,
+// text that is not JSON) throws, so a chain that could not be read is never taken for one that is not there, which
+// could hide an ambiguity. The writer replaces these files whole, so a reader never sees half of one.
 const absent = (e) => e.code === 'ENOENT' || e.code === 'ENOTDIR';
 async function readJson(f) {
   let text;
   try { text = await readFile(f, 'utf8'); } catch (e) { if (absent(e)) return null; throw e; }
-  try { return JSON.parse(text); } catch { return null; }
+  try { return JSON.parse(text); } catch { throw new Error(`${f} is not JSON`); }
 }
 async function list(dir) { try { return await readdir(dir); } catch (e) { if (absent(e)) return []; throw e; } }
 
@@ -51,8 +52,8 @@ async function allMarkers(dir) {
 
 /**
  * One chain, its generations oldest first: { gen, sessionId, name, alias, started }, or { gen, unreadable: true } for
- * a generation whose record is missing or not JSON. null when dir holds no chain.json, so a marker cannot point
- * anywhere else.
+ * a generation directory without a record that names its session. null when dir holds no chain.json, so a marker
+ * cannot point anywhere else.
  */
 export async function loadChain(dir, fallbackName = null) {
   const chain = await readJson(path.join(dir, 'chain.json'));
@@ -70,9 +71,9 @@ export async function loadChain(dir, fallbackName = null) {
 }
 
 /**
- * The chains target is a generation of, [{ chain, gen }]. sessionId given (the session was found, not live): that id
- * only. Otherwise (no session answers to target) a generation's session id, an id prefix of 8 hex digits or more, or
- * its name. A full id's own marker names its chain at once; anything else reads every chain the markers name.
+ * The chains target is a generation of, [{ chain, gen }]. sessionId given (target is that session's full id): that id
+ * only. Otherwise a generation's session id, an id prefix of 8 hex digits or more, or its name. A full id's own marker
+ * names its chain at once; anything else reads every chain the markers name.
  */
 export async function chainsOf(target, { sessionId = null, dir = markersDir() } = {}) {
   const want = sessionId ?? String(target ?? '');
@@ -132,8 +133,10 @@ const candidateOf = (chain, g, state) => ({ chain: chain.name, gen: g.gen, id: g
 
 /**
  * Where the work of a session that is not live went. The successor is the newest generation after it that got
- * started (one whose launch never got that far is passed over), and it is delivered to only when it is live here and
- * target belongs to exactly one chain. A live generation in between handed off to it, so it is not a candidate.
+ * started (one whose launch never got that far is passed over), and it is delivered to only when it is live here,
+ * target names a generation of exactly one chain, and no other session answers to target: answering lists the ids of
+ * the sessions the caller found under it (a name or an id prefix), each of which must be that generation. A live
+ * generation in between handed off to the successor, so it is not a candidate.
  *
  *   { to: { session, gen, id, name }, chain, from, why }   deliver to `to.session` (a registry entry); why reads
  *                                                          "generation 2 of handoff chain c, whose ..."
@@ -142,7 +145,7 @@ const candidateOf = (chain, g, state) => ({ chain: chain.name, gen: g.gen, id: g
  *                                                          what the chain holds
  * Throws when a marker or a chain cannot be read (see readJson).
  */
-export async function successor(target, { sessionId = null, registry = [], dir } = {}) {
+export async function successor(target, { sessionId = null, registry = [], answering = [], dir } = {}) {
   const found = await chainsOf(target, { sessionId, ...(dir ? { dir } : {}) });
   if (!found.length) return { to: null, note: null, candidates: [] };
   const reg = registryIndex(registry);
@@ -154,7 +157,9 @@ export async function successor(target, { sessionId = null, registry = [], dir }
     const shown = later.filter((x) => x === head || ['live', 'no messaging socket', 'elsewhere'].includes(x.state)).map((x) => candidateOf(chain, x.g, x.state));
     return { chain, from, later, head, shown };
   });
-  if (rows.length === 1 && rows[0].head?.state === 'live') {
+  const inChains = new Set(rows.map((r) => r.from.sessionId));
+  const outside = [...new Set(answering)].filter((x) => !inChains.has(x));
+  if (rows.length === 1 && !outside.length && rows[0].head?.state === 'live') {
     const { chain, from, later, head } = rows[0];
     const passed = later.filter((x) => x !== head && x.state === 'live').map((x) => x.g.name ?? x.g.sessionId);
     const why = `generation ${from.gen} of handoff chain ${chain.name}, whose newest live generation is ${head.g.name ?? head.g.sessionId} (generation ${head.g.gen})`
@@ -163,7 +168,10 @@ export async function successor(target, { sessionId = null, registry = [], dir }
   }
   const candidates = rows.flatMap((r) => r.shown);
   let note;
-  if (rows.length > 1) {
+  if (outside.length) {
+    note = `${target} also names ${outside.length > 1 ? `${outside.length} sessions` : 'a session'} in no handoff chain (${outside.join(', ')}), so nothing was redirected: `
+      + rows.map((r) => `chain ${r.chain.name}: ${label(r.from)}${r.shown.length ? `, then ${r.shown.map(describe).join('; ')}` : ' is its newest generation'}`).join(' | ');
+  } else if (rows.length > 1) {
     note = `${target} is a generation of ${rows.length} handoff chains, so nothing was redirected: `
       + rows.map((r) => `chain ${r.chain.name}: ${r.shown.length ? r.shown.map(describe).join('; ') : `${label(r.from)} is its newest generation`}`).join(' | ');
   } else {

@@ -178,6 +178,37 @@ describe('sessions.message reaches a handoff successor', () => {
     assert.equal((await messages()).length, 0, 'a session not found appends no message event, as before');
   });
 
+  test('ambiguous too when the lookup finds an ended session of that name: the name is not narrowed to that session', async () => {
+    const a = [1, 2, 3].map((n) => sid('e5e5', n)), b = [1, 2, 3].map((n) => sid('f6f6', n));
+    await chain('echo-chain-a', [{ id: a[0], name: 'echo' }, { id: a[1], name: 'echo-2' }, { id: a[2], name: 'echo-3' }]);
+    await chain('echo-chain-b', [{ id: b[0], name: 'echo' }, { id: b[1], name: 'echo-2' }, { id: b[2], name: 'echo-3' }]);
+    const inA = await inbox('ea3x'), inB = await inbox('eb3x');
+    await register({ id: a[2], name: 'echo-3', socket: inA.file });
+    await register({ id: b[2], name: 'echo-3', socket: inB.file });
+    // Chain a's echo-2 left its registry file behind: the lookup finds it, and the name still means two sessions.
+    await register({ id: a[1], name: 'echo-2', live: false, socket: path.join(SOCKS, 'gone.sock') });
+    const two = await send('echo-2').then(() => null, (e) => e);
+    assert.match(two.message, /^session process is not alive; echo-2 is a generation of 2 handoff chains, so nothing was redirected/);
+    // One chain, but the name also belongs to an ended session that is in none.
+    await rm(REGISTRY, { recursive: true }); await mkdir(REGISTRY);
+    await rm(path.join(BRIEFS, 'echo-chain-b'), { recursive: true });
+    for (const id of b) await rm(path.join(CHAINS, `${id}.json`));
+    await register({ id: a[2], name: 'echo-3', socket: inA.file });
+    const stray = sid('a0a0', 9);
+    await register({ id: stray, name: 'echo-2', live: false, socket: path.join(SOCKS, 'gone.sock') });
+    const other = await send('echo-2').then(() => null, (e) => e);
+    assert.match(other.message, new RegExp(`^session process is not alive; echo-2 also names a session in no handoff chain \\(${stray}\\), so nothing was redirected: chain echo-chain-a: echo-2 \\(generation 2, ${a[1]}\\), then echo-3 \\(generation 3, ${a[2]}\\), live$`));
+    // The same chain member by its full id is that session, so it is redirected.
+    await register({ id: a[1], name: 'echo-2', live: false, socket: path.join(SOCKS, 'gone.sock') });
+    assert.equal((await send(a[1])).resolvedTo.id, a[2]);
+    // A short prefix of it is not: under 8 digits it could be anyone's.
+    const short = await send(a[1].slice(0, 5)).then(() => null, (e) => e);
+    assert.equal(short.message, 'session process is not alive');
+    await settle();
+    assert.equal(inA.got.length, 1);
+    assert.equal(inB.got.length, 0);
+  });
+
   test('no successor: the newest generation, a successor that ended, or one on another host fail as before, with what the chain holds', async () => {
     const ids = [1, 2, 3].map((n) => sid('a7a7', n));
     const dir = await chain('foxtrot-chain', [{ id: ids[0], name: 'foxtrot' }, { id: ids[1], name: 'foxtrot-2' }]);
@@ -244,6 +275,16 @@ describe('sessions.message reaches a handoff successor', () => {
     await settle();
     assert.equal(in3.got.length, 0);
     await assert.rejects(lineage.chainsOf('kilo-2', { dir: CHAINS }), /EISDIR/);
+    // A marker, or a chain.json, that is not JSON stops it the same way.
+    await rm(path.join(CHAINS, 'unreadable.json'), { recursive: true });
+    await writeFile(path.join(CHAINS, 'torn.json'), '{"gen": 2, "chain": "lima-chain", "dir": "/');
+    assert.match((await send('kilo-2').then(() => null, (x) => x)).message, /could not be read, so nothing was redirected \(.*torn\.json is not JSON\)$/);
+    await rm(path.join(CHAINS, 'torn.json'));
+    const dir = path.join(BRIEFS, 'kilo-chain');
+    await writeFile(path.join(dir, 'chain.json'), '{"name": ');
+    assert.match((await send('kilo-2').then(() => null, (x) => x)).message, /could not be read, so nothing was redirected \(.*chain\.json is not JSON\)$/);
+    await settle();
+    assert.equal(in3.got.length, 0);
   });
 
   test('no chain: a missing session fails exactly as before, and a name is never read for a generation number', async () => {
