@@ -22,6 +22,7 @@ import * as botAuth from '../core/bots/oauth.js';
 import * as grok from '../core/bots/grok.js';
 import * as approvals from '../core/bots/approvals.js';
 import * as channels from '../core/bots/channels.js';
+import * as subscriptions from '../core/bots/subscriptions.js';
 import * as clients from '../core/clients.js';
 import { markDaemon as markSearchDaemon, startService as startSearch } from '../core/search/service.js';
 import * as plugins from '../core/plugins.js';
@@ -270,6 +271,7 @@ export async function startServer({ port = 7337, bind = '127.0.0.1' } = {}) {
           if (route === 'grants') return json(res, 200, { ok: true, result: await botAuth.grantsList({ includeRevoked: url.searchParams.get('all') === 'true' }) });
           if (route === 'routines') return json(res, 200, { ok: true, result: await grok.routines() });
           if (route === 'channels') return json(res, 200, { ok: true, result: await channels.list() });
+          if (route === 'subscriptions') return json(res, 200, { ok: true, result: await subscriptions.list() });
           return json(res, 404, { ok: false, error: 'no such route' });
         }
         if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'use POST' });
@@ -289,6 +291,8 @@ export async function startServer({ port = 7337, bind = '127.0.0.1' } = {}) {
           else if (route === 'channels/add') result = await channels.setChannel(body.name, { kind: body.kind, url: body.url, format: body.format, argv: body.argv, title: body.title, bots: body.bots });
           else if (route === 'channels/remove') result = await channels.removeChannel(body.name);
           else if (route === 'channels/test') result = await channels.test(body.name);
+          // The owner ends a bot's push subscription (core/bots/subscriptions.js); bots subscribe themselves.
+          else if (route === 'subscriptions/remove') result = await subscriptions.unsubscribe(body.bot);
           else return json(res, 404, { ok: false, error: 'no such route' });
           if (route === 'approve' || route === 'deny') broadcast('botauth', { code: String(body.code).replace(/[\s-]/g, ''), resolved: route === 'approve' ? 'approved' : 'denied' });
           return json(res, 200, { ok: true, result });
@@ -444,9 +448,13 @@ function alertsFromFleet(v) {
   }
 }
 
-/** Alerts: SSE fan-out, truth-file appends (hook, manager, launch), settings changes. A plugin may watch more (its start). */
+/**
+ * Alerts: SSE fan-out, truth-file appends (hook, manager, launch), settings changes, and the bots' push subscriptions
+ * (core/bots/subscriptions.js: nothing to do on a host where no bot subscribed). A plugin may watch more (its start).
+ */
 function startAlerts() {
   notifier.daemon = true;
+  const offPush = subscriptions.start({ notifier });
   const offFan = notifier.on((items) => { broadcast('alerts', { items, ts: Date.now() }); lightSoon(200); });
   const offAppend = events.onAppend((ev) => {
     notifier.ingestEvent(ev).catch(() => {});
@@ -454,7 +462,7 @@ function startAlerts() {
     if (ev.type === 'notify' && (!ev.category || ev.category === 'needs-you') && (!ev.source || ev.source === 'hook' || ev.source === 'agent' || (ev.source === 'detector' && ev.ask?.kind === 'question')) && !ev.test && (ev.ask ? ev.ask.kind !== 'finished' : ev.kind !== 'idle_prompt')) broadcast('notify', ev);
   });
   const offSettings = settingsMod.onChange((s) => broadcast('settings', s));
-  return () => { offFan(); offAppend(); offSettings(); notifier.daemon = false; };
+  return () => { offFan(); offAppend(); offSettings(); offPush(); notifier.daemon = false; };
 }
 
 export { events, sseClients };

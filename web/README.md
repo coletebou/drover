@@ -597,7 +597,7 @@ then passes through that bot's chat once, so OAuth is the better path).
 
 | Scope | Tools |
 |---|---|
-| `drover.read` | `drover_whoami`, `drover_fleet`, `drover_search`, `drover_inbox`, `drover_sent`, `drover_approvals` (list, show), `drover_features`, `drover_reflections` (list, search, show), and with a brain plugin `drover_brain_search`, `drover_brain_get` |
+| `drover.read` | `drover_whoami`, `drover_fleet`, `drover_search`, `drover_inbox`, `drover_sent`, `drover_approvals` (list, show), `drover_subscribe` and `drover_unsubscribe` (pushes, below), `drover_features`, `drover_reflections` (list, search, show), and with a brain plugin `drover_brain_search`, `drover_brain_get` |
 | `drover.write` | `drover_status`, `drover_reply`, `drover_note`, `drover_feature_upsert`, and with a brain plugin `drover_brain_note` (kinds memory and handoff, filed under `agent:grok-<bot>`) |
 | `drover.notify` | `drover_notify_owner`, also served as `drover_notify_<DROVER_OWNER>` for bots taught that name, `drover_request_approval`, `drover_approval_withdraw` and `drover_post` (12 alerts an hour per bot, counting `needs-owner` statuses, approval requests and posts) |
 
@@ -724,6 +724,42 @@ a team channel. Instead of asking an agent to relay it, the bot posts it with `d
   records and the bot's message: only `drover channels test <name>` shows them, to the owner. A webhook's redirect is
   not followed, and a Discord webhook is asked to wait until the message is saved (`wait=true`), so its 2xx means the
   post is there.
+
+### Pushes instead of polling
+
+A bot that sweeps the fleet on a timer mostly finds nothing. It can subscribe instead: `drover_subscribe { events,
+minIntervalMinutes }` (`core/bots/subscriptions.js`), and Drover runs its Routine when something it cares about
+happens.
+
+- `owner-waiting`: a session on any machine starts waiting on the owner (a needs-you or held alert about a session that
+  the gateway host's daemon raises or pulls from another host: a dialog, a question, a hook's notification; not a
+  bot's, not a test, not one the owner muted, and never Drover's own, such as a bot or a device asking to connect). `bot-needs-owner`: another bot goes blocked or needs the owner, or asks them for an approval.
+  `inbox`: a message reaches the bot's inbox that its Routine did not already run on (a broadcast to `grok:*`, one
+  its Routine refused). Statuses, approvals and messages are read from the truth file as it grows (a stat every five
+  seconds, then the new bytes only), so a message written by another host's `drover rpc` counts too; a file rewritten
+  in place (dotsync) starts again at its end, so nothing is told twice.
+- The first event waits a minute (`DROVER_BOTS_PUSH_DEBOUNCE_SECONDS`) for company; pushes are at least
+  `minIntervalMinutes` apart (default 10, 5 to 1440) and at most 144 attempts a day (failed ones count); one carries
+  at most 50 events and counts the rest. A failed push is tried at the next window, and its batch dropped after three
+  in a row. The pace outlives the subscription: a bot that unsubscribes and subscribes again gets no sooner push.
+- A restart loses nothing and tells nothing twice: the store keeps what waits, how far the truth file was read into
+  it (from the subscription on, and at least every minute while it moves) and the ids of what it told, as one record,
+  and the daemon carries on from there, so what was appended while it was down is read when it is back (up to 4 MB of
+  it; a larger gap is skipped). An attempt is stored before it goes out, and what it carries counts as gone out: a push
+  that was out when the daemon stopped is neither forgotten by the pace nor sent again, and one the store cannot
+  record first is not sent.
+- A push is one webhook body of type `drover.events` (Routine instruction v3 says what it is, and its `text` says it
+  in words for an older instruction): `events` such as `{kind: "owner-waiting", host, session: {id, name, engine},
+  wait: "needs a decision"}`, `{kind: "bot-needs-owner", bot, name, state, summary}` and `{kind: "inbox", messageId,
+  from, broadcast}`. It is not a message: nothing lands in the inbox and nothing needs an answer.
+- A push says no more than the bot could read with its own tools: which session on which machine and what kind of
+  wait, never what a dialog says; another bot's state and summary (that bot's words, marked untrusted), never what it
+  asks the owner to approve; an inbox message's id and sender, never its text (`drover_inbox` has it).
+- Only a bot with a Routine and a live connection of its own (not shared, not a native tenant's) that may read gets
+  a push: revoke it and they stop. `drover_whoami` shows the subscription (`subscription`: events, interval, the last
+  push and how it went). The owner sees every subscription with `drover bots subscriptions` and ends one with `drover
+  bots unsubscribe <bot>` (main-token routes `/api/bots/subscriptions`, never ops). Stored in
+  `bots/subscriptions.json` (0600).
 
 ### Security
 

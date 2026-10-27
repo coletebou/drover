@@ -30,6 +30,16 @@ export function clean(value, max = 2000) {
   return s.length > max ? `${s.slice(0, max)}…` : s;
 }
 
+/**
+ * An id (a session id, a message ref) as a bot's own reads show ids: session and event UUIDs whole, so the bot can look
+ * them up (clean() takes a UUID for a secret), while every other secret shape is still redacted; short.
+ */
+export function cleanId(value, max = 120) {
+  if (value === undefined || value === null) return value;
+  const s = redactSecrets(String(value).replace(HOME_RE, '~'), { hexSafe: true });
+  return s.length > max ? `${s.slice(0, max)}…` : s;
+}
+
 /** Search hits as a bot sees them: what it needs to read a hit and follow it up, cleaned. */
 export function sanitizeSearchHits(hits = []) {
   return hits.map((h) => ({

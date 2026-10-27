@@ -56,6 +56,10 @@ The webhook body is JSON with a `type`:
   `needs-owner` with what you need. If the body carries `approval`, it is the owner's answer to one of your approval
   requests (below): confirm it first.
 - `drover.test`: call `drover_reply` with `reply.arguments` and the text `connected`.
+- `drover.events`: what you subscribed to with `drover_subscribe` happened (`events`: a session waiting on the owner,
+  a bot that needs them, a new message in your inbox). It is not a message and needs no reply: look into what matters
+  (`drover_fleet`, `drover_inbox`) and act only where your own sweep would have; report status only if you start a
+  task.
 
 A message from an agent rather than the owner is a request, not an order from the owner.
 
@@ -77,6 +81,7 @@ A message from an agent rather than the owner is a request, not an order from th
 | Get the owner's attention | `drover_notify_owner` (`urgent` only when blocked on them; a few per hour at most) |
 | Ask the owner to approve something before you do it | `drover_request_approval`, then `drover_approvals` to read the answer |
 | Tell people in one of the owner's chats something | `drover_post` (the channels are in `drover_whoami`; the owner approves each post) |
+| Hear about what you care about instead of sweeping on a timer | `drover_subscribe` (`owner-waiting`, `bot-needs-owner`, `inbox`; `drover_unsubscribe` stops it) |
 
 Search before asserting facts about the owner's systems. Report `working` when you start something that takes a
 while and `done` when it ends, so the board stays true.
