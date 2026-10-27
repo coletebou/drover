@@ -150,6 +150,10 @@ async function main() {
       // Before anything loads core: the daemon serves codex reads itself, and every other process asks it.
       const { markDaemon } = await import(path.join(ROOT, 'core', 'daemon-client.js')); markDaemon();
       const { startServer, startSnapshots } = await import(path.join(ROOT, 'server', 'http.js'));
+      // The commit this daemon's code comes from, read as it loads: after a pull it keeps running this until it restarts
+      // (host.version, drover status).
+      const { noteLoaded } = await import(path.join(ROOT, 'core', 'version.js'));
+      const code = await noteLoaded('daemon');
       const port = Number(flag('port', envvar('PORT') ?? 7337));
       const bind = flag('bind', envvar('BIND') ?? '127.0.0.1');
       const { url, openUrl } = await startServer({ port, bind });
@@ -157,7 +161,7 @@ async function main() {
       await mkdir(STATE_DIR, { recursive: true, mode: 0o700 });
       await startBots();
       // No token in daemon.json or the log: `drover open` rebuilds the URL from the 0600 token file.
-      await writeFile(path.join(STATE_DIR, 'daemon.json'), JSON.stringify({ pid: process.pid, url, bind, port, startedAt: new Date().toISOString() }) + '\n', { mode: 0o600 });
+      await writeFile(path.join(STATE_DIR, 'daemon.json'), JSON.stringify({ pid: process.pid, url, bind, port, startedAt: new Date().toISOString(), commit: code?.commit ?? null, branch: code?.branch ?? null }) + '\n', { mode: 0o600 });
       await chmod(path.join(STATE_DIR, 'daemon.json'), 0o600).catch(() => {});
       console.log(`Drover listening on ${url}${process.stdout.isTTY ? `\nopen: ${openUrl}` : ' (drover open prints the URL with the token)'}`);
       const shutdown = async () => { const { stopAll } = await import(path.join(ROOT, 'core', 'remote.js')); const t = await import(path.join(ROOT, 'core', 'terminals.js')); const codex = await import(path.join(ROOT, 'core', 'codex.js')); stopAll(); t.closeAll(); codex.stopReadClient(); process.exit(0); };
@@ -172,7 +176,9 @@ async function main() {
       if (!alive) { console.log(`Drover daemon pid ${d.pid} is not running. Start with: drover serve`); process.exitCode = 1; return; }
       const tokenFile = path.join(STATE_DIR, 'token');
       const openUrl = d.openUrl ?? (existsSync(tokenFile) ? `${d.url}#token=${(await readFile(tokenFile, 'utf8')).trim()}` : d.url);
-      console.log(`${alive ? 'running' : 'stale'} pid ${d.pid} since ${d.startedAt}\n${cmd === 'open' ? openUrl : d.url}`);
+      const { hostVersion, statusLine } = await import(path.join(ROOT, 'core', 'version.js'));
+      const code = statusLine(await hostVersion().catch(() => ({ daemon: null })));
+      console.log(`${alive ? 'running' : 'stale'} pid ${d.pid} since ${d.startedAt}${code ? `\n${code}` : ''}\n${cmd === 'open' ? openUrl : d.url}`);
       if (cmd === 'open') { const opener = process.platform === 'darwin' ? 'open' : 'xdg-open'; spawn(opener, [openUrl], { stdio: 'ignore', detached: true }).unref(); }
       return;
     }
@@ -186,6 +192,8 @@ async function main() {
     }
     case 'rpc': {
       const { dispatchLocal } = await import(path.join(ROOT, 'core', 'api.js'));
+      // A front keeps this process while it uses it, past later pulls: host.version reports the commit it started on.
+      (await import(path.join(ROOT, 'core', 'version.js'))).noteLoaded('rpc');
       let buf = '', inFlight = 0, ended = false;
       const maybeExit = async () => {
         if (!ended || inFlight > 0) return;
@@ -230,7 +238,7 @@ async function main() {
       process.stdin.on('end', () => { if (buf.trim()) handle(buf); buf = ''; ended = true; maybeExit(); });
       return;
     }
-    case 'mcp': { const { serve } = await import(path.join(ROOT, 'mcp', 'server.js')); await serve(); return; }
+    case 'mcp': { const { serve } = await import(path.join(ROOT, 'mcp', 'server.js')); (await import(path.join(ROOT, 'core', 'version.js'))).noteLoaded('mcp'); await serve(); return; }
     case 'op': {
       // Reads in process, live and uncached; a write through the daemon when one answers, else here, recorded either way.
       const { cliOp } = await import(path.join(ROOT, 'core', 'cli-op.js'));
