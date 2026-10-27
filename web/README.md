@@ -147,8 +147,9 @@ now. It reads the handoff tool's own record of the chain (`core/lineage.js`), ne
 
 `<markers>` is `DROVER_HANDOFF_CHAINS`, else `HANDOFF_CHAIN_STATE_DIR`, else `~/.claude/state/handoff-chain`. A
 full session id is matched to that session's own chain. A name, or an id prefix of 8 hex digits or more, is looked up
-in every chain, and must name one generation of one chain and no other session Drover lists under it; a shorter prefix
-is never followed.
+in every chain, as the name a generation's record keeps or as the name an ended session is listed under now (a
+session renamed after its handoff: its own marker finds its chain). It must name generations of one chain and no other
+session Drover lists under it; a shorter prefix is never followed.
 
 | The target | What happens |
 |---|---|
