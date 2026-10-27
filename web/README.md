@@ -132,6 +132,41 @@ Drover was called apx-web (CLI `apxw`) until 2026-10-15. Until 2026-11-15:
   lines. It keeps an hour-long `files.wait` from looking idle, and when the write fails (the caller's ssh session is
   gone) the waits it left end at once instead of polling for nobody. Everything else in flight still runs to its end.
 
+## Handoff successors
+
+A long-running Claude Code session can hand its work to a fresh one, which then hands off again: generation 3 of a
+chain continues generation 2 under a new session id and a new name, and peers still hold the old ones.
+`sessions.message` (`drover_send`) follows the chain when the session it is given is not live (not found, no
+messaging socket, or its process ended), so a message to an earlier generation reaches the one that carries the work
+now. It reads the handoff tool's own record of the chain (`core/lineage.js`), never a name:
+
+```
+<markers>/<session id>.json      {"gen": 3, "chain": "<name>", "dir": "<chain dir>"}, one per session in a chain
+<chain dir>/chain.json           {"name": "<name>", ...}
+<chain dir>/gen-NN/session.json  {"session_id", "name", "ssh_alias", "started_at", "first_response_at", ...}
+```
+
+`<markers>` is `DROVER_HANDOFF_CHAINS`, else `HANDOFF_CHAIN_STATE_DIR`, else `~/.claude/state/handoff-chain`. A
+full session id is matched to that session's own chain. A name, or an id prefix of 8 hex digits or more, is looked up
+in every chain, as the name a generation's record keeps or as the name an ended session is listed under now (a
+session renamed after its handoff: its own marker finds its chain). It must name generations of one chain and no other
+session Drover lists under it; a shorter prefix is never followed.
+
+| The target | What happens |
+|---|---|
+| live (its process runs) | delivered to it, as before, even when a newer generation is live too |
+| a name the chain record keeps for a generation that was renamed and still runs | fails as before, naming that session's id to send to; never sent on to its successor |
+| not live, in no chain | fails as before (`session not found`, `no messaging socket`, `not alive`) |
+| not live, in one chain whose newest started generation after it is live here | delivered there, through any number of handoffs; `resolvedFrom`, `resolvedTo` and `resolvedWhy` in the result and in the `message` event, whose `to` is the session that got it |
+| not live, its chain's newest generation after it ended, has no messaging socket, or was started on another host | fails as before, and the error lists those generations (`candidates` on the error in process): an `elsewhere` one names the host to resend with |
+| not live, and the newest generation of its chain | fails as before, saying nothing continues it |
+| a name or id prefix found in more than one chain, or that also names a session in no chain | fails as before and lists each chain's later generations: nothing is sent, even when only one chain has a live successor |
+| a marker or chain record that cannot be read (anything but absent: no permission, not JSON), or a generation directory whose record names no session | fails as before, saying so: a chain that could not be read might have named the target too |
+
+A later generation whose launch never started (no `started_at`, never seen here) is passed over. A generation that
+handed off but is still open (its window is kept while its jobs finish) is not a successor while a newer one is live.
+A successor on another host is reported, not reached: Drover asks only this host's registry.
+
 ## Launch effort
 
 `launch.start` (and `drover_launch`, and the Effort field in the Launch view) takes an
@@ -450,6 +485,7 @@ value already in the environment wins. The settings a fleet usually sets:
 | `DROVER_DOCKER_LABEL_PREFIX`, `DROVER_DOCKER_KINDS`, `DROVER_DOCKER_BASE` | see Docker stacks | how stacks are labelled, grouped and compared |
 | `DROVER_DOTFILES` | `~/.dotfiles` | the repository that holds the truth file (`claude/drover-events.jsonl`) and the fleet host list |
 | `DROVER_UPDATE_HINT` | "pull its Drover checkout and restart its daemon" | what an error tells you to do about a host on older code |
+| `DROVER_HANDOFF_CHAINS` | `HANDOFF_CHAIN_STATE_DIR`, else `~/.claude/state/handoff-chain` | where the handoff chains' session markers are (Handoff successors) |
 
 ## Docker stacks
 
@@ -807,7 +843,7 @@ ops, so no MCP tool and no ssh rpc can approve a pairing.
 ```
 bin/drover      CLI: serve (alias up) | open | status | clients | widget-token | pair | bots | rpc | mcp | op | ops | search | stacks | embed | import-survey | import-legacy
 bin/drover-embed-setup  builds llama-server (pinned) and installs EmbeddingGemma 2 for search
-core/           api.js (op table) and adapters: tmux, claude, codex, hosts, events, memory (incl. the reflections CLI), launch, effort, trust (launch trust), remote, terminals, filewait (files.wait), session-filter (sessions.list filters); plugins (the plugin loader), owner (DROVER_OWNER), env (settings and secrets files)
+core/           api.js (op table) and adapters: tmux, claude, codex, hosts, events, memory (incl. the reflections CLI), launch, effort, trust (launch trust), remote, terminals, filewait (files.wait), session-filter (sessions.list filters), lineage (handoff successors); plugins (the plugin loader), owner (DROVER_OWNER), env (settings and secrets files)
 core/search/    the search index: extract, chunk, store (node:sqlite), indexer, embed (llama-server), query
 core/bots/      Grok bots: oauth (the gateway's OAuth server), tools (the bot tools), tenant-tools and access (native tenants), policy (what leaves for bots: cleaned, secrets redacted), grok (bots as sessions, Routines)
 core/docker.js  docker stacks and the docker.* verbs (core/docker-format.js: drover stacks text; ui/stacks-text.js: summaries both use)

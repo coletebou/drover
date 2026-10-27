@@ -59,9 +59,15 @@ export async function listAgentsCli() {
   } catch { return []; }
 }
 
+/** A session whose process runs: a pid, and that pid alive (a `claude agents` entry without one is not). */
+export const running = (s) => Boolean(s?.pid) && s.alive === true;
+
 export async function listSessions() {
   const [reg, cli] = await Promise.all([listRegistry(), listAgentsCli()]);
-  const byId = new Map(reg.map((r) => [r.sessionId, r]));
+  // One entry per session id. A session started again under its id can leave its earlier process's registry file
+  // behind: the running entry stands for it, else the one that started last.
+  const byId = new Map();
+  for (const r of reg) { const cur = byId.get(r.sessionId); if (!cur || (running(r) && !running(cur))) byId.set(r.sessionId, r); }
   for (const a of cli) {
     if (!a.sessionId || byId.has(a.sessionId)) continue;
     byId.set(a.sessionId, {
@@ -75,7 +81,9 @@ export async function listSessions() {
 
 export async function findSession(idOrName) {
   const all = await listSessions();
-  return all.find((s) => s.sessionId === idOrName || s.name === idOrName || s.sessionId.startsWith(idOrName)) ?? null;
+  const hit = (s) => s.sessionId === idOrName || s.name === idOrName || s.sessionId.startsWith(idOrName);
+  // A name or an id prefix can also match sessions that ended: a running one answers first.
+  return all.find((s) => running(s) && hit(s)) ?? all.find(hit) ?? null;
 }
 
 async function readPeerToken(pid, socketPath) {
