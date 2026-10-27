@@ -31,6 +31,16 @@ async function inFlight(n, host = 'skewbox') {
   }
 }
 
+/**
+ * The fake rpc's reply line for answer `a`: 'ERR:<message>' fails the call, { $stale: true, result } is a reply from an
+ * rpc whose host's checkout has moved past its code, and anything else is the result.
+ */
+function fakeReply(id, a) {
+  if (typeof a === 'string' && a.startsWith('ERR:')) return { id, ok: false, error: a.slice(4) };
+  if (a?.$stale) return { id, ok: true, result: a.result, stale: true };
+  return { id, ok: true, result: a };
+}
+
 /** A fake `ssh … drover rpc`: answers every request with `answer(op)` (an error string or a result). */
 function fakeSpawn(answers) {
   const spawned = [];
@@ -42,8 +52,8 @@ function fakeSpawn(answers) {
       write(d) {
         for (const line of String(d).split('\n').filter(Boolean)) {
           const req = JSON.parse(line);
-          const a = answers(generation, req.op);
-          setImmediate(() => c.stdout.write(JSON.stringify(typeof a === 'string' && a.startsWith('ERR:') ? { id: req.id, ok: false, error: a.slice(4) } : { id: req.id, ok: true, result: a }) + '\n'));
+          const reply = fakeReply(req.id, answers(generation, req.op));
+          setImmediate(() => c.stdout.write(JSON.stringify(reply) + '\n'));
         }
       },
       end() { c.stdinEnded = true; setTimeout(() => c.emit('close', 0), 30); }, on() {},
@@ -161,8 +171,9 @@ test('stopAll also stops a retired child that still owes an answer, failing what
   await assert.rejects(owed, /exited/, 'what the retired child owed fails at once instead of waiting out its timeout');
 });
 
-test('a retired child that hangs is killed at the deadline, failing what it still owed', async (t) => {
-  t.mock.timers.enable({ apis: ['setTimeout'] });   // the deadline is 150 s; setImmediate stays real
+test('a retired child that hangs is killed past the last deadline of what it owed, not before', async (t) => {
+  // Not at a fixed 150 s: files.wait runs up to an hour, and a retired child's long calls are still live work.
+  t.mock.timers.enable({ apis: ['setTimeout'] });   // the owed call is due at 300 s, the kill 30 s after; setImmediate stays real
   remote._deps.now = () => 11_000_000_000_000;
   // Generation 0 never answers tmux.send and never exits; generation 1 knows search.semantic.
   const spawned = [];
@@ -188,11 +199,13 @@ test('a retired child that hangs is killed at the deadline, failing what it stil
   const owed = remote.callOn('skewbox', 'tmux.send', { text: 'hi' }, null, { timeoutMs: 300_000 });
   await inFlight(1);
   assert.deepEqual(await remote.callOn('skewbox', 'search.semantic', {}, null, { timeoutMs: 2000 }), { gen: 1 });
-  t.mock.timers.tick(149_999);
-  assert.notEqual(spawned[0].killed, true, 'still inside the deadline');
-  t.mock.timers.tick(1);
-  assert.equal(spawned[0].killed, true, 'killed at 150 s');
-  await assert.rejects(owed, /exited/);
+  t.mock.timers.tick(150_000);
+  assert.notEqual(spawned[0].killed, true, 'not at 150 s: it still owes a call due at 300 s');
+  t.mock.timers.tick(150_000);
+  await assert.rejects(owed, /timed out/, 'the owed call ends at its own deadline');
+  assert.notEqual(spawned[0].killed, true, 'the child gets a margin past that');
+  t.mock.timers.tick(30_000);
+  assert.equal(spawned[0].killed, true, 'then a child that still has not exited is killed');
   assert.notEqual(spawned[1].killed, true, 'the fresh child is untouched');
 });
 
@@ -231,4 +244,26 @@ test('the idle reaper leaves a peer alone while a retired child still owes an an
   remote.reapIdle(later);
   assert.equal(spawned[1].killed, true, 'reaped once nothing is owed');
   remote.stopAll();
+});
+
+test('a reply saying stale retires the peer once: what it owed still arrives, new calls get a fresh child', async () => {
+  remote._deps.now = () => 9_000_000_000;
+  // Generation 0's host has pulled new code since it started: its replies say stale. Generation 1 is fresh.
+  const spawned = fakeSpawn((gen, op) => (gen === 0 ? { $stale: true, result: { gen, op } } : { gen, op }));
+  const p = await remote.peer('skewbox');
+  const [a, b] = await Promise.all([p.call('host.version', {}, { timeoutMs: 2000 }), p.call('tmux.windows', {}, { timeoutMs: 2000 })]);
+  assert.deepEqual([a.gen, b.gen], [0, 0], 'both calls sent before the stale reply are answered by the child they went to');
+  assert.equal(spawned[0].stdinEnded, true, 'the stale child is retired once it owes nothing');
+  assert.notEqual(spawned[0].killed, true);
+  const c = await p.call('host.version', {}, { timeoutMs: 2000 });
+  assert.equal(c.gen, 1, 'the next call goes to a fresh child, which loads the new code');
+  assert.equal(spawned.length, 2, 'retired once, not once per stale reply');
+  remote.stopAll();
+});
+
+test('a retired child is killed only past the deadline of what it still owes (an hour-long files.wait included)', () => {
+  const now = 1_000;
+  assert.equal(remote.retireKillMs(new Map(), now), 150_000, 'nothing owed: the floor');
+  assert.equal(remote.retireKillMs(new Map([[1, { deadline: now + 60_000 }]]), now), 150_000, 'a short call: the floor');
+  assert.equal(remote.retireKillMs(new Map([[1, { deadline: now + 60_000 }], [2, { deadline: now + 3_660_000 }]]), now), 3_690_000, 'the longest deadline, plus a margin');
 });

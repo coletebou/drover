@@ -3,12 +3,12 @@
 // hosts), and a real `drover serve` in a scratch HOME recording its commit for `drover status`.
 import { test, describe, before, after, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, cp } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -124,6 +124,17 @@ describe('host.version on this machine', () => {
     version._reset();
     const cli = await version.hostVersion({ commit: first });
     assert.equal(cli.answeredBy, undefined); assert.equal(cli.contains, true);
+  });
+  test('codeMoved: false until the checkout\'s HEAD moves off the commit this process noted, then true', async () => {
+    const repo2 = path.join(tmp, 'moving-checkout');
+    await mkdir(repo2, { recursive: true });
+    git(repo2, 'init', '-q', '-b', 'master'); git(repo2, 'commit', '-q', '--allow-empty', '-m', 'one');
+    version._deps.checkoutDir = () => repo2;
+    assert.equal(await version.codeMoved(), false, 'nothing noted yet');
+    await version.noteLoaded('rpc');
+    assert.equal(await version.codeMoved(), false);
+    git(repo2, 'commit', '-q', '--allow-empty', '-m', 'two');
+    assert.equal(await version.codeMoved(), true);
   });
   test('commit is hex only, so it can never reach git as an option', async () => {
     for (const bad of ['--output=/tmp/x', 'HEAD', 'abc', 'g'.repeat(10), 'a'.repeat(65), 'abcd;rm']) {
@@ -254,9 +265,11 @@ describe('drover serve and drover status', () => {
       if (head) assert.match(lines[1], new RegExp(`^code ${head.slice(0, 7)}`));
       assert.equal(lines.at(-1), d.url);
       // A `drover rpc` beside it, as a front's ssh peer: it answers for itself and names the daemon's code.
-      const rpc = execFileSync(process.execPath, [bin, 'rpc'], { env, encoding: 'utf8', input: JSON.stringify({ id: 1, op: 'host.version', args: head ? { commit: head } : {} }) + '\n', timeout: 30_000 });
-      const reply = JSON.parse(rpc.trim().split('\n').at(-1));
-      assert.equal(reply.ok, true, rpc);
+      const rpc = spawnSync(process.execPath, [bin, 'rpc'], { env, encoding: 'utf8', input: JSON.stringify({ id: 1, op: 'host.version', args: head ? { commit: head } : {} }) + '\n', timeout: 30_000 });
+      const line = rpc.stdout.trim().split('\n').filter(Boolean).at(-1);
+      assert.ok(line, `drover rpc replied (status ${rpc.status}, signal ${rpc.signal}, error ${rpc.error?.message}, stderr ${rpc.stderr.slice(-600)})`);
+      const reply = JSON.parse(line);
+      assert.equal(reply.ok, true, line);
       assert.equal(reply.result.daemon.pid, child.pid);
       assert.equal(reply.result.answeredBy.kind, 'rpc');
       if (head) assert.deepEqual([reply.result.state, reply.result.answeredBy.current, reply.result.contains], ['live', true, true]);
@@ -274,5 +287,36 @@ describe('drover serve and drover status', () => {
       assert.deepEqual([here?.answeredBy.kind, here?.answeredBy.pid], ['daemon', child.pid], 'answered inside the daemon');
       if (head) assert.equal(fleet.everywhere, true, 'a one-host fleet on its own HEAD');
     } finally { child.kill('SIGTERM'); await exited; }
+  });
+});
+
+describe('a real drover rpc whose checkout moves under it', () => {
+  test('its replies say stale once the checkout\'s HEAD has moved, so its front retires it', { timeout: 60_000 }, async () => {
+    // A copy of web/ in a scratch git repository stands in for a host's checkout, so a commit can land under the process.
+    const repo = await mkdtemp(path.join(tmp, 'rpc-checkout-'));
+    await cp(WEB, path.join(repo, 'web'), { recursive: true, filter: (src) => !src.startsWith(path.join(WEB, 'test')) });
+    git(repo, 'init', '-q', '-b', 'master'); git(repo, 'add', '-A'); git(repo, 'commit', '-q', '-m', 'old');
+    const home = await mkdtemp(path.join(tmp, 'rpc-home-'));
+    const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(DROVER|APXW)_/.test(k)));
+    Object.assign(env, { HOME: home, DROVER_STATE: path.join(home, 'state'), DROVER_CACHE: path.join(home, 'cache'), DROVER_DOTFILES: path.join(home, 'dotfiles'), DROVER_RPC_STALE_CHECK_MS: '100' });
+    const child = spawn(process.execPath, [path.join(repo, 'web', 'bin', 'drover'), 'rpc'], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    const replies = []; let buf = '';
+    child.stdout.setEncoding('utf8').on('data', (d) => { buf += d; let i; while ((i = buf.indexOf('\n')) >= 0) { const l = buf.slice(0, i); buf = buf.slice(i + 1); if (l.trim()) replies.push(JSON.parse(l)); } });
+    const ask = async (id) => {
+      child.stdin.write(JSON.stringify({ id, op: 'host.version', args: {} }) + '\n');
+      for (let i = 0; i < 400 && !replies.some((r) => r.id === id); i++) await new Promise((r) => setTimeout(r, 50));
+      return replies.find((r) => r.id === id);
+    };
+    try {
+      const first = await ask(1);
+      assert.equal(first?.ok, true, JSON.stringify(first));
+      assert.equal(first.stale, undefined, 'its checkout has not moved');
+      assert.equal(first.result.answeredBy.current, true);
+      git(repo, 'commit', '-q', '--allow-empty', '-m', 'the fix');
+      let later;
+      for (let id = 2; id < 40 && !later?.stale; id++) { later = await ask(id); await new Promise((r) => setTimeout(r, 100)); }
+      assert.equal(later?.stale, true, 'it says stale after the checkout moved');
+      assert.equal(later.result.answeredBy.current, false, 'and host.version agrees');
+    } finally { child.stdin.end(); child.kill('SIGTERM'); }
   });
 });

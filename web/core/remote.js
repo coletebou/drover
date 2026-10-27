@@ -17,8 +17,18 @@ export const REMOTE_RPC = REMOTE_BIN
   : 'D="$HOME/.local/bin/drover"; [ -x "$D" ] || D="$HOME/.local/bin/apxw"; exec "$D" rpc';
 export const _deps = { spawn, now: () => Date.now() };
 
-const RETIRE_KILL_MS = 150_000;   // longer than the longest op timeout (launch and the docker verbs: 120 s, api.js hostTimeoutMs)
+const RETIRE_KILL_MS = 150_000;   // at least this, past the longest default op timeout (launch and the docker verbs: 120 s, api.js hostTimeoutMs)
 const IDLE_MS = 10 * 60_000;
+
+/**
+ * How long a retired child gets before it is killed: past the deadline of everything it still owes (an hour-long files.wait
+ * included), and never less than RETIRE_KILL_MS. Its calls have timed out by then, so a child still alive is hung.
+ */
+export function retireKillMs(pending, now) {
+  let ms = RETIRE_KILL_MS;
+  for (const p of pending.values()) if (p.deadline) ms = Math.max(ms, p.deadline - now + 30_000);
+  return ms;
+}
 
 /** A retired child gets its EOF once it owes nothing, so it exits after its last reply has arrived here. */
 function endIfDrained(c) { if (c.droverRetired && c.droverPending.size === 0) { try { c.stdin.end(); } catch { /* closed */ } } }
@@ -47,6 +57,9 @@ class RemotePeer {
         const line = child.droverBuf.slice(0, i); child.droverBuf = child.droverBuf.slice(i + 1);
         if (!line.trim()) continue;
         let msg; try { msg = JSON.parse(line); } catch { continue; }
+        // That host's checkout has moved past the code this child loaded (bin/drover rpc): new calls get a fresh child
+        // with that code, and this one finishes what it was asked.
+        if (msg.stale && this.child === child) this.retire();
         const p = child.droverPending.get(msg.id); if (!p) continue;
         // Redacted here too, not only where the error was made: a host on an older build sends its command errors
         // with the environment values in them (core/proc.js ProcError).
@@ -87,7 +100,7 @@ class RemotePeer {
       let timer = null;
       const settle = (fn) => (v) => { clearTimeout(timer); pend.delete(id); fn(v); endIfDrained(child); };
       timer = setTimeout(() => settle(reject)(new Error(`${this.host}: ${op} timed out`)), timeoutMs);
-      pend.set(id, { resolve: settle(resolve), reject: settle(reject) });
+      pend.set(id, { resolve: settle(resolve), reject: settle(reject), deadline: _deps.now() + timeoutMs });
     });
     if (!child.stdin || child.stdin.writable === false) { pend.get(id)?.reject(new Error(`ssh ${this.host} drover rpc is not running`)); return p; }
     child.stdin.write(JSON.stringify({ id, op, args }) + '\n', (err) => { if (err) pend.get(id)?.reject(new Error(`ssh ${this.host}: write failed (${err.code ?? err.message})`)); });
@@ -97,9 +110,9 @@ class RemotePeer {
    * Take the current child out of service without cancelling anything: new calls start a fresh child,
    * while this one answers the calls already sent to it (some may be mutating and already applied).
    * Its stdin is ended only once it owes nothing (endIfDrained): the child being retired is always an
-   * older build (that is why it answered "unknown op"), and `drover rpc` before 2026-10-15 exits on EOF
-   * without flushing stdout, cutting short any large reply still on its way. A child that hangs is
-   * killed after RETIRE_KILL_MS, failing whatever it still owes.
+   * older build (that is why it answered "unknown op", or it said its host's checkout has moved: stale), and
+   * `drover rpc` before 2026-10-15 exits on EOF without flushing stdout, cutting short any large reply still on its
+   * way. A child that hangs is killed once what it owes is past its deadlines (retireKillMs), failing it.
    */
   retire() {
     const c = this.child;
@@ -108,7 +121,7 @@ class RemotePeer {
     this.retired.add(c);
     c.droverRetired = true;
     endIfDrained(c);
-    c.droverKillTimer = setTimeout(() => { try { c.kill('SIGTERM'); } catch { /* gone */ } }, RETIRE_KILL_MS);
+    c.droverKillTimer = setTimeout(() => { try { c.kill('SIGTERM'); } catch { /* gone */ } }, retireKillMs(c.droverPending, _deps.now()));
     c.droverKillTimer.unref?.();
   }
   /**

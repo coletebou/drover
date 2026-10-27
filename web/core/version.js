@@ -56,6 +56,13 @@ export function noteLoaded(kind) {
 }
 export function _reset() { self = null; }
 
+/** Has the checkout's HEAD moved off the commit this process noted as it started? false when either is unknown. */
+export async function codeMoved() {
+  if (!self) return false;
+  const [now, mine] = await Promise.all([checkoutHead(), self.head]);
+  return Boolean(now?.commit && mine?.commit && now.commit !== mine.commit);
+}
+
 /** Is commit an ancestor of (or equal to) loaded, in this checkout? null when git cannot tell (that commit is not here). */
 async function contains(commit, loaded) {
   if (!loaded) return null;

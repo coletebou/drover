@@ -192,8 +192,15 @@ async function main() {
     }
     case 'rpc': {
       const { dispatchLocal } = await import(path.join(ROOT, 'core', 'api.js'));
-      // A front keeps this process while it uses it, past later pulls: host.version reports the commit it started on.
-      (await import(path.join(ROOT, 'core', 'version.js'))).noteLoaded('rpc');
+      // A front keeps this process while it uses it, past later pulls: host.version reports the commit it started on,
+      // and once the checkout has moved off it every reply says stale, so the front retires this process for a fresh one
+      // with the new code (core/remote.js). Checked every minute (DROVER_RPC_STALE_CHECK_MS); two git calls each time (checkoutHead).
+      const version = await import(path.join(ROOT, 'core', 'version.js'));
+      version.noteLoaded('rpc');
+      let stale = false;
+      const staleCheck = setInterval(async () => {
+        if (await version.codeMoved().catch(() => false)) { stale = true; clearInterval(staleCheck); }
+      }, Math.max(50, Number(envvar('RPC_STALE_CHECK_MS')) || 60_000)).unref();
       let buf = '', inFlight = 0, ended = false;
       const maybeExit = async () => {
         if (!ended || inFlight > 0) return;
@@ -219,6 +226,7 @@ async function main() {
         inFlight++;
         try {
           const msg = await answer(line);
+          if (stale) msg.stale = true;
           let text; try { text = JSON.stringify(msg); } catch (e) { text = JSON.stringify({ id: msg.id, ok: false, error: `reply is not JSON: ${e.message}` }); }
           await new Promise((resolve) => process.stdout.write(text + '\n', () => resolve()));
         } finally { inFlight--; maybeExit(); }
