@@ -3,7 +3,7 @@
 // (sessions.answer with its hash, tmux.answer on an older daemon); a refusal shows why and the card refreshes.
 // A Grok bot's approval request gets the same card with one button per option, answered by the request's id.
 import { h } from './dom.js';
-import { pressKey, pressedLabel, afterRefusal, announceAnswered, pressApproval, standsFor } from './answer-model.js';
+import { pressKey, pressedLabel, afterRefusal, announceAnswered, pressApproval, standsFor, approvalToast } from './answer-model.js';
 
 /**
  * A card controller: el, set(model), and press(key). onDone(result, model) after a press that went through;
@@ -41,7 +41,7 @@ export function answerCard({ call, toast, onDone, onRefresh, approve } = {}) {
   /** A bot's approval request: its question and details (the bot's words), one button per option, when it expires. */
   function drawApproval() {
     const m = model;
-    el.append(h('div', { class: 'ac-q' }, h('span', { class: 'dot wait', 'aria-hidden': 'true' }), h('b', null, m.kind === 'purchase' ? 'Asks to buy' : 'Asks for your approval'), h('span', { class: 'ac-text' }, m.question)));
+    el.append(h('div', { class: 'ac-q' }, h('span', { class: 'dot wait', 'aria-hidden': 'true' }), h('b', null, m.kind === 'purchase' ? 'Asks to buy' : m.kind === 'post' ? 'Asks to post' : 'Asks for your approval'), h('span', { class: 'ac-text' }, m.question)));
     if (m.details) el.append(h('div', { class: 'ac-details' }, m.details));
     el.append(h('div', { class: 'ac-opts' }, m.buttons.map((b) => h('button', {
       class: 'btn ac-opt', type: 'button', disabled: busy || m.stale || !m.complete ? true : null, title: `Answer ${b.label}: ${m.bot ?? 'the bot'} is told at once`,
@@ -58,7 +58,8 @@ export function answerCard({ call, toast, onDone, onRefresh, approve } = {}) {
     try {
       const r = await pressApproval(approve, m, n);
       busy = null;
-      toast?.(`${r?.decision?.label ?? 'Answered'}: ${m.bot ?? 'the bot'} ${r?.delivery?.ok === false ? `was not reached (${r.delivery.error ?? 'delivery failed'}); it sees the answer in drover_approvals` : 'is told now'}`, r?.delivery?.ok === false ? 'error' : 'ok', 7000);
+      const [text, kind] = approvalToast(m.bot, r);
+      toast?.(text, kind, 7000);
       globalThis.document?.dispatchEvent(new CustomEvent('drover:answered', { detail: { host: m.host, approval: m.id } }));
       if (model === m) model = null;
       draw();

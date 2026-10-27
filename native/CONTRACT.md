@@ -122,6 +122,15 @@ Details as built by core (these refine the bullets above; DroverKit models and `
   (`.authenticationRequired`).
 - `GET /api/approvals?status=pending|all|decided|withdrawn|expired&bot=<name>` (main token): `{keepsBots, items[]}`,
   newest first; items as above plus `status`, `decision`, `botName`.
+- A request of kind `post` is a bot's post to one of the owner's channels (`drover_post`, `web/core/bots/channels.js`;
+  nothing else makes one):
+  its question names the channel and quotes the post, its `details` are exactly the text that will be sent, and its
+  options are "Post it" (1) and "Do not post" (2). It always has details, so it is never answered in one tap: Review
+  shows the details whole. Option 1 sends it, once; the 200 answer (and the request from then on) carries
+  `outcome {ok, at, done?, error?, unknown?}`: `ok: true` posted ("posted to team"), `ok: false` not posted (why, in
+  Drover's words), `ok: null, unknown: true` it may have gone out (a timeout, a broken connection, a 202, 302, 303, 408 or 5xx
+  answer, a command that ran and failed, or Drover stopped partway). A request read while Drover is still posting it says
+  `{ok: null, running: true}`. Never say "posted" unless `ok` is true. It is never posted twice.
 
 ## The owner (added 2026-10-23)
 - The daemon belongs to one person, its owner: `DROVER_OWNER` on the daemon (default `owner`; `web/core/owner.js`).
