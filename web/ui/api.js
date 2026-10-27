@@ -178,6 +178,13 @@ async function botsFetch(route, body) {
 }
 export const botsPending = () => botsFetch('pending');
 export const botsDecide = (code, approve, bot) => botsFetch(approve ? 'approve' : 'deny', approve ? { code, bot } : { code });
+/** Routine setups sent from the gateway's page (core/bots/routine-setup.js), and the owner's answer by their code. */
+export const routineSetups = () => botsFetch('routine/pending');
+export const routineSetupDecide = (code, approve) => botsFetch(approve ? 'routine/approve' : 'routine/deny', { code });
+/** A bot's Routine, set by the owner from the drawer (POST /api/bots/routine), and its connection test. */
+export const botRoutines = () => botsFetch('routines');
+export const setBotRoutine = (bot, url, key) => botsFetch('routine', { bot, url, key });
+export const testBotRoutine = (bot) => botsFetch('routine/test', { bot });
 
 /**
  * Answer a Grok bot's approval request (core/bots/approvals.js): option choice (its n) of request id. A main-token

@@ -35,10 +35,11 @@ through it under that name. **No Drover tool takes a bot name; never pass one.**
    - Name: `Drover`
    - Trigger: webhook
    - Instruction: the `routine.instruction` text from `drover_whoami`, copied exactly.
-3. In the same message where you tell the owner the routine is ready, give them the two links that open its
-   **Webhook URL** and its **Webhook key** in Grok Bot's routine panel, where they can copy them (a link to the
-   routine itself does not open), and the command to run on the machine Drover runs on:
-   `drover bots routine add <your name> --url <the Webhook URL>`, pasting the key at its prompt. You cannot see either
+3. In the same message where you tell the owner the routine is ready, give them `routine.setupUrl` from
+   `drover_whoami` (Drover's setup page for you: they paste the routine's Webhook URL and Webhook key there and
+   approve, in Drover, the code it shows), and the two links that open its **Webhook URL** and its **Webhook key** in
+   Grok Bot's routine panel, where they can copy them (a link to the routine itself does not open). At the machine
+   Drover runs on, `drover bots routine add <your name> --url <the Webhook URL>` does the same. You cannot see either
    value. **Never ask for the webhook key in chat, never repeat it, never pass it in a tool argument.**
 4. Drover then sends a `drover.test` run; answer it as below. Ask the owner for an **Always allow** rule on the
    Drover tools, so routine runs are not held for review.

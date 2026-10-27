@@ -14,7 +14,7 @@ import * as eventsMod from '../events.js';
 import * as settingsMod from '../settings.js';
 import { muteFor } from '../../ui/notify-policy.js';
 import { OWNER, OWNER_NAME, isOwner } from '../owner.js';
-import { SHARED_BOT } from './oauth.js';
+import { SHARED_BOT, publicBase, botPrefix } from './oauth.js';
 import { accessForGrant } from './access.js';
 import { tenantTools } from './tenant-tools.js';
 import { sanitizeSearchHits, sanitizeFeatures, sanitizeSession, projectMatches, clean } from './policy.js';
@@ -56,6 +56,10 @@ export const INSTRUCTIONS = instructionsFor();
 const READ = 'drover.read', WRITE = 'drover.write', NOTIFY = 'drover.notify';
 const STR = (description, extra = {}) => ({ type: 'string', description, ...extra });
 const NUM = (description) => ({ type: 'number', description });
+/** The gateway's page where the owner sets this bot's routine (server/botgate.js), or null without a public origin. */
+function routineSetupUrl(bot) {
+  try { const base = publicBase(); return base ? `${base}${botPrefix(bot)}/routine` : null; } catch { return null; }
+}
 const SEARCH_KINDS = ['claude', 'codex', 'subagent', 'wal', 'memory', 'reflection'];
 const BRAIN_KINDS = ['memory', 'decision', 'handoff', 'doc', 'reference'];
 // MCP tool annotations: clients decide from them which calls need approval.
@@ -163,9 +167,11 @@ export function botTools(grant, { dispatch, host = eventsMod.shortHost(), readEv
           // What Drover pushes to this bot's routine (drover_subscribe), when it last did, and how that went.
           subscription: await subscriptions.forBot(me),
           // The instruction changes as Drover learns new webhook bodies: a routine saved with an older version keeps working, and should be brought up to date.
-          routine: hasRoutine ? { configured: true, instructionVersion: grok.ROUTINE_VERSION, instruction: grok.ROUTINE_PROMPT, update: `If the instruction of your Drover routine does not end with "(Drover routine instruction v${grok.ROUTINE_VERSION})", replace it with instruction, exactly.` } : {
-            configured: false, instruction: grok.ROUTINE_PROMPT,
-            setup: `So Drover can send you tasks: create exactly one routine named "Drover" on yourself, trigger webhook, with the instruction above copied exactly. In the same message where you tell ${OWNER_NAME} it is ready, give them the two links that open its Webhook URL and its Webhook key in Grok Bot's routine panel, where they can copy them (a link to the routine itself does not open), and the command to run on the machine Drover runs on: drover bots routine add ${me} --url <the Webhook URL>, pasting the key at its prompt. You cannot see either value: never try to read, repeat or pass them, and never ask for the key in chat. Ask them for an "Always allow" rule on the Drover tools so routine runs are not held for review.`,
+          // setupUrl: the gateway's page where the owner pastes the routine's webhook and approves its code in Drover
+          // (core/bots/routine-setup.js), to give them when it is new or its webhook changed.
+          routine: hasRoutine ? { configured: true, instructionVersion: grok.ROUTINE_VERSION, instruction: grok.ROUTINE_PROMPT, setupUrl: routineSetupUrl(me), update: `If the instruction of your Drover routine does not end with "(Drover routine instruction v${grok.ROUTINE_VERSION})", replace it with instruction, exactly.` } : {
+            configured: false, instruction: grok.ROUTINE_PROMPT, setupUrl: routineSetupUrl(me),
+            setup: `So Drover can send you tasks: create exactly one routine named "Drover" on yourself, trigger webhook, with the instruction above copied exactly. In the same message where you tell ${OWNER_NAME} it is ready, give them setupUrl${routineSetupUrl(me) ? ` (${routineSetupUrl(me)})` : ''}: there they paste the routine's Webhook URL and Webhook key and approve, in Drover, the code that page shows. Give them too the two links that open its Webhook URL and its Webhook key in Grok Bot's routine panel, where they can copy them (a link to the routine itself does not open). At the machine Drover runs on, drover bots routine add ${me} --url <the Webhook URL> does the same, the key pasted at its prompt. You cannot see either value: never try to read, repeat or pass them, and never ask for the key in chat. Ask them for an "Always allow" rule on the Drover tools so routine runs are not held for review.`,
           },
           gateway: host, now: new Date().toISOString(),
         };
