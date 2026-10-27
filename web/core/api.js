@@ -8,6 +8,7 @@ import * as codex from './codex.js';
 import * as hosts from './hosts.js';
 import * as events from './events.js';
 import * as memory from './memory.js';
+import * as lineage from './lineage.js';
 import * as launchMod from './launch.js';
 import { effortGiven, effortLevels } from './effort.js';
 import * as terminals from './terminals.js';
@@ -140,6 +141,29 @@ async function sessionById(id) {
   if (roll) return { engine: 'codex', ...roll, live: false };
   return null;
 }
+
+/**
+ * Where a message to a Claude session that is not live goes instead: its handoff chain's live successor
+ * (core/lineage.js), plus state, why the session itself cannot take it. null when that does not apply: the session
+ * runs, or is not a Claude session. findSession returns a running session ahead of any other that matches, so a
+ * target it returns that does not run means none that answers to id does. Only a full session id narrows the chains
+ * to that session's own; a name or prefix is looked up across every chain, beside every session listed under it, so
+ * one that names several sessions is not narrowed to whichever the lookup found first.
+ */
+async function handoffSuccessor(id, s) {
+  if (s ? s.engine !== 'claude' || s.headless || claude.running(s) : grok.isGrokTarget(id) || openclaw.isManagerId(id)) return null;
+  const state = !s ? 'session not found' : !s.socket ? 'no messaging socket' : 'process not alive';
+  const exact = s?.sessionId === id;
+  let r;
+  try {
+    const answering = s && !exact ? (await claude.listSessions()).filter((x) => x.sessionId === id || x.name === id || x.sessionId.startsWith(id)).map((x) => ({ id: x.sessionId, name: x.name ?? null })) : [];
+    r = await lineage.successor(id, { sessionId: exact ? id : null, answering, registry: await claude.listRegistry() });
+  } catch (e) { return { to: null, note: `the handoff chains could not be read, so nothing was redirected (${e.message})`, candidates: [], state }; }
+  if (!r.to && !r.note) return null;
+  return { ...r, state };
+}
+/** An error message with what the target's handoff chain holds, when it is in one. */
+const withNote = (message, handoff) => (handoff?.note ? `${message}; ${handoff.note}` : message);
 
 // A tmux target that names a window or pane itself: "work:3", "work:@12", "%7".
 const WINDOW_TARGET = /^(?:[A-Za-z0-9_.-]+:@?\d+|%\d+)$/;
@@ -318,9 +342,21 @@ export const local = {
     return r ? { id: s.id ?? s.sessionId ?? s.threadId, name: s.name ?? null, engine: s.engine, text: r.text.slice(-4000), line: claude.lastLine(r.text), ts: r.ts ?? null, ask, ...(r.untrusted === true ? { source: r.source ?? null, untrusted: true } : {}), ...(r.receipt ? { event: r.event, receipt: r.receipt } : {}) } : { id: s.id ?? s.sessionId ?? s.threadId, name: s.name ?? null, engine: s.engine, text: null, line: null, ask };
   },
   async 'sessions.message'({ id, text, actor = OWNER, wait, thread }) {
-    const s = await sessionById(str(id, 'id'));
-    if (!s) throw new Error('session not found');
+    let s = await sessionById(str(id, 'id'));
+    // A Claude session that handed off is gone or dead; its handoff chain says which live session carries on.
+    const handoff = await handoffSuccessor(id, s);
+    if (!s && !handoff?.to) throw Object.assign(new Error(withNote('session not found', handoff)), handoff ? { candidates: handoff.candidates } : {});
     str(text, 'text');
+    let resolved = null;
+    if (handoff?.to) {
+      const from = handoff.from;
+      resolved = {
+        resolvedFrom: { given: id, id: from.sessionId, name: from.name, gen: from.gen, state: handoff.state },
+        resolvedTo: { id: handoff.to.id, name: handoff.to.name, gen: handoff.to.gen, chain: handoff.chain },
+        resolvedWhy: `${from.name ?? id} is not live (${handoff.state}); it is ${handoff.why}`,
+      };
+      s = { engine: 'claude', ...handoff.to.session };
+    }
     // The manager records its own message and reply (core/openclaw.js message): the message at once, the reply
     // as it lands, so wait: false can return before the manager answers and every transcript shows both.
     if (s.engine === 'openclaw') {
@@ -333,12 +369,12 @@ export const local = {
       else if (s.engine === grok.ENGINE) delivery = await grok.send(s.id, text, { actor });
       else if (s.engine === 'claude') delivery = await claude.sendToSession(s, text, { fromName: `drover (${actor})` });
       else delivery = await codex.sendTurn(s.threadId, text, { cwd: s.cwd });
-    } catch (e) { delivery = { ok: false, error: e.message }; }
+    } catch (e) { delivery = { ok: false, error: resolved ? `${e.message} (sent on: ${resolved.resolvedWhy})` : withNote(e.message, handoff) }; }
     const to = { kind: s.engine, host: hosts.localShortName(), id: s.id ?? s.sessionId ?? s.threadId, name: s.name ?? null };
     // A Grok bot answers later, through the bot gateway, quoting ref (its inbox reads this event).
-    const ev = await events.append({ type: 'message', to, text, ...(delivery.ref ? { ref: delivery.ref } : {}), delivery }, { actor });
-    if (!delivery.ok) throw Object.assign(new Error(delivery.error ?? 'delivery failed'), { event: ev.id });
-    return { ...delivery, event: ev.id, session: { id: s.id ?? s.sessionId ?? s.threadId, name: s.name, status: s.status } };
+    const ev = await events.append({ type: 'message', to, text, ...(delivery.ref ? { ref: delivery.ref } : {}), delivery, ...resolved }, { actor });
+    if (!delivery.ok) throw Object.assign(new Error(delivery.error ?? 'delivery failed'), { event: ev.id }, handoff && !handoff.to ? { candidates: handoff.candidates } : {});
+    return { ...delivery, event: ev.id, session: { id: s.id ?? s.sessionId ?? s.threadId, name: s.name, status: s.status }, ...resolved };
   },
 
   // ---- launch
