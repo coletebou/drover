@@ -20,6 +20,10 @@ import { homedir } from 'node:os';
 import { notifier } from './notify.js';
 import { stripsFor } from '../ui/lanes.js';
 import { OWNER } from './owner.js';
+import { redactSecrets } from './redact.js';
+
+// The secret redactor lives in core/redact.js, which imports nothing, so core/proc.js can use it too.
+export { redactSecrets, redactArgv } from './redact.js';
 
 export const _deps = {
   dispatch: null,   // set by core/api.js
@@ -31,91 +35,10 @@ export const _deps = {
 
 const ANSI = /\x1b\[[0-?]*[ -\/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]/g;
 const CONTROL = /[\x00-\x1f\x7f-\x9f]/g;
-const REDACTIONS = [
-  [/Bearer\s+\S+/g, '[redacted]'],
-  [/sk-[A-Za-z0-9_-]{10,}/g, '[redacted]'],
-  [/ghp_\w+/g, '[redacted]'],
-  [/gh[ousr]_\w+/g, '[redacted]'],
-  [/glpat-[\w-]+/g, '[redacted]'],
-  [/xox[abpr]-[\w-]+/g, '[redacted]'],
-  [/AKIA[0-9A-Z]{16}/g, '[redacted]'],
-  [/ABSK[A-Za-z0-9+/=]{20,}/g, '[redacted]'],
-  // A password in a URL's userinfo (between :// and @): the scheme, user and host stay searchable. And curl-style
-  // -u / --user user:password.
-  // Anchored on the // of the URL, its scheme checked behind it, not tried from every word start: the scheme scan of
-  // the old form restarted at each word of a long run of letters, dots or dashes (quadratic: 50 KB took 3 s). Without
-  // the scheme, //x:y@ in other text would be taken for userinfo and could swallow a key whose value then stays visible.
-  [/(?<=\b[a-z][a-z0-9+.-]*:)\/\/([^\s\/@:]*):[^\s\/@]+@/gi, '//$1:[redacted]@'],
-  [/(^|\s)(-u|--user)(\s+|=)([^\s:@]*):(\S+)/g, '$1$2$3$4:[redacted]'],
-  // A long flag that names a credential, then its value: docker login --password x, gh --github-token x. Only a flag
-  // that ends in the word, so --password-stdin and --token-file keep their (non-secret) next argument.
-  // Tried once per run of word characters and dashes, where the run starts; lookaheads find the -- in it and the word
-  // at its end. So a flag glued to what precedes it (\n--password x in serialized text) is still caught, and a run
-  // holding many -- is not rescanned from each of them.
-  [/(?<![\w-])(?=[\w-]*?--)(?=[\w-]*?[-_](?:token|password|passwd|secret|api[-_]?key|access[-_]?key|private[-_]?key|authorization|credentials?)(?:\s|=))([\w-]+)(\s+|=)(?!-)(\S+)/gi, '$1$2[redacted]'],
-  // Authorization: <scheme> <credential> for any scheme (Basic, Token, GenieKey, ...): the credential goes with it.
-  [/\b((?:proxy-)?authorization)(["']?\s*[=:]\s*["']?)(?:[A-Za-z][\w.-]*\s+)?[^\s"',;)]+/gi, '$1$2[redacted]'],
-  // key = value / key: value where the key names a secret, prefixed or not (aws_secret_access_key, DD_API_KEY,
-  // client_secret, GITHUB_PERSONAL_ACCESS_TOKEN). Booleans, and numbers on counters (max_tokens: 2048), are not
-  // secrets; a number on any other secret key (password=12345678) is.
-  // Tried only where a key run starts (a lookbehind), and the keyword is looked for inside that run once (a lookahead):
-  // a scan from every word start was quadratic on a long run, and a length bound would let a long key name through.
-  [/(["']?)(?<![A-Za-z0-9_.-])(?=[A-Za-z0-9_.-]*?(?:token|password|passwd|secret|api[_-]?key|access[_-]?key|private[_-]?key|authorization|credentials?))([A-Za-z0-9_.-]+)\1(\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s,;&)]+)/gi,
-    (all, q, k, sep, v) => {
-      const bare = v.replace(/^["']|["']$/g, '');
-      const counter = /tokens|token_?count|_count$|_limit$|_size$/i.test(k) && /^\d+$/.test(bare);
-      return counter || /^(true|false|null|none|\[redacted\])$/i.test(bare) ? all : `${q}${k}${q}${sep}[redacted]`;
-    }],
-];
 const HOME_PATH = /\/(?:Users|home)\/[^\/\s]+/g;
 // This daemon's own home, wherever it is (/root, /var/home/<name>), reads ~ too, before the usual homes do.
 const OWN_HOME = (() => { const h = homedir().replace(/\/+$/, ''); return h.length > 1 ? new RegExp(`${h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w.-])`, 'g') : null; })();
 const homesToTilde = (s) => (OWN_HOME ? s.replace(OWN_HOME, '~') : s).replace(HOME_PATH, '~');
-const LONG_RUN = /[A-Za-z0-9+/=_-]{32,}/g;
-// Session and event ids (UUIDs) stay searchable. Bare hex runs do not: a 32-hex Datadog API key or a 40-hex
-// application key looks exactly like a digest or a commit SHA (short SHAs are under 32 chars and never redacted).
-const UUIDISH = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-// A segment that reads as a word: lowercase or CamelCase letters, an ALLCAPS word, digits, or a word then digits.
-// Random base64 and base64url segments flip case mid-word and fail this almost always.
-const LEXICAL = /^(?:[a-z]+|[A-Z][a-z]+|[A-Z]+)(?:[A-Z][a-z]+)*\d*$|^\d+$/;
-/** A long run of short word-like segments joined by - _ or / (memory note names, branches, paths), not a token. */
-const WORDISH = (m) => {
-  const parts = m.split(/[-_/]+/).filter(Boolean);
-  return parts.length >= 3 && !/[+=]/.test(m) && parts.every((p) => p.length <= 20 && LEXICAL.test(p)) && parts.some((p) => /[a-z]{3,}/i.test(p) && !/^\d+$/.test(p));
-};
-
-/**
- * The secret redactions alone (bearer tokens, API keys, key=value secrets, long letter+digit runs); layout and
- * paths are kept. hexSafe (the search index) also keeps what a search must still find: lowercase hex runs
- * (session and event UUIDs) and identifiers or paths made of word-like segments (project_42_triage_20261013).
- * Known key shapes (sk-, ghp_, glpat-, xox, AKIA, ABSK, Bearer, key=value) and long single-segment tokens
- * (base64, JWT parts, fine-grained PAT bodies) are redacted either way.
- */
-export function redactSecrets(text, { hexSafe = false } = {}) {
-  if (text == null) return '';
-  let s = String(text);
-  for (const [re, to] of REDACTIONS) s = s.replace(re, to);
-  return s.replace(LONG_RUN, (m) => (/[A-Za-z]/.test(m) && /\d/.test(m) && !(hexSafe && (UUIDISH.test(m) || WORDISH(m))) ? '[redacted]' : m));
-}
-
-// A command-line flag that names a secret; its value is the next argv item (--password hunter2). The --flag=value form
-// is already a key=value secret to redactSecrets. The word is looked for once, by a lookahead: scanning on to the end
-// after each place it occurs made a long item that names it many times quadratic (200 KB took 8 s).
-const SECRET_FLAG = /^-{1,2}(?=[A-Za-z0-9_.-]*?(?:token|password|passwd|secret|api[_-]?key|access[_-]?key|private[_-]?key|authorization|credentials?))[A-Za-z0-9_.-]*$/i;
-
-/**
- * An argv fit to record or show: every item through redactSecrets (KEY=value, known key shapes, long tokens), and the
- * item after a flag that names a secret replaced as well, since alone it reads like any other word. Items keep their
- * places, so the command stays readable. Not an array: returned as is.
- */
-export function redactArgv(argv, opts) {
-  if (!Array.isArray(argv)) return argv;
-  return argv.map((a, i) => {
-    if (typeof a !== 'string') return a;
-    if (i > 0 && typeof argv[i - 1] === 'string' && SECRET_FLAG.test(argv[i - 1]) && !a.startsWith('-')) return '[redacted]';
-    return redactSecrets(a, opts);
-  });
-}
 
 /** Plain one-line text, no escapes, no secret-looking substrings, at most `max` chars (an ellipsis counts). */
 export function clean(text, max = 140) {

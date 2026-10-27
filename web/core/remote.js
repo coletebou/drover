@@ -5,6 +5,7 @@ import { assertKnownHost, sshArgv, LOCAL } from './hosts.js';
 import * as plugins from './plugins.js';
 import { envvar } from './envvars.js';
 import { UPDATE_HINT } from './util.js';
+import { redactEnvText } from './redact.js';
 
 // DROVER_REMOTE_BIN pins the remote binary. By default run ~/.local/bin/drover,
 // falling back to ~/.local/bin/apxw on a box that has not picked up the rename
@@ -47,10 +48,13 @@ class RemotePeer {
         if (!line.trim()) continue;
         let msg; try { msg = JSON.parse(line); } catch { continue; }
         const p = child.droverPending.get(msg.id); if (!p) continue;
-        msg.ok ? p.resolve(msg.result) : p.reject(Object.assign(new Error(msg.error ?? 'remote error'), { remote: true, host: this.host }));
+        // Redacted here too, not only where the error was made: a host on an older build sends its command errors
+        // with the environment values in them (core/proc.js ProcError).
+        msg.ok ? p.resolve(msg.result) : p.reject(Object.assign(new Error(redactEnvText(msg.error ?? 'remote error')), { remote: true, host: this.host }));
       }
     });
-    const note = (t) => { child.droverStderr = (child.droverStderr + t).slice(-4000); };
+    // Its last 4000 characters; once cut, its first line is incomplete (see the relay below).
+    const note = (t) => { const all = child.droverStderr + t; if (all.length > 4000) child.droverStderrCut = true; child.droverStderr = all.slice(-4000); };
     // A remote that dies between our write and its exit makes stdin emit EPIPE;
     // without a listener that is an uncaught 'error' and takes the daemon down.
     child.stdin.on?.('error', (e) => note(`\nstdin: ${e.code ?? e.message}`));
@@ -59,8 +63,13 @@ class RemotePeer {
     child.on('close', (code) => {
       clearTimeout(child.droverKillTimer);
       this.retired.delete(child);
-      const last = child.droverStderr.trim().split('\n').filter(Boolean).at(-1);
-      const why = last || (code === 0 ? `remote drover produced no reply (is Drover installed and current on that host? to update it: ${UPDATE_HINT})` : code === 255 ? 'ssh could not connect' : 'no stderr');
+      // Redacted whole, then cut to its last line: an assignment on an earlier line says what to scrub from that one.
+      // Once the kept part was cut, its first line is incomplete and is not relayed at all: what began it (a name, the
+      // scheme of a "Bearer <token>") can be gone, and nothing then says that what follows is a secret.
+      const redacted = redactEnvText(child.droverStderr);
+      const whole = child.droverStderrCut ? redacted.slice(redacted.indexOf('\n') + 1 || redacted.length) : redacted;
+      const last = whole.trim().split('\n').filter(Boolean).at(-1);
+      const why = last || (child.droverStderrCut ? 'its stderr ended in a line too long to relay' : code === 0 ? `remote drover produced no reply (is Drover installed and current on that host? to update it: ${UPDATE_HINT})` : code === 255 ? 'ssh could not connect' : 'no stderr');
       const err = new Error(`ssh ${this.host} drover rpc exited ${code}: ${why}`);
       for (const [, p] of child.droverPending) p.reject(err);
       child.droverPending.clear();
