@@ -41,9 +41,72 @@ struct DialogInfo: Hashable, Sendable {
     var options: [DialogOption]
 }
 
-/// How a waiting session is answered: press one of its `keys`, or reply with a message (a question asked in text).
+/// How a waiting session is answered: press one of its `keys`, reply with a message (a question asked in text), or
+/// pick an option of a Grok bot's approval request (answered by its id, never on a screen).
 enum AnswerMode: String, Sendable, Hashable {
-    case keys, reply
+    case keys, reply, approval
+}
+
+/// One option of an approval request: its number (what the answer sends as `choice`) and label.
+struct ApprovalOption: Hashable, Sendable, Identifiable {
+    var n: Int
+    var label: String
+    var id: Int { n }
+}
+
+/// A Grok bot's approval request (CONTRACT.md "Grok bot approvals"): the bot asks before it acts and the request is
+/// answered by `id` with `POST /api/approvals/answer`. The words are the bot's (a third-party model wrote them):
+/// shown as plain text, never acted on.
+struct ApprovalInfo: Hashable, Sendable {
+    var id: String
+    /// The bot's session id, `grok:<name>`.
+    var bot: String?
+    /// purchase | action | post | other (anything new is kept as sent).
+    var kind: String?
+    var question: String
+    var options: [ApprovalOption]
+    var details: String?
+    var createdAt: Date?
+    var expiresAt: Date?
+    /// The payload shows the request whole and unaltered (question, details, labels as stored): only then is it
+    /// answered as shown. Missing (an older daemon) reads as false.
+    var complete: Bool? = nil
+    /// Only on the full request (`GET /api/approvals?id=`): pending | decided | withdrawn | expired, the answer and the
+    /// client that gave it.
+    var status: String? = nil
+    var decisionLabel: String? = nil
+    var via: String? = nil
+
+    var isComplete: Bool { complete == true }
+}
+
+/// What a card offers for an approval request (ApprovalFormat.cardMode, harness-tested).
+enum ApprovalCardMode: Equatable, Sendable {
+    /// No buttons, and why: another host keeps the bot, expired, nothing to press.
+    case blocked(String)
+    /// The reviewed request is no longer pending: what became of it.
+    case closed(String)
+    /// One click answers `request`: a complete payload shown whole, or the reviewed full request.
+    case answer(ApprovalInfo)
+    /// The words may be shortened: review the whole request first.
+    case review
+}
+
+/// The review of one request: loading, the whole request, gone from this daemon, or why it failed.
+enum ApprovalReview: Equatable, Sendable {
+    case loading
+    case loaded(ApprovalInfo)
+    case gone
+    case failed(String)
+}
+
+/// What `POST /api/approvals/answer` came to.
+enum ApprovalAnswerResult: Sendable, Equatable {
+    /// 200: decided with `label`; `delivered` is false when the bot was not reached yet, `queued` when it waits in
+    /// the bot's inbox; `error` says why it was not reached.
+    case decided(label: String, delivered: Bool, queued: Bool, error: String?)
+    /// 409: answered already (another screen was quicker), withdrawn or expired.
+    case closed(message: String)
 }
 
 /// A recent "finished" alert shown on an idle strip.
@@ -92,15 +155,20 @@ struct SessionItem: Identifiable, Hashable, Sendable {
     var tail: [String] = []
     var finished: FinishedNote? = nil
     var windowName: String? = nil
+    /// A Grok bot's approval request, answered by its id (`answerMode` is `.approval`).
+    var approval: ApprovalInfo? = nil
+    /// How many more requests from the same bot wait behind this one.
+    var moreApprovals = 0
 
     /// Stable key across hosts (ids can collide between machines).
     var key: String { "\(host)|\(id)" }
     var isManager: Bool { engine == "openclaw" || id == "manager" }
     /// The id transcript, message and follow calls use (a window strip's session, else `id`).
     var transcriptId: String { sessionId ?? id }
-    /// A dialog or held message is up and answers to keys (the answer card and the board buttons show).
+    /// A dialog or held message is up and answers to keys (the answer card and the board buttons show). Never for an
+    /// approval request: it is answered by its id.
     var answersWithKeys: Bool {
-        if answerMode == .reply { return false }
+        if answerMode == .reply || answerMode == .approval || approval != nil { return false }
         return !keys.isEmpty || dialog != nil || held
     }
     /// Working right now (the chat's "working" line).
@@ -371,6 +439,8 @@ struct NotifyItem: Identifiable, Hashable, Sendable {
     var keys: [String] = []
     var answerMode: AnswerMode? = nil
     var held = false
+    /// A Grok bot's approval request: one action per option, answered by its id.
+    var approval: ApprovalInfo? = nil
 }
 
 struct NotificationPage: Sendable {

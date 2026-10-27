@@ -52,6 +52,23 @@ enum FixtureTests {
             catch DroverError.server { expect(true, "error envelope maps to server error") }
         }
 
+        // A Grok bot's approval request, as the daemon shapes it (Fixtures/*.approval.json).
+        if data("native.summary.approval.json") != nil {
+            let a = try result("native.summary.approval.json", "native.summary", as: NativeSummary.self)
+            let bot = a.waiting.first { $0.approval != nil }
+            expect(bot?.answer == "approval" && bot?.kind == "decision" && bot?.approval?.isComplete == true && bot?.moreApprovals == 1,
+                   "fixture approval waiting item")
+            if let bot, let req = bot.approval {
+                // Complete, a short question and its details shown in full: the card answers in one tap.
+                expect(ApprovalFormat.cardMode(summary: req, full: nil, host: bot.host, hasMainToken: true, now: Date(timeIntervalSince1970: 1_793_000_000))
+                       == .answer(req), "fixture card: one tap")
+            }
+            let n = try result("native.notifications.approval.json", "native.notifications", as: NotificationFeed.self)
+            let planned = n.items.filter { $0.approval != nil }.map(NotificationPlan.planned)
+            expect(planned.count == 1 && planned[0].actions.isEmpty && planned[0].approvalID == "ap_0000000000a1",
+                   "fixture alert: details, so no buttons; a tap reviews the request")
+        }
+
         if let sse = data("events.sse.txt") {
             var parser = SSEParser(), lines = SSELineBuffer(), names: [String] = [], datas: [String] = []
             for byte in sse {

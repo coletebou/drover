@@ -9,8 +9,9 @@ speak the same HTTP+SSE API that the Drover browser UI uses. Server code lives i
 - Base URL is user-configured (e.g. `http://127.0.0.1:7337`, or a Tailscale/VPN address of the daemon).
 - Auth: `Authorization: Bearer <token>`. Never log, print, hardcode or commit a token. Apple apps keep it
   in the Keychain (shared access group so extensions and widgets can read it); the Chrome extension keeps it
-  in `chrome.storage.local` (never `sync`). Widgets and the watch use a **read-only widget token** (see
-  `native.summary` below) so a leaked widget cannot send messages.
+  in `chrome.storage.local` (never `sync`). Widgets use a **read-only widget token** (see `native.summary`
+  below) so a leaked widget cannot send messages. The watch gets both tokens from the iPhone (`WatchTokenSync`):
+  it reads with the widget token and answers (replies, approval requests) with the main token.
 - `POST /api/op/<op>` with JSON body = args, or `GET /api/op/<op>?k=v` for read ops.
   Response: `{ ok: true, result, ms, cache }` or `{ ok: false, error }`.
 - `GET /api/stream` (alias `GET /api/events` once core's server change lands) is Server-Sent Events: event names

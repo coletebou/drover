@@ -78,6 +78,11 @@ final class AppModel {
     var liveDialogs: [String: LiveDialog] = [:]
     /// Session key -> its card's open "Type something" field, and the question it answers (FreeTextField).
     var typingAnswer: [String: FreeTextField] = [:]
+    /// Approval request id -> its review: the whole request behind a card whose words may be shortened.
+    private(set) var approvalReviews: [String: ApprovalReview] = [:]
+    /// Requests answered here or closed elsewhere (id -> what the card says instead of its buttons), until the board
+    /// drops them: the daemon's board can lag an answer by seconds, and must not invite a second one meanwhile.
+    private(set) var settledApprovals: [String: String] = [:]
     private(set) var toast: Toast?
     /// Bumped after a key press so Screen captures again at once.
     private(set) var screenPoke = 0
@@ -203,6 +208,8 @@ final class AppModel {
         lastError = nil
         followed = [:]
         chatCache = [:]; chatOrder = []
+        approvalReviews = [:]
+        settledApprovals = [:]
         manager.reset()
         start()
         Task { await manager.refresh() }
@@ -241,6 +248,12 @@ final class AppModel {
             board = snap
             updateDockBadge()
             pruneLiveDialogs(snap)
+            if !approvalReviews.isEmpty || !settledApprovals.isEmpty {
+                // Reviews and settled answers of requests the board no longer shows (decided, withdrawn, expired) go.
+                let shown = Set(snap.sessions.compactMap { $0.approval?.id })
+                approvalReviews = approvalReviews.filter { shown.contains($0.key) || $0.value == .loading }
+                settledApprovals = settledApprovals.filter { shown.contains($0.key) }
+            }
             #if !DROVER_DEV
             handOffToWidgets(snap)
             #endif
@@ -459,6 +472,67 @@ final class AppModel {
         }
         await followScreen(s, pressed: now.hash)
         scheduleRefresh(after: 0.7)
+    }
+
+    // MARK: approval requests
+
+    /// Whether the daemon this app talks to keeps `s`'s bot (only it can answer the request): `local`, or its own name.
+    func answersApprovals(of s: SessionItem) -> Bool {
+        ApprovalFormat.isAnswerable(host: s.host, isLocal: { [daemonHost] in $0 == "local" || $0 == daemonHost })
+    }
+
+    /// A request answered (here, from a card or a notification) or closed elsewhere: its card holds no buttons until
+    /// the board drops it.
+    func settle(_ id: String, _ result: ApprovalAnswerResult) {
+        settledApprovals[id] = ApprovalFormat.settledText(result)
+    }
+
+    /// The marker `answering` holds while option `choice` of an approval request is on its way.
+    static func approvalPress(_ choice: Int) -> String { "approval:\(choice)" }
+
+    /// What `s`'s card offers for its approval request. `detailsShown`: the surface shows the details in full (the chat
+    /// card does; a board row does not, so there one click needs a request without details).
+    func approvalMode(for s: SessionItem, detailsShown: Bool = true, now: Date = Date()) -> ApprovalCardMode? {
+        guard let approval = s.approval else { return nil }
+        if let settled = settledApprovals[approval.id] { return .closed(settled) }
+        return ApprovalFormat.cardMode(summary: approval, review: approvalReviews[approval.id], answerable: answersApprovals(of: s),
+                                       host: s.host, detailsShown: detailsShown, now: now)
+    }
+
+    /// Load the whole request behind `s`'s card (`GET /api/approvals?id=`) into `approvalReviews`.
+    func reviewApproval(_ s: SessionItem) async {
+        guard let approval = s.approval, approvalReviews[approval.id] != .loading else { return }
+        approvalReviews[approval.id] = .loading
+        let service = self.service, gen = generation
+        do {
+            let full = try await service.approval(id: approval.id)
+            guard gen == generation else { return }
+            approvalReviews[approval.id] = full.map(ApprovalReview.loaded) ?? .gone
+        } catch {
+            guard gen == generation else { return }
+            approvalReviews[approval.id] = .failed("Could not load the request: \(error.localizedDescription)")
+        }
+    }
+
+    /// Answer `s`'s approval request with option `choice` (via mac): the board row's and the chat card's buttons, from
+    /// the reviewed whole request when there is one, else from the board's complete payload. What came of it is a toast
+    /// (a decided or closed request leaves the board); a refusal also stays on the card.
+    func answerApproval(_ s: SessionItem, choice: Int, detailsShown: Bool = true) async {
+        guard case .answer(let approval)? = approvalMode(for: s, detailsShown: detailsShown), answering[s.key] == nil,
+              approval.options.contains(where: { $0.n == choice }) else { return }
+        answering[s.key] = Self.approvalPress(choice)
+        answerNotice[s.key] = nil
+        let service = self.service, gen = generation
+        let result: Result<ApprovalAnswerResult, Error>
+        do { result = .success(try await service.answerApproval(id: approval.id, choice: choice)) }
+        catch { result = .failure(error) }
+        answering[s.key] = nil
+        guard gen == generation else { return }
+        if case .success(let r) = result { settle(approval.id, r) }
+        let o = ApprovalFormat.outcome(result, botName: ApprovalFormat.botName(bot: approval.bot, fallback: s.name))
+        show(Toast(text: o.text, kind: o.isError ? .error : .info))
+        if case .failure = result { answerNotice[s.key] = AnswerNote(text: o.text, isError: true) }
+        scheduleRefresh(after: 0.3)
     }
 
     /// Press a key in a pane that shows no dialog (Enter, Esc, Ctrl-C, arrows): `tmux.keys`.

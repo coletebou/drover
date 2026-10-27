@@ -7,7 +7,7 @@ struct WaitingRow: View {
         TimelineView(.periodic(from: .now, by: 60)) { context in
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 4) {
-                    Image(systemName: item.kind.symbol).foregroundStyle(item.kind.tint)
+                    Image(systemName: item.approval != nil ? "checkmark.seal" : item.kind.symbol).foregroundStyle(item.kind.tint)
                     Text(item.name).font(Palette.title(.headline)).foregroundStyle(Palette.ink).lineLimit(1)
                 }
                 Text(item.headline).font(.footnote).foregroundStyle(Palette.ink2).lineLimit(3)

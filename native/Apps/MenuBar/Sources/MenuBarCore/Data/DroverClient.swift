@@ -148,6 +148,98 @@ struct DroverClient: Sendable {
         return try await call("sessions.answer", args: args, token: .main, as: AnswerResult.self)
     }
 
+    /// `via` of every approval this app answers (its rows and its notification actions).
+    static let approvalVia = "menubar"
+
+    /// `POST /api/approvals/answer {id, choice, via}` with the main token: a Grok bot's approval request, answered by
+    /// its id. Not an op (`/api/op/...` cannot answer it). 409 (answered already, withdrawn, expired) is a result.
+    func answerApproval(id: String, choice: Int) async throws -> ApprovalAnswerResult {
+        guard let token = tokens.token(.main), !token.isEmpty else { throw DroverError.missingToken(.main) }
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/approvals/answer"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let body: [String: JSONValue] = ["id": .string(id), "choice": .int(choice), "via": .string(Self.approvalVia)]
+        do {
+            request.httpBody = try JSONEncoder().encode(body)
+        } catch {
+            throw DroverError.decoding("Could not encode the request.")
+        }
+        let data: Data
+        let response: HTTPURLResponse
+        do {
+            (data, response) = try await transport.data(for: request)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let e as URLError where e.code == .cancelled {
+            throw CancellationError()
+        } catch {
+            throw DroverError.from(error)
+        }
+        return try Self.approvalResult(data, status: response.statusCode)
+    }
+
+    /// `GET /api/approvals?id=<id>` with the main token: the whole request (its words unshortened, its status). nil when
+    /// this daemon keeps no such request.
+    func approval(id: String) async throws -> ApprovalInfo? {
+        guard let token = tokens.token(.main), !token.isEmpty else { throw DroverError.missingToken(.main) }
+        var c = URLComponents(url: baseURL.appendingPathComponent("api/approvals"), resolvingAgainstBaseURL: false)
+        c?.queryItems = [URLQueryItem(name: "id", value: id)]
+        guard let url = c?.url else { throw DroverError.notConfigured }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let data: Data
+        let response: HTTPURLResponse
+        do {
+            (data, response) = try await transport.data(for: request)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let e as URLError where e.code == .cancelled {
+            throw CancellationError()
+        } catch {
+            throw DroverError.from(error)
+        }
+        let status = response.statusCode
+        if status == 401 || status == 403 { throw DroverError.unauthorized }
+        guard (200..<300).contains(status) else {
+            if let env = try? JSONDecoder().decode(OpEnvelope<AnyResult>.self, from: data), !env.ok, let message = env.error {
+                throw DroverError.server(message)
+            }
+            throw DroverError.http(status)
+        }
+        let envelope: OpEnvelope<ApprovalLookup>
+        do {
+            envelope = try JSONDecoder().decode(OpEnvelope<ApprovalLookup>.self, from: data)
+        } catch {
+            throw DroverError.decoding(String(describing: error))
+        }
+        guard envelope.ok else { throw DroverError.server(envelope.error ?? "Request failed.") }
+        return envelope.result?.items.first { $0.id == id }
+    }
+
+    /// 200 decided; 409 closed with the daemon's words; 401 and 403 (the widget token) rejected; 400 and 404 the
+    /// daemon's error.
+    static func approvalResult(_ data: Data, status: Int) throws -> ApprovalAnswerResult {
+        if status == 401 || status == 403 { throw DroverError.unauthorized }
+        let message = (try? JSONDecoder().decode(OpEnvelope<AnyResult>.self, from: data))?.error
+        if status == 409 { return .closed(message: message ?? "This request is no longer waiting for an answer.") }
+        guard (200..<300).contains(status) else {
+            if let message { throw DroverError.server(message) }
+            throw DroverError.http(status)
+        }
+        let envelope: OpEnvelope<ApprovalAnswerPayload>
+        do {
+            envelope = try JSONDecoder().decode(OpEnvelope<ApprovalAnswerPayload>.self, from: data)
+        } catch {
+            throw DroverError.decoding(String(describing: error))
+        }
+        guard envelope.ok else { throw DroverError.server(envelope.error ?? "Request failed.") }
+        return .decided(label: envelope.result?.decision?.label ?? "", delivery: envelope.result?.delivery ?? ApprovalDelivery())
+    }
+
     /// `sessions.message {id: "manager", text, wait: false}`. A daemon from before `wait: false` holds the call
     /// until the reply, so this one may take minutes.
     func messageManager(_ text: String, host: String?) async throws -> ManagerSendResult {

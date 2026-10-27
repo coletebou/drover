@@ -20,6 +20,10 @@ struct UnconfiguredDroverAPI: DroverAPI {
     func managerStatus(host: String?) async throws -> JSONValue { throw DroverError.notConfigured }
     func managerFeed(host: String?, limit: Int) async throws -> JSONValue { throw DroverError.notConfigured }
     func managerSweep(host: String?) async throws -> JSONValue { throw DroverError.notConfigured }
+    func answerApproval(id: String, choice: Int, via: String) async throws -> ApprovalAnswerResult {
+        throw DroverError.notConfigured
+    }
+    func approval(id: String) async throws -> ApprovalRequest? { throw DroverError.notConfigured }
     func events() -> AsyncThrowingStream<ServerEvent, Error> {
         AsyncThrowingStream { $0.finish(throwing: DroverError.notConfigured) }
     }

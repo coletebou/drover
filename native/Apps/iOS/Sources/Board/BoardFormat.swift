@@ -8,6 +8,11 @@ enum BoardFormat {
         return kind.prefix(1).uppercased() + kind.dropFirst().lowercased()
     }
 
+    /// The badge of a waiting row: "Approval" for a Grok bot's approval request, else the kind's label.
+    static func waitingLabel(_ item: NativeSummary.WaitingItem) -> String {
+        item.approval != nil ? "Approval" : kindLabel(item.kind)
+    }
+
     /// "1 waiting, 2 working, 3 idle"
     static func countsSentence(waiting: Int, working: Int, idle: Int) -> String {
         "\(waiting) waiting, \(working) working, \(idle) idle"

@@ -140,7 +140,8 @@ extension Suites {
     static func mock() async {
         let m = AppModel.preview()
         await m.refreshAll()
-        expect(m.summary?.totals.waiting == 2, "mock summary")
+        // Two sessions and a Grok bot's approval request.
+        expect(m.summary?.totals.waiting == 3 && m.summary?.waiting.filter { $0.approval != nil }.count == 1, "mock summary")
         expect(m.sessions.contains { $0.host == "demo-box" }, "sessions across hosts")
         expect(m.boardState(for: SessionRef(id: "11111111-aaaa-4bbb-8ccc-000000000001", host: "local")) == .waiting, "board state")
         m.handle(url: URL(string: "drover://session/thread-demo-review?host=demo-box")!)

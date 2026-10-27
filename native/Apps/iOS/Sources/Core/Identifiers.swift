@@ -18,6 +18,8 @@ enum DroverIDs {
     /// Value sent as `actor` on mutating ops so the truth file shows where a message came from. `ios` is one of the
     /// owner's client names (the daemon's core/owner.js), so the manager reads it as the owner, in the shared conversation.
     static let actor = "ios"
+    /// `via` of an approval answered from a notification action (the board's answers say `actor`, `ios`).
+    static let notificationVia = "ios-notification"
 
     /// The full Keychain access group, or nil when the build did not set it (previews, unsigned typecheck).
     static var keychainAccessGroup: String? {

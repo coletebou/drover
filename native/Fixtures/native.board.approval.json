@@ -1,0 +1,22 @@
+{
+  "ok": true,
+  "ms": 6,
+  "cache": null,
+  "result": {
+    "generatedAt": "2026-10-27T10:00:00.000Z",
+    "hosts": [
+      { "name": "local", "up": true, "waiting": 2, "working": 0, "idle": 0 }
+    ],
+    "strips": [
+      { "key": "local|grok:demo-alpha", "id": "grok:demo-alpha", "name": "Demo-alpha", "host": "local", "engine": "grok", "lane": "wait", "status": "waiting", "kind": "session", "headline": "Buy the demo plan, 1 month, $9.99 on the demo store?", "since": "2026-10-27T09:58:00.000Z", "tail": ["Buy the demo plan, 1 month, $9.99 on the demo store?"],
+        "ask": { "kind": "decision", "label": "asks for your approval", "text": "Buy the demo plan, 1 month, $9.99 on the demo store?", "options": [{ "n": 1, "label": "Buy it" }, { "n": 2, "label": "Not now" }] },
+        "answer": "approval",
+        "approval": { "id": "ap_0000000000a1", "bot": "grok:demo-alpha", "kind": "purchase", "question": "Buy the demo plan, 1 month, $9.99 on the demo store?", "options": [{ "n": 1, "label": "Buy it" }, { "n": 2, "label": "Not now" }], "details": "You asked for it this morning. Paid with the card on file; renews monthly unless cancelled.", "createdAt": "2026-10-27T09:58:00.000Z", "expiresAt": "2026-10-28T09:58:00.000Z", "complete": true, "untrusted": true },
+        "moreApprovals": 1 },
+      { "key": "local|00000000-demo-4000-8000-000000000002", "id": "00000000-demo-4000-8000-000000000002", "name": "demo-review", "host": "local", "engine": "claude", "lane": "wait", "status": "idle", "kind": "session", "headline": "Push the branch now, or wait for the second review?", "since": "2026-10-27T09:50:00.000Z", "tail": ["Push the branch now, or wait for the second review?"], "ask": { "kind": "question", "label": "asked you a question", "text": "Push the branch now, or wait for the second review?", "options": [] }, "answer": "reply" }
+    ],
+    "totals": { "waiting": 2, "working": 0, "idle": 0, "hosts": 1 },
+    "manager": { "up": false, "host": null, "lastNoteAt": null },
+    "owner": "owner"
+  }
+}

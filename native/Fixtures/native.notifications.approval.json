@@ -1,0 +1,13 @@
+{
+  "ok": true,
+  "ms": 3,
+  "cache": null,
+  "result": {
+    "cursor": "c1.eyJ0IjoxNzkzMDk1MDgwMDAwLCJzIjpbWyJldi1kZW1vLTAxMDIiLDE3OTMwOTUwODAwMDBdXX0",
+    "items": [
+      { "id": "ev-demo-0101", "at": "2026-10-27T09:50:00.000Z", "kind": "question", "category": "needs-you", "title": "demo-review asked you a question", "body": "Push the branch now, or wait for the second review?", "sessionId": "00000000-demo-4000-8000-000000000002", "host": "local" },
+      { "id": "ev-demo-0102", "at": "2026-10-27T09:58:00.000Z", "kind": "decision", "category": "needs-you", "title": "Demo-alpha asks for your approval", "body": "Buy the demo plan, 1 month, $9.99 on the demo store? (Buy it / Not now)", "sessionId": "grok:demo-alpha", "host": "local", "answer": "approval",
+        "approval": { "id": "ap_0000000000a1", "bot": "grok:demo-alpha", "kind": "purchase", "question": "Buy the demo plan, 1 month, $9.99 on the demo store?", "options": [{ "n": 1, "label": "Buy it" }, { "n": 2, "label": "Not now" }], "details": "You asked for it this morning. Paid with the card on file; renews monthly unless cancelled.", "createdAt": "2026-10-27T09:58:00.000Z", "expiresAt": "2026-10-28T09:58:00.000Z", "complete": true, "untrusted": true } }
+    ]
+  }
+}

@@ -31,6 +31,17 @@ import Testing
         #expect(!r.summary.hosts.isEmpty)
     }
 
+    /// A Grok bot's approval request (CONTRACT.md "Grok bot approvals") rides on a waiting item as fields the widget does
+    /// not know: it still decodes, as the decision it is (`kind` stays `decision`), and so does the cache the iOS app
+    /// writes back with those fields.
+    @Test func decodesApprovalSummaryFixture() throws {
+        guard let data = load("native.summary.approval.json") else { return }
+        let r = try SummaryFetcher.parse(data: data, statusCode: 200)
+        #expect(r.summary.waiting.count == 2 && r.summary.totals.waiting == 2)
+        let bot = try #require(r.summary.waiting.first { $0.id == "grok:demo-alpha" })
+        #expect(bot.waitingKind == .decision && bot.engine == "grok" && !bot.headline.isEmpty)
+    }
+
     @Test func parsesCoreEmptyEnvelopeFixture() throws {
         guard let data = load("native.summary.empty.json") else { return }
         let r = try SummaryFetcher.parse(data: data, statusCode: 200)

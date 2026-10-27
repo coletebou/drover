@@ -44,6 +44,43 @@ enum DevHooks {
                 info.server = model.activeServerURL
                 model.notifications.route(action: NotificationContentBuilder.keyPrefix + key, info: info, text: nil, requestId: item.id)
             }
+        case "approve":
+            // What an approval option runs (AppModel.answerApproval): name=<row>, choice=<n>, where=card (default) or row.
+            guard let name = q["name"], let choice = q["choice"].flatMap(Int.init),
+                  let s = model.board.sessions.first(where: { $0.name == name }) else { PerfLog.note("approve: no such session"); return }
+            let card = q["where"] != "row"
+            Task {
+                PerfLog.note("approve \(name): the \(card ? "card" : "row") offers \(describe(model.approvalMode(for: s, detailsShown: card)))")
+                await model.answerApproval(s, choice: choice, detailsShown: card)
+                PerfLog.note("approve \(name) \(choice): toast=\(model.toast?.text ?? "-") notice=\(model.answerNotice[s.key]?.text ?? "-")")
+            }
+        case "review":
+            // What Review runs: the whole request into the card (GET /api/approvals?id=).
+            guard let name = q["name"], let s = model.board.sessions.first(where: { $0.name == name }), let a = s.approval else {
+                PerfLog.note("review: no such approval row"); return
+            }
+            Task {
+                await model.reviewApproval(s)
+                let r = model.approvalReviews[a.id]
+                if case .loaded(let full)? = r {
+                    PerfLog.note("review \(name): whole request, status \(full.status ?? "-"), complete \(full.complete.map(String.init) ?? "missing"), question \(full.question.utf16.count) chars, details \(full.details?.count ?? 0) chars; card offers \(describe(model.approvalMode(for: s)))")
+                } else {
+                    PerfLog.note("review \(name): \(String(describing: r))")
+                }
+            }
+        case "notify-approval-check":
+            // The newest approval alert in native.notifications as its notification would carry it, and (press=<n>)
+            // what its action would answer, through the coordinator's own route.
+            Task {
+                guard let page = try? await model.service.notifications(since: nil, wait: 0),
+                      let item = page.items.last(where: { $0.approval != nil }) else { PerfLog.note("notify-approval-check: no approval alert"); return }
+                let c = NotificationContentBuilder.content(for: item)
+                PerfLog.note("notify-approval-check \(item.title): category=\(c.categoryId) actions=\(c.actions.map(\.title)) subtitle=\(c.subtitle ?? "-") reply=\(!c.answersApproval && c.categoryId == "drover.session")")
+                guard let n = q["press"] else { return }
+                var info = NotificationAction(c.userInfo)
+                info.server = model.activeServerURL
+                model.notifications.route(action: NotificationContentBuilder.approvalPrefix + n, info: info, text: nil, requestId: item.id)
+            }
         case "manager-send":
             if let text = q["text"] { model.manager.send(text) }
         case "answer":
@@ -87,7 +124,7 @@ enum DevHooks {
         let b = model.board
         PerfLog.note("board source=\(b.source.rawValue) sessions=\(b.sessions.count) hosts=\(b.hosts.map(\.name)) connection=\(model.connection.label)")
         for s in b.sessions {
-            PerfLog.note("  \(s.name) lane=\(s.lane.rawValue) screen=\(s.screen.rawValue) keys=\(s.keys) hash=\(s.hash ?? "-") card=\(model.showsAnswerCard(s))")
+            PerfLog.note("  \(s.name) lane=\(s.lane.rawValue) screen=\(s.screen.rawValue) keys=\(s.keys) hash=\(s.hash ?? "-") card=\(model.showsAnswerCard(s))\(s.approval.map { " approval=\($0.id) complete=\($0.complete.map(String.init) ?? "missing") row=\(describe(model.approvalMode(for: s, detailsShown: false))) chat=\(describe(model.approvalMode(for: s)))" } ?? "")")
         }
         PerfLog.note("selected=\(model.selectedSessionKey ?? "-") tab=\(model.detailTab.rawValue) manager=\(model.showsManager)")
         if let s = model.selectedSession {
@@ -101,6 +138,16 @@ enum DevHooks {
         let m = model.manager
         PerfLog.note("manager thread=\(m.thread) status=\(m.statusText) rows=\(m.items.count) threads=\(m.threads.map(\.thread))")
         for item in m.items.suffix(6) { PerfLog.note("  manager row \(describe(item))") }
+    }
+
+    static func describe(_ mode: ApprovalCardMode?) -> String {
+        switch mode {
+        case .answer(let r)?: "buttons \(r.options.map { ApprovalFormat.title($0) })"
+        case .review?: "review first"
+        case .blocked(let why)?: "blocked: \(why)"
+        case .closed(let why)?: "closed: \(why)"
+        case nil: "none"
+        }
     }
 
     static func describe(_ item: ChatItem) -> String {

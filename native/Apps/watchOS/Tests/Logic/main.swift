@@ -8,6 +8,8 @@ let suites: [(String, [TestCase])] = [
     ("replies", repliesTests),
     ("sync", syncTests),
     ("background", backgroundTests),
+    ("approvals", approvalTests),
+    ("live", approvalLiveTests),
 ]
 
 var passed = 0, failed = 0

@@ -13,6 +13,7 @@ await TranscriptTests.run()
 await DialogTests.run()
 await ManagerTests.run()
 await NotificationTests.run()
+await ApprovalTests.run()
 
 print("harness: \(T.passes) passed, \(T.failures) failed")
 exit(Int32(min(T.failures, 255)))

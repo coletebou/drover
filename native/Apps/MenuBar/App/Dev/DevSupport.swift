@@ -71,7 +71,7 @@ enum DevHarness {
         for raw in script.split(separator: ";") {
             let step = raw.trimmingCharacters(in: .whitespaces)
             let (verb, arg) = split(step)
-            let mutating = ["answer", "ask", "sweep", "notify"].contains(verb)
+            let mutating = ["answer", "ask", "sweep", "notify", "approve", "notifyapproval", "reviewapproval"].contains(verb)
             if mutating && DevEnvironment.isLiveDaemon {
                 log("refused \(verb): DROVER_URL is the live daemon")
                 continue
@@ -79,6 +79,19 @@ enum DevHarness {
             switch verb {
             case "snap":
                 await snapshot(arg.isEmpty ? "popover" : arg, store: store, actions: actions)
+            case "snaprow":
+                // snaprow:<row name>[@<file name>]: that waiting row alone (the popover's scroll height hides lower rows).
+                let parts = arg.split(separator: "@", maxSplits: 1).map(String.init)
+                guard let item = store.summary?.waiting.first(where: { $0.name == parts.first }) else { log("snaprow \(arg): no such row"); continue }
+                guard let dir = DevEnvironment.snapshotDir else { log("snaprow: set DROVER_DEV_SNAPSHOT"); continue }
+                try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                for dark in [false, true] {
+                    let url = dir.appendingPathComponent("\(parts.count > 1 ? parts[1] : "row-\(item.name)")-\(dark ? "dark" : "light").png")
+                    await SnapshotRenderer.render(WaitingRow(item: item, store: store, actions: actions).padding(14)
+                        .frame(maxWidth: .infinity, alignment: .leading).background(Theme.background).foregroundStyle(Theme.text),
+                                                  width: 380, dark: dark, to: url)
+                    log("snap \(url.lastPathComponent)")
+                }
             case "answer":
                 // answer:<key> (the first row offering it), answer:<key>@<row index> or answer:<key>#<row name>
                 let byName = arg.split(separator: "#", maxSplits: 1).map(String.init)
@@ -94,6 +107,32 @@ enum DevHarness {
                 log("answer \(arg): row offers \(store.answerPlan(for: item).buttons.map(\.title))")
                 await store.answer(item, key: key)
                 log("answer \(arg): \(store.answerStates[item.answerKey]?.message ?? "no outcome (key not offered)")")
+            case "approve":
+                // approve:<n> (the first row with an approval request) or approve:<n>#<row name>: the row's button.
+                let parts = arg.split(separator: "#", maxSplits: 1).map(String.init)
+                let rows = (store.summary?.waiting ?? []).filter { $0.approval != nil }
+                guard let n = Int(parts.first ?? ""), let item = parts.count > 1 ? rows.first(where: { $0.name == parts[1] }) : rows.first else {
+                    log("approve \(arg): no such approval row"); continue
+                }
+                log("approve \(arg): row offers \(describe(store.approvalMode(for: item)))")
+                await store.answerApproval(item, choice: n)
+                log("approve \(arg): \(store.approvalNotice?.text ?? "no outcome (no such option on offer)")")
+            case "reviewapproval":
+                // reviewapproval (the first row with an approval request) or reviewapproval:#<row name>: its Review button.
+                let name = arg.hasPrefix("#") ? String(arg.dropFirst()) : nil
+                let rows = (store.summary?.waiting ?? []).filter { $0.approval != nil }
+                guard let item = name.map({ n in rows.first { $0.name == n } }) ?? rows.first else { log("reviewapproval: no approval row"); continue }
+                await store.reviewApproval(item)
+                let review = item.approval.flatMap { store.approvalReviews[$0.id] }
+                switch review {
+                case .loaded(let full)?:
+                    log("reviewapproval: whole request, status \(full.status ?? "-"), complete \(full.complete.map(String.init) ?? "missing"), details \(full.details?.count ?? 0) chars; row offers \(describe(store.approvalMode(for: item)))")
+                default: log("reviewapproval: \(String(describing: review))")
+                }
+            case "notifyapproval":
+                // notifyapproval:<n> (the newest alert of a pending request) or notifyapproval:<n>#<row name> (that row's).
+                let parts = arg.split(separator: "#", maxSplits: 1).map(String.init)
+                await notifyApproval(choice: Int(parts.first ?? "") ?? 1, row: parts.count > 1 ? parts[1] : nil, model: model)
             case "notify":
                 // notify:<key>[+<s>]: the newest alert that carries dialog keys (raised at least <s> seconds after this
                 // step started, when given), through the notification action handler.
@@ -183,6 +222,44 @@ enum DevHarness {
         log("notify \(key) from another server: \(refused?.message ?? "no outcome")")
     }
 
+    /// The newest native.notifications item with an approval request, planned as the app would post it, then option
+    /// `choice` pressed through NotificationController (the code a notification click runs); then the same press on
+    /// an alert from another server, which must be refused before anything is sent.
+    private static func notifyApproval(choice: Int, row: String?, model: AppModel) async {
+        guard let base = model.preferences.value.baseURL, let controller = model.notifications else { log("notifyapproval: not configured"); return }
+        let client = DroverClient(baseURL: base, tokens: model.tokens, transport: URLSessionTransport())
+        let rows = (model.store.summary?.waiting ?? []).filter { row == nil || $0.name == row }
+        let pending = Set(rows.compactMap { $0.approval?.id })
+        let page = try? await client.notifications(since: nil, wait: nil, limit: 50, token: .main)
+        guard let item = page?.items.reversed().first(where: { $0.approval.map { pending.contains($0.id) } ?? false }) else {
+            log("notifyapproval: no alert carries a pending approval request (\(page?.items.count ?? 0) items)"); return
+        }
+        let planned = NotificationPlanner.plan([item], preferences: model.preferences.value, mutedUntil: nil, now: Date(), alreadyPosted: [])
+        guard let note = planned.first else { log("notifyapproval: the planner skipped the alert"); return }
+        log("notifyapproval: alert buttons \(note.approvalActions.map(\.title)), reply \(note.canReply), subtitle \(note.subtitle ?? "none"), category \(note.categoryID.hasPrefix(PlannedNotification.approvalCategoryPrefix) ? "approval" : note.categoryID)")
+        guard let action = note.approvalActions.first(where: { $0.choice == choice }) else { log("notifyapproval: no option \(choice)"); return }
+        func stillPending() async -> Bool {
+            await model.store.refresh()
+            return (model.store.summary?.waiting ?? []).contains { $0.approval?.id == note.approvalID }
+        }
+        var foreign = controller.userInfo(for: note)
+        foreign["server"] = "http://127.0.0.1:1"
+        await controller.respond(action: action.identifier, info: foreign)
+        log("notifyapproval from another server: request still pending after it: \(await stillPending())")
+        await controller.respond(action: action.identifier, info: controller.userInfo(for: note))
+        log("notifyapproval \(choice): answered through the notification action; request still pending: \(await stillPending())")
+    }
+
+    private static func describe(_ mode: ApprovalRowMode?) -> String {
+        switch mode {
+        case .answer(let r)?: "buttons \(r.options.map { ApprovalFormat.title($0) })"
+        case .review?: "review first"
+        case .blocked(let why)?: "blocked: \(why)"
+        case .closed(let why)?: "closed: \(why)"
+        case nil: "none"
+        }
+    }
+
     private static func split(_ step: String) -> (String, String) {
         guard let i = step.firstIndex(of: ":") else { return (step, "") }
         return (String(step[..<i]), String(step[step.index(after: i)...]))
@@ -201,6 +278,7 @@ enum DevHarness {
     private static func state(_ store: MenuBarStore) -> String {
         let s = store.summary
         let rows = (s?.waiting ?? []).map { w -> String in
+            if w.approval != nil { return "approval[\(describe(store.approvalMode(for: w)))]" }
             switch store.answerPlan(for: w) {
             case .keys(_, let b): return "keys[\(b.map(\.key).joined(separator: ","))]"
             case .reply: return "reply"

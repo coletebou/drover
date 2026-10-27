@@ -75,6 +75,7 @@ struct BoardView: View {
 
     private func waitingSection(_ summary: NativeSummary) -> some View {
         Section("Waiting on you") {
+            if let notice = model.approvalNotice { approvalNoticeRow(notice) }
             if summary.waiting.isEmpty {
                 Text("Nothing is waiting on you").font(.subheadline).foregroundStyle(Theme.textSecondary)
                     .frame(minHeight: rowMin, alignment: .leading)
@@ -95,6 +96,13 @@ struct BoardView: View {
                     .accessibilityAction(named: "Copy session id") { copy(item.id) }
             }
         }
+    }
+
+    /// What the last approval answer came to; it stays while the board refreshes (a closed request's card goes).
+    private func approvalNoticeRow(_ notice: ApprovalNotice) -> some View {
+        ApprovalNoticeView(notice: notice) { model.dismissApprovalNotice() }
+            .frame(minHeight: rowMin, alignment: .leading)
+            .listRowBackground(Theme.surface)
     }
 
     private func workingSection(_ summary: NativeSummary) -> some View {

@@ -39,6 +39,16 @@ final class MenuBarStore {
     private(set) var answersSupported = true
     /// Per waiting item (`answerKey`): a key in flight or the outcome of the last press.
     private(set) var answerStates: [String: RowAnswerState] = [:]
+    /// Approval requests being answered (request id -> the option pressed), so their buttons wait.
+    private(set) var approvalPressing: [String: Int] = [:]
+    /// What the last approval answer came to, above the waiting list for a few seconds: a decided or closed request
+    /// leaves the list, so its row cannot say it.
+    private(set) var approvalNotice: ApprovalNotice?
+    /// Reviews of requests whose words may be shortened (request id -> the whole request, or how loading it went).
+    private(set) var approvalReviews: [String: ApprovalReview] = [:]
+    /// Requests answered here or closed elsewhere (id -> what the row says instead of its buttons), until the summary
+    /// drops them: the daemon's board can lag an answer by seconds, and must not invite a second one meanwhile.
+    private(set) var settledApprovals: [String: String] = [:]
 
     /// Waiting items that were not in the previous summary. Never fires for the first summary after
     /// `start()` or `reconfigure()` (that is a baseline, not news).
@@ -75,6 +85,8 @@ final class MenuBarStore {
     @ObservationIgnored var sleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     /// How long a row keeps the outcome of a press on show.
     @ObservationIgnored var answerMessageSeconds: Double = 8
+    /// How long the outcome of an approval answer stays above the waiting list.
+    @ObservationIgnored var approvalNoticeSeconds: Double = 10
     /// How often a reply in flight is read from the transcript while no stream delivers it.
     @ObservationIgnored var managerCatchUpInterval: Duration = .seconds(2)
 
@@ -125,6 +137,10 @@ final class MenuBarStore {
             mutedUntil = nil
             manager = ManagerChat()
             answerStates = [:]
+            approvalPressing = [:]
+            approvalNotice = nil
+            approvalReviews = [:]
+            settledApprovals = [:]
             answersSupported = true
             managerHistoryLoaded = false
             boardManagerHost = nil
@@ -295,6 +311,84 @@ final class MenuBarStore {
         }
     }
 
+    // MARK: Approvals
+
+    /// What `item`'s row offers for its approval request: one click on words shown whole, else a review first.
+    func approvalMode(for item: WaitingItem, now: Date = Date()) -> ApprovalRowMode? {
+        guard let approval = item.approval else { return nil }
+        if let settled = settledApprovals[approval.id] { return .closed(settled) }
+        return ApprovalFormat.rowMode(summary: approval, review: approvalReviews[approval.id], host: item.host, canAct: canAct, now: now)
+    }
+
+    /// Load the whole request behind `item`'s row (`GET /api/approvals?id=`, main token) into `approvalReviews`.
+    func reviewApproval(_ item: WaitingItem) async {
+        guard let approval = item.approval, approvalReviews[approval.id] != .loading else { return }
+        approvalReviews[approval.id] = .loading
+        let gen = generation
+        do {
+            let client = try mainClient()
+            let full = try await client.approval(id: approval.id)
+            guard gen == generation else { return }
+            approvalReviews[approval.id] = full.map(ApprovalReview.loaded) ?? .gone
+        } catch is CancellationError {
+            if gen == generation { approvalReviews[approval.id] = nil }
+        } catch {
+            guard gen == generation else { return }
+            approvalReviews[approval.id] = .failed("Could not load the request: \(DroverError.from(error).userMessage)")
+        }
+    }
+
+    /// Answer `item`'s approval request with option `choice` (a row's button): from the reviewed whole request when
+    /// there is one, else from the row's own complete payload. The outcome lands in `approvalNotice`.
+    func answerApproval(_ item: WaitingItem, choice: Int) async {
+        guard case .answer(let approval)? = approvalMode(for: item), approvalPressing[approval.id] == nil,
+              approval.options.contains(where: { $0.n == choice }) else { return }
+        approvalPressing[approval.id] = choice
+        let result: Result<ApprovalAnswerResult, Error>
+        do {
+            result = .success(try await answerApproval(id: approval.id, choice: choice))
+        } catch is CancellationError {
+            approvalPressing[approval.id] = nil
+            return
+        } catch {
+            result = .failure(error)
+        }
+        approvalPressing[approval.id] = nil
+        let o = ApprovalFormat.outcome(result, botName: item.botName)
+        showApprovalNotice(o.text, isError: o.isError)
+    }
+
+    /// `POST /api/approvals/answer` with the main token (rows and notification actions), then a refresh: a decided or
+    /// closed request leaves the list, or the bot's next request takes its place.
+    func answerApproval(id: String, choice: Int) async throws -> ApprovalAnswerResult {
+        let client = try mainClient()
+        let gen = generation
+        do {
+            let result = try await client.answerApproval(id: id, choice: choice)
+            if gen == generation {
+                settledApprovals[id] = ApprovalFormat.settledText(result)
+                await refresh()
+            }
+            return result
+        } catch let e as DroverError {
+            if gen == generation { await refresh() }
+            throw e
+        }
+    }
+
+    private func showApprovalNotice(_ text: String, isError: Bool) {
+        let at = Date()
+        approvalNotice = ApprovalNotice(text: text, isError: isError, at: at)
+        let seconds = approvalNoticeSeconds
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(seconds))
+            guard let self, self.approvalNotice?.at == at else { return }
+            self.approvalNotice = nil
+        }
+    }
+
+    func dismissApprovalNotice() { approvalNotice = nil }
+
     private func finishAnswer(_ key: String, message: String, isError: Bool, answeredHash: String?) {
         let at = Date()
         answerStates[key] = RowAnswerState(pressing: nil, message: message, isError: isError, answeredHash: answeredHash, at: at)
@@ -427,8 +521,13 @@ final class MenuBarStore {
         if !fresh.isEmpty { onNewWaiting?(fresh) }
     }
 
-    /// Outcomes for rows that are gone, and stale ones, are dropped.
+    /// Outcomes for rows that are gone, and stale ones, are dropped; so are reviews of requests no longer listed.
     private func pruneAnswerStates(_ s: Summary) {
+        if !approvalReviews.isEmpty || !settledApprovals.isEmpty {
+            let listed = Set(s.waiting.compactMap { $0.approval?.id })
+            approvalReviews = approvalReviews.filter { listed.contains($0.key) || $0.value == .loading }
+            settledApprovals = settledApprovals.filter { listed.contains($0.key) }
+        }
         guard !answerStates.isEmpty else { return }
         let live = Set(s.waiting.map(\.answerKey))
         let now = Date()

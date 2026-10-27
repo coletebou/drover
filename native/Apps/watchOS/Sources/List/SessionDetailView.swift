@@ -11,24 +11,30 @@ struct SessionDetailView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 6) {
                 Text(item.name).font(Palette.title(.title3)).foregroundStyle(Palette.ink)
-                Text(item.kind.label)
+                Text(ListFormatting.kindLabel(item))
                     .font(.caption2)
                     .foregroundStyle(item.kind.tint)
                     .padding(.horizontal, 8).padding(.vertical, 2)
                     .background(item.kind.tint.opacity(0.18), in: Capsule())
                 Text("\(item.host ?? "local") · \(item.engine)")
                     .font(Palette.mono(.caption2)).foregroundStyle(Palette.ink3)
-                Text(item.headline).font(.body).foregroundStyle(Palette.ink)
+                if let approval = item.approval {
+                    // A Grok bot's approval request: answered with its options, not with a reply to the bot.
+                    // One view per request: the bot's next request starts afresh, and a press on the last one's buttons ends with it.
+                    ApprovalBar(item: item, approval: approval).id(approval.id).padding(.top, 4)
+                } else {
+                    Text(item.headline).font(.body).foregroundStyle(Palette.ink)
 
-                Text("Last message").font(.caption).foregroundStyle(Palette.ink3).padding(.top, 6)
-                lastMessage
+                    Text("Last message").font(.caption).foregroundStyle(Palette.ink3).padding(.top, 6)
+                    lastMessage
 
-                ReplyBar(item: item).padding(.top, 6)
+                    ReplyBar(item: item).padding(.top, 6)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .navigationTitle(item.name)
-        .task(id: item.key) { await loadReply() }
+        .task(id: item.key) { if item.approval == nil { await loadReply() } }
     }
 
     @ViewBuilder private var lastMessage: some View {
@@ -66,6 +72,11 @@ struct SessionDetailView: View {
 
 #Preview("Detail") {
     NavigationStack { SessionDetailView(item: PreviewData.summary.waiting[0]) }
+        .environment(AppModel.preview())
+}
+
+#Preview("Detail, approval") {
+    NavigationStack { SessionDetailView(item: PreviewData.approvalItem) }
         .environment(AppModel.preview())
 }
 
