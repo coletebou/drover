@@ -150,8 +150,12 @@ export async function successor(target, { sessionId = null, registry = [], answe
   const found = await chainsOf(target, { sessionId, ...(dir ? { dir } : {}) });
   if (!found.length) return { to: null, note: null, candidates: [] };
   const reg = registryIndex(registry);
-  const rows = found.map(({ chain, gen, matched }) => {
-    const from = chain.gens.find((g) => g.gen === gen);
+  const listed = new Set(answering);
+  const rows = found.map(({ chain, matched: byRecord }) => {
+    // A session listed under target that is a generation of this chain is one it names too: its name now need not be
+    // the one its record keeps.
+    const matched = chain.gens.filter((g) => byRecord.includes(g) || listed.has(g.sessionId));
+    const from = matched.at(-1), gen = from.gen;
     const later = chain.gens.filter((g) => g.gen > gen).reverse().map((g) => ({ g, state: stateOf(g, reg) }));
     const head = later.find((x) => x.state !== 'not started') ?? null;
     // What the sender is shown: the head, and every other later generation still live here or started elsewhere.

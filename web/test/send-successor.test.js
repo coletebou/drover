@@ -295,6 +295,18 @@ describe('sessions.message reaches a handoff successor', () => {
     assert.equal(in3.got.length, 1);
   });
 
+  test('a generation renamed to an earlier one\'s name, now ended, is still of its chain: the message goes on', async () => {
+    const ids = [1, 2, 3].map((n) => sid('d3d3', n));
+    await chain('oscar-chain', [{ id: ids[0], name: 'oscar' }, { id: ids[1], name: 'oscar-2' }, { id: ids[2], name: 'oscar-3' }]);
+    const in3 = await inbox('o3');
+    await register({ id: ids[1], name: 'oscar', live: false, socket: path.join(SOCKS, 'gone.sock') });
+    await register({ id: ids[2], name: 'oscar-3', socket: in3.file });
+    const r = await send('oscar');
+    assert.deepEqual([r.resolvedFrom.id, r.resolvedFrom.gen, r.resolvedTo.id], [ids[1], 2, ids[2]]);
+    await settle();
+    assert.equal(in3.got.length, 1);
+  });
+
   test('a marker that cannot be read stops the redirect: nothing is sent, and the error says why', async () => {
     const [k1, k2, k3] = [1, 2, 3].map((n) => sid('e1e1', n));
     await chain('kilo-chain', [{ id: k1, name: 'kilo' }, { id: k2, name: 'kilo-2' }, { id: k3, name: 'kilo-3' }]);
