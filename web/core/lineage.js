@@ -135,9 +135,9 @@ const candidateOf = (chain, g, state) => ({ chain: chain.name, gen: g.gen, id: g
  * Where the work of a session that is not live went. The successor is the newest generation after it that got
  * started (one whose launch never got that far is passed over), and it is delivered to only when it is live here,
  * target names a generation of exactly one chain, that generation does not itself run here (a renamed session still
- * answers to its old name in the chain record), and no other session answers to target: answering lists the ids of
- * the sessions the caller found under it (a name or an id prefix), each of which must be that generation. A live
- * generation in between handed off to the successor, so it is not a candidate.
+ * answers to its old name in the chain record), and no other session answers to target: answering lists the sessions
+ * the caller found under it ({ id, name }, by name or id prefix), each of which must be a generation of that chain. A
+ * live generation in between handed off to the successor, so it is not a candidate.
  *
  *   { to: { session, gen, id, name }, chain, from, why }   deliver to `to.session` (a registry entry); why reads
  *                                                          "generation 2 of handoff chain c, whose ..."
@@ -147,10 +147,16 @@ const candidateOf = (chain, g, state) => ({ chain: chain.name, gen: g.gen, id: g
  * Throws when a marker or a chain cannot be read (see readJson).
  */
 export async function successor(target, { sessionId = null, registry = [], answering = [], dir } = {}) {
-  const found = await chainsOf(target, { sessionId, ...(dir ? { dir } : {}) });
+  const at = dir ? { dir } : {};
+  const found = await chainsOf(target, { sessionId, ...at });
+  const listed = new Set(answering.map((a) => a.id));
+  // A session listed under target as its name, a name no record of its chain keeps (it was renamed): its own marker
+  // finds that chain. One listed by an id prefix only is not followed this way: a short prefix could be anyone's.
+  for (const { id, name } of answering) {
+    if (name === target && !found.some((f) => f.chain.gens.some((g) => g.sessionId === id))) found.push(...await chainsOf(id, { sessionId: id, ...at }));
+  }
   if (!found.length) return { to: null, note: null, candidates: [] };
   const reg = registryIndex(registry);
-  const listed = new Set(answering);
   const rows = found.map(({ chain, matched: byRecord }) => {
     // A session listed under target that is a generation of this chain is one it names too: its name now need not be
     // the one its record keeps.
@@ -163,7 +169,7 @@ export async function successor(target, { sessionId = null, registry = [], answe
     return { chain, from, matched, later, head, shown };
   });
   const inChains = new Set(rows.flatMap((r) => r.matched.map((g) => g.sessionId)));
-  const outside = [...new Set(answering)].filter((x) => !inChains.has(x));
+  const outside = [...listed].filter((x) => !inChains.has(x));
   // A generation the target names may still run under another name (a session can be renamed): it is live, so its
   // message is not sent on.
   const stillRuns = rows.flatMap((r) => r.matched.map((g) => ({ chain: r.chain, g, state: stateOf(g, reg) })))

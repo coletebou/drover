@@ -155,7 +155,7 @@ async function handoffSuccessor(id, s) {
   const exact = s?.sessionId === id;
   let r;
   try {
-    const answering = s && !exact ? (await claude.listSessions()).filter((x) => x.sessionId === id || x.name === id || x.sessionId.startsWith(id)).map((x) => x.sessionId) : [];
+    const answering = s && !exact ? (await claude.listSessions()).filter((x) => x.sessionId === id || x.name === id || x.sessionId.startsWith(id)).map((x) => ({ id: x.sessionId, name: x.name ?? null })) : [];
     r = await lineage.successor(id, { sessionId: exact ? id : null, answering, registry: await claude.listRegistry() });
   } catch (e) { return { to: null, note: `the handoff chains could not be read, so nothing was redirected (${e.message})`, candidates: [], state }; }
   if (!r.to && !r.note) return null;

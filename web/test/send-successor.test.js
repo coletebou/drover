@@ -307,6 +307,21 @@ describe('sessions.message reaches a handoff successor', () => {
     assert.equal(in3.got.length, 1);
   });
 
+  test('a generation renamed to a name no record keeps, now ended, is found through its own marker', async () => {
+    const ids = [1, 2, 3].map((n) => sid('e4e4', n));
+    await chain('papa-chain', [{ id: ids[0], name: 'papa' }, { id: ids[1], name: 'papa-2' }, { id: ids[2], name: 'papa-3' }]);
+    const in3 = await inbox('p3');
+    await register({ id: ids[1], name: 'builder', live: false, socket: path.join(SOCKS, 'gone.sock') });
+    await register({ id: ids[2], name: 'papa-3', socket: in3.file });
+    const r = await send('builder');
+    assert.deepEqual([r.resolvedFrom.given, r.resolvedFrom.id, r.resolvedTo.id], ['builder', ids[1], ids[2]]);
+    // Another ended session listed under that name, in no chain: the name means two sessions, so it stops.
+    await register({ id: sid('e4e4', 9), name: 'builder', live: false, socket: path.join(SOCKS, 'gone.sock') });
+    assert.match((await send('builder').then(() => null, (x) => x)).message, /builder also names a session in no handoff chain/);
+    await settle();
+    assert.equal(in3.got.length, 1);
+  });
+
   test('a marker that cannot be read stops the redirect: nothing is sent, and the error says why', async () => {
     const [k1, k2, k3] = [1, 2, 3].map((n) => sid('e1e1', n));
     await chain('kilo-chain', [{ id: k1, name: 'kilo' }, { id: k2, name: 'kilo-2' }, { id: k3, name: 'kilo-3' }]);
