@@ -29,6 +29,16 @@ struct WaitingRow: View {
     }
 
     var body: some View {
+        if let approval = item.approval {
+            // One view per request: the bot's next request starts afresh, and a press on the last one's buttons ends with it.
+            ApprovalRow(item: item, approval: approval, store: store, actions: actions).id(approval.id)
+        } else {
+            sessionRow
+        }
+    }
+
+    @ViewBuilder
+    private var sessionRow: some View {
         let plan = store.answerPlan(for: item)
         let state = store.answerState(for: item)
         let awaiting = store.isAwaitingScreen(item)

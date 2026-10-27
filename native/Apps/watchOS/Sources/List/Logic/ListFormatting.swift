@@ -37,6 +37,13 @@ enum ListFormatting {
         }
     }
 
+    /// The badge of a waiting item: "Approval" for a Grok bot's approval request, else its kind ("Decision").
+    static func kindLabel(_ item: WaitingItem) -> String {
+        if item.approval != nil { return "Approval" }
+        let w = kindWord(item.kind)
+        return w.prefix(1).uppercased() + w.dropFirst()
+    }
+
     static func spokenAge(_ since: Date, now: Date) -> String {
         let s = Int(now.timeIntervalSince(since).rounded(.down))
         if s < 60 { return "just now" }
@@ -47,7 +54,7 @@ enum ListFormatting {
     }
 
     static func accessibilityLabel(_ item: WaitingItem, now: Date) -> String {
-        var parts = [item.name, kindWord(item.kind)]
+        var parts = [item.name, item.approval != nil ? "approval" : kindWord(item.kind)]
         if let since = item.since { parts.append("waiting \(spokenAge(since.date, now: now))") }
         parts.append(item.headline)
         return parts.joined(separator: ", ")

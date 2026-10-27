@@ -205,6 +205,52 @@ final class LiveDroverService: DroverService, @unchecked Sendable {
         return Self.answerResult(try await call("tmux.answer", legacy))
     }
 
+    // MARK: approvals
+
+    /// `via` of every approval this app answers (its board, its chat card, its notification actions).
+    static let approvalVia = "mac"
+
+    /// `POST /api/approvals/answer {id, choice, via}`: a route of its own with the main token, not an op, so neither
+    /// `/api/op/...` nor ssh rpc can answer for the owner.
+    @concurrent
+    func answerApproval(id: String, choice: Int) async throws -> ApprovalAnswerResult {
+        #if DROVER_DEV
+        if !DevConfig.allowsWrites(to: baseURL) {
+            throw DroverError.server("The dev build does not answer approval requests on this daemon. Point it at the test daemon, or set DROVER_DEV_ALLOW_WRITES=1.")
+        }
+        #endif
+        let body = JSONValue.object(["id": .string(id), "choice": .number(Double(choice)), "via": .string(Self.approvalVia)])
+        let req = try request(path: "api/approvals/answer", method: "POST", body: try JSONEncoder().encode(body))
+        let (data, resp) = try await session.data(for: req)
+        return try Self.approvalResult(data: data, status: (resp as? HTTPURLResponse)?.statusCode ?? 0)
+    }
+
+    /// `GET /api/approvals?id=<id>`: the whole request as its owner sees it, or nil when this daemon keeps none.
+    @concurrent
+    func approval(id: String) async throws -> ApprovalInfo? {
+        let req = try request(path: "api/approvals", method: "GET", query: [URLQueryItem(name: "id", value: id)])
+        let (data, resp) = try await session.data(for: req)
+        let r = try Self.unwrap(data: data, response: resp)
+        return r["items"]?.array.compactMap(BoardDecoder.approvalInfo).first { $0.id == id }
+    }
+
+    /// 200 decided; 409 closed with the daemon's words (answered already, withdrawn, expired); 401 rejected token;
+    /// 403 the read-only widget token; 400 and 404 the daemon's error.
+    static func approvalResult(data: Data, status: Int) throws -> ApprovalAnswerResult {
+        let json = try? JSONValue.parse(data)
+        if status == 401 { throw DroverError.unauthorized }
+        if status == 409 { return .closed(message: json?["error"]?.text ?? "This request is no longer waiting for an answer.") }
+        if status == 403 { throw DroverError.server("This token is read-only. Use the main token in Settings") }
+        guard let json, (200..<300).contains(status), json["ok"]?.bool != false else {
+            if let msg = json?["error"]?.text { throw DroverError.server(msg) }
+            throw DroverError.http(status, nil)
+        }
+        let r = json["result"] ?? .null
+        let delivery = r["delivery"]
+        return .decided(label: r["decision"]?["label"]?.string ?? "", delivered: delivery?["ok"]?.bool != false,
+                        queued: delivery?["queued"]?.bool == true, error: delivery?["error"]?.text)
+    }
+
     static func answerResult(_ r: JSONValue) -> AnswerResult {
         let refused = r["refused"]?.bool ?? (r["ok"]?.bool == false)
         return AnswerResult(ok: !refused && r["ok"]?.bool != false, refused: refused, reason: r["reason"]?.text,

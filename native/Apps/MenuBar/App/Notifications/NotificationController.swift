@@ -61,9 +61,10 @@ final class NotificationController: NSObject, UNUserNotificationCenterDelegate {
         UNUserNotificationCenter.current().setNotificationCategories(Set(fixed + dialogCategories.values))
     }
 
-    /// A dialog alert's buttons: its keys, then Reply (when there is a session) and Open.
+    /// A dialog alert's buttons: its keys, then Reply (when there is a session) and Open. An approval request's: one
+    /// per option (answering needs the Mac unlocked; a clearly negative option is destructive), then Open, never Reply.
     private func ensureCategory(for note: PlannedNotification) {
-        guard !note.actions.isEmpty else { return }
+        guard !note.actions.isEmpty || !note.approvalActions.isEmpty else { return }
         let id = note.categoryID
         if dialogCategories[id] != nil {
             dialogOrder.removeAll { $0 == id }
@@ -72,6 +73,10 @@ final class NotificationController: NSObject, UNUserNotificationCenterDelegate {
         }
         var actions: [UNNotificationAction] = note.actions.map {
             UNNotificationAction(identifier: $0.identifier, title: $0.title, options: [])
+        }
+        actions += note.approvalActions.map {
+            UNNotificationAction(identifier: $0.identifier, title: $0.title,
+                                 options: $0.destructive ? [.authenticationRequired, .destructive] : [.authenticationRequired])
         }
         if note.canReply { actions.append(Self.replyAction) }
         actions.append(Self.openAction)
@@ -93,6 +98,7 @@ final class NotificationController: NSObject, UNUserNotificationCenterDelegate {
             ensureCategory(for: note)
             let content = UNMutableNotificationContent()
             content.title = note.title
+            if let subtitle = note.subtitle { content.subtitle = subtitle }
             content.body = note.body
             content.threadIdentifier = note.threadID
             content.categoryIdentifier = note.categoryID
@@ -101,7 +107,7 @@ final class NotificationController: NSObject, UNUserNotificationCenterDelegate {
             // a server the app no longer talks to are refused instead of going to the new one.
             content.userInfo = userInfo(for: note)
             if note.playSound { content.sound = .default }
-            content.interruptionLevel = note.canReply || !note.actions.isEmpty ? .timeSensitive : .active
+            content.interruptionLevel = note.canReply || !note.actions.isEmpty || !note.approvalActions.isEmpty ? .timeSensitive : .active
             center.add(UNNotificationRequest(identifier: note.identifier, content: content, trigger: nil))
         }
     }
@@ -136,6 +142,8 @@ final class NotificationController: NSObject, UNUserNotificationCenterDelegate {
         var server: String?
         var answerID: String?
         var expect: String?
+        var approvalID: String? = nil
+        var approvalBot: String? = nil
         var text: String?
     }
 
@@ -143,7 +151,8 @@ final class NotificationController: NSObject, UNUserNotificationCenterDelegate {
     @discardableResult
     func respond(action: String, info: [String: String], text: String? = nil) async -> AnswerOutcome? {
         await handle(Response(action: action, sessionId: info["sessionId"], host: info["host"], server: info["server"],
-                              answerID: info["answerId"], expect: info["expect"], text: text))
+                              answerID: info["answerId"], expect: info["expect"], approvalID: info["approvalId"],
+                              approvalBot: info["approvalBot"], text: text))
     }
 
     /// The userInfo a planned alert is posted with.
@@ -153,6 +162,8 @@ final class NotificationController: NSObject, UNUserNotificationCenterDelegate {
         if let host = note.host { info["host"] = host }
         if let answerID = note.answerID { info["answerId"] = answerID }
         if let expect = note.expect { info["expect"] = expect }
+        if let approvalID = note.approvalID { info["approvalId"] = approvalID }
+        if let bot = note.approvalBot { info["approvalBot"] = bot }
         if let server = preferences().baseURL?.absoluteString { info["server"] = server }
         return info
     }
@@ -161,11 +172,25 @@ final class NotificationController: NSObject, UNUserNotificationCenterDelegate {
     @discardableResult
     private func handle(_ r: Response) async -> AnswerOutcome? {
         let key = PlannedAction.key(fromIdentifier: r.action)
+        let choice = PlannedApprovalAction.choice(fromIdentifier: r.action)
         guard r.server == preferences().baseURL?.absoluteString else {
-            if r.action == "drover.reply" || key != nil {
+            if r.action == "drover.reply" || key != nil || choice != nil {
                 postFailure("Not sent", "This alert came from a server this app no longer uses.")
             }
             return key == nil ? nil : .refused(reason: "this alert came from a server this app no longer uses")
+        }
+        if let choice {
+            // A Grok bot's approval request, answered by its id; a refusal or an undelivered answer says so.
+            guard let approvalID = r.approvalID, !approvalID.isEmpty else { return nil }
+            let result: Result<ApprovalAnswerResult, Error>
+            do { result = .success(try await store.answerApproval(id: approvalID, choice: choice)) }
+            catch { result = .failure(error) }
+            let o = ApprovalFormat.outcome(result, botName: r.approvalBot)
+            if o.isError {
+                let decided = if case .success(.decided) = result { true } else { false }
+                postFailure(decided ? "Answered, not delivered" : "Not answered", o.text, sessionId: r.sessionId, host: r.host)
+            }
+            return nil
         }
         if let key {
             // Only with the hash of the screen the alert showed: a changed dialog refuses the press.
@@ -218,6 +243,8 @@ final class NotificationController: NSObject, UNUserNotificationCenterDelegate {
             server: info["server"] as? String,
             answerID: info["answerId"] as? String,
             expect: info["expect"] as? String,
+            approvalID: info["approvalId"] as? String,
+            approvalBot: info["approvalBot"] as? String,
             text: (response as? UNTextInputNotificationResponse)?.userText)
         await handle(r)
     }

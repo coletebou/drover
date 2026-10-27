@@ -23,6 +23,7 @@ struct SessionDetailView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+            approval
             if tmux != nil {
                 Picker("View", selection: $mode) {
                     ForEach(Mode.allCases) { Text($0.rawValue).tag($0) }
@@ -101,6 +102,24 @@ struct SessionDetailView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal).padding(.vertical, 8)
         .accessibilityElement(children: .contain)
+    }
+
+    /// A Grok bot's pending approval request, answered here as on the board; the last answer's outcome stays after.
+    @ViewBuilder
+    private var approval: some View {
+        if let item = model.approvalItem(for: ref), let request = item.approval {
+            // One view per request: the bot's next request starts afresh, and a press on the last one's buttons ends with it.
+            ApprovalCard(approval: request, botName: item.botName, host: item.host, more: item.moreApprovals ?? 0,
+                         reviewsOnOpen: true)
+                .id(request.id)
+                .padding(12)
+                .background(Theme.surface, in: RoundedRectangle(cornerRadius: 12))
+                .padding(.horizontal).padding(.bottom, 8)
+        }
+        if ref.id.hasPrefix("grok:"), let notice = model.approvalNotice {
+            ApprovalNoticeView(notice: notice) { model.dismissApprovalNotice() }
+                .padding(.horizontal).padding(.bottom, 8)
+        }
     }
 
     private func refresh() async {

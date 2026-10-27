@@ -47,6 +47,7 @@ export class Drawer {
     this.chat = null; this.following = null; this.pushed = false; this.lastTurnAt = 0; this.lastReadAt = 0; this.screenRead = null; this.pressedAt = 0; this.pressedHash = null;
     this.card = answerCard({
       call: (op, args, opts) => this.ctx.callQuiet(op, args, opts), toast: (m, k, ms) => this.ctx.toast(m, k, ms),
+      approve: (id, n, opts) => this.ctx.answerApproval(id, n, opts),
       // After a press the card follows the screen: nothing until the pane shows what comes next.
       onDone: (_r, m) => { this.pressedAt = Date.now(); this.pressedHash = m?.hash ?? null; this.screenRead = null; this.#readDialogSoon(250); if (this.tab === 'screen') setTimeout(() => this.#poll(), 400); },
       onRefresh: () => this.#readDialogSoon(0),

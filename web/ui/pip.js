@@ -1,15 +1,15 @@
 // "Waiting on you": a small always-on-top board of every session that needs
 // the owner, with the question, one button per key the dialog takes (sent only to the
 // dialog that was read: sessions.answer with its screen hash, tmux.answer on an
-// older daemon), a reply box for agents that asked, and Open (back to the main
-// window, drawer open).
+// older daemon), one button per option of a Grok bot's approval request, a reply box
+// for agents that asked, and Open (back to the main window, drawer open).
 //
 // Opens in a Document Picture-in-Picture window when Chrome has the API (it
 // floats above every app), else in a small popup on #/pip. Either way it is
 // rendered by this module from the same strips the board uses.
 import { h, clear, engine, ago, btn, empty } from './dom.js';
 import { waitingStrips, finishedStrips } from './strips.js';
-import { answerModel, pressKey, pressedLabel, announceAnswered } from './answer-model.js';
+import { answerModel, pressKey, pressedLabel, announceAnswered, pressApproval, oneTap } from './answer-model.js';
 
 /** Render the waiting list into `root`; returns { update(), destroy() }. */
 export function mountWaiting(root, ctx, { compact = true, onOpen } = {}) {
@@ -21,7 +21,7 @@ export function mountWaiting(root, ctx, { compact = true, onOpen } = {}) {
   // A press that went through: no buttons for that dialog until the strip shows the screen moved on (as on the board).
   const sent = new Map();   // strip key -> { hash, at }
   const dialogWords = (s) => JSON.stringify([s.dialog?.question ?? s.ask?.text ?? null, (s.dialog?.options ?? []).map((o) => o.label)]);
-  const sentFor = (s) => { const x = sent.get(s.key); return Boolean(x && Date.now() - x.at < 6000 && ((x.hash && x.hash === s.hash) || x.words === dialogWords(s))); };
+  const sentFor = (s) => { const x = sent.get(s.key); return Boolean(x && Date.now() - x.at < 6000 && (x.approval ? x.approval === s.approval?.id : (x.hash && x.hash === s.hash) || x.words === dialogWords(s))); };
 
   async function answer(s, m, key) {
     busy.add(s.key); paint();
@@ -30,6 +30,17 @@ export function mountWaiting(root, ctx, { compact = true, onOpen } = {}) {
       if (r.refused) ctx.toast(`${s.name}: not sent, ${r.reason}`, 'error', 7000);
       else { ctx.toast(`${s.name}: ${pressedLabel(m, key)}`, 'ok'); sent.set(s.key, { hash: m.hash, words: dialogWords(s), at: Date.now() }); setTimeout(paint, 6100); announceAnswered(m, key); }
     } catch (e) { ctx.toast(`${s.name}: ${e.message}`, 'error'); }
+    busy.delete(s.key); paint();
+  }
+  /** A bot's approval request: option n, answered by the request's id on the host that keeps the bot. */
+  async function decide(s, m, n) {
+    busy.add(s.key); paint();
+    try {
+      const r = await pressApproval(ctx.answerApproval, m, n);
+      ctx.toast(`${s.name}: ${r?.decision?.label ?? 'answered'}${r?.delivery?.ok === false ? ` (not delivered: ${r.delivery.error ?? 'failed'})` : ''}`, r?.delivery?.ok === false ? 'error' : 'ok', 6000);
+      sent.set(s.key, { approval: m.id, at: Date.now() }); setTimeout(paint, 6100);
+      globalThis.document?.dispatchEvent(new CustomEvent('drover:answered', { detail: { host: m.host, approval: m.id } }));
+    } catch (e) { ctx.toast(`${s.name}: not answered, ${e.message}`, 'error', 7000); }
     busy.delete(s.key); paint();
   }
   async function reply(s, text) {
@@ -47,9 +58,14 @@ export function mountWaiting(root, ctx, { compact = true, onOpen } = {}) {
       h('div', { class: 'title' }, engine(s.engine), h('span', { class: 'name' }, s.name), h('span', { class: 'spacer' }), s.since ? h('span', { class: 'age' }, ago(s.since)) : null),
       h('div', { class: 'where' }, [s.host !== 'local' ? s.host : null, s.tmux].filter(Boolean).join('  ')),
       s.ask ? h('div', { class: 'ask-label' }, s.ask.label) : null,
-      h('div', { class: 'tail' }, s.ask?.text || s.question || (s.tail ?? []).join('\n')));
+      h('div', { class: s.answer === 'approval' ? 'tail whole' : 'tail' }, s.ask?.text || s.question || (s.tail ?? []).join('\n')));
     const acts = h('div', { class: 'pip-acts' });
-    if (isDialog && sentFor(s)) acts.append(h('span', { class: 'muted small' }, 'Sent; waiting for the screen to move on'));
+    if (m?.mode === 'approval') {
+      // Never the reply box: a message would reach the bot, but answer nothing.
+      if (sentFor(s)) acts.append(h('span', { class: 'muted small' }, 'Answered; telling the bot'));
+      else if (!oneTap(m)) acts.append(h('span', { class: 'muted small' }, 'Has details: Open to read them and answer'));
+      else for (const b of m.buttons) acts.append(btn(b.label, () => decide(s, m, b.n), { cls: 'sm', disabled: busy.has(s.key), title: `Answer ${b.label}` }));
+    } else if (isDialog && sentFor(s)) acts.append(h('span', { class: 'muted small' }, 'Sent; waiting for the screen to move on'));
     else if (isDialog) {
       // One button per key this dialog takes (its options, Enter, Esc), sent only to the dialog shown here.
       for (const b of m.buttons) acts.append(btn(b.label, () => answer(s, m, b.key), { cls: `sm${b.selected ? ' selected' : ''}${b.kind === 'confirm' ? ' primary' : ''}`, disabled: busy.has(s.key), title: b.kind === 'option' ? `Pick option ${b.n}` : `Press ${b.key === 'Escape' ? 'Esc' : b.key}${b.hint ? ` (${b.hint})` : ''}, only if it is still the dialog shown here` }));

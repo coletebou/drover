@@ -5,6 +5,20 @@ enum PreviewData {
     /// Launch time: fixture times are relative to it, so ages read like a live fleet ("4m").
     static let now = Date()
 
+    /// A Grok bot's approval request on the daemon's own machine, answered by its id.
+    static let approvalItem = WaitingItem(
+        id: "grok:demo-alpha", name: "Demo-alpha", host: "local", engine: "grok",
+        since: FlexibleDate(now.addingTimeInterval(-120)), kind: .decision,
+        headline: "Buy the demo plan, 1 month, $9.99 on the demo store?", answer: "approval",
+        approval: ApprovalRequest(
+            id: "ap_00000000demo", bot: "grok:demo-alpha", kind: "purchase",
+            question: "Buy the demo plan, 1 month, $9.99 on the demo store?",
+            options: [.init(n: 1, label: "Buy it"), .init(n: 2, label: "Not now")],
+            details: "You asked for it this morning. Paid with the card on file.",
+            createdAt: FlexibleDate(now.addingTimeInterval(-120)), expiresAt: FlexibleDate(now.addingTimeInterval(5 * 3600)),
+            complete: false),
+        moreApprovals: 1)
+
     static let summary = NativeSummary(
         generatedAt: FlexibleDate(now),
         hosts: [
@@ -21,12 +35,13 @@ enum PreviewData {
             WaitingItem(id: "s-demo-docs", name: "demo-docs", host: "demo-box", engine: "claude",
                         since: FlexibleDate(now.addingTimeInterval(-3600)), kind: .finished,
                         headline: "Finished: README updated and tests pass."),
+            approvalItem,
         ],
         working: [
             WorkingItem(id: "s-demo-lint", name: "demo-lint", host: "demo-mac", engine: "claude", headline: "Fixing lint warnings"),
             WorkingItem(id: "s-demo-sync", name: "demo-sync", host: "demo-box", engine: "codex", headline: "Syncing fixtures"),
         ],
-        totals: Totals(waiting: 3, working: 2, idle: 3, hosts: 2),
+        totals: Totals(waiting: 4, working: 2, idle: 3, hosts: 2),
         manager: ManagerStatus(up: true, lastNoteAt: FlexibleDate(now.addingTimeInterval(-600)))
     )
 

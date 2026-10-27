@@ -7,14 +7,26 @@ struct MockDroverAPI: DroverAPI {
     /// Launch time: fixture times are relative to it, so ages read like a live fleet ("4 min. ago").
     static let now = Date()
 
+    /// A Grok bot's approval request, answered by its id (CONTRACT.md "Grok bot approvals").
+    static let approvalFixture = ApprovalRequest(
+        id: "ap_00000000demo", bot: "grok:demo-alpha", kind: "purchase",
+        question: "Buy the demo plan, 1 month, $9.99 on the demo store?",
+        options: [.init(n: 1, label: "Buy it"), .init(n: 2, label: "Not now")],
+        details: "You asked for it this morning.\nPaid with the card on file; renews monthly unless cancelled.",
+        createdAt: LooseDate(now.addingTimeInterval(-120)), expiresAt: LooseDate(now.addingTimeInterval(5 * 3600)),
+        complete: false)
+
     static let summaryFixture = NativeSummary(
         generatedAt: LooseDate(now),
         hosts: [
-            .init(name: "local", up: true, waiting: 1, working: 1, idle: 2),
+            .init(name: "local", up: true, waiting: 2, working: 1, idle: 2),
             .init(name: "demo-box", up: true, waiting: 1, working: 0, idle: 1),
             .init(name: "demo-spare", up: false, waiting: 0, working: 0, idle: 0),
         ],
         waiting: [
+            .init(id: "grok:demo-alpha", name: "Demo-alpha", host: "local", engine: .grok,
+                  since: LooseDate(now.addingTimeInterval(-120)), kind: "decision",
+                  headline: approvalFixture.question, answer: "approval", approval: approvalFixture, moreApprovals: 1),
             .init(id: "11111111-aaaa-4bbb-8ccc-000000000001", name: "demo-build", host: "local", engine: .claude,
                   since: LooseDate(now.addingTimeInterval(-240)), kind: "decision",
                   headline: "Allow running the test suite with network access?"),
@@ -26,7 +38,7 @@ struct MockDroverAPI: DroverAPI {
             .init(id: "11111111-aaaa-4bbb-8ccc-000000000002", name: "demo-docs", host: "local", engine: .claude,
                   headline: "Rewriting the setup guide"),
         ],
-        totals: .init(waiting: 2, working: 1, idle: 3, hosts: 3),
+        totals: .init(waiting: 3, working: 1, idle: 3, hosts: 3),
         manager: .init(up: true, lastNoteAt: LooseDate(now.addingTimeInterval(-1800)))
     )
 
@@ -40,6 +52,7 @@ struct MockDroverAPI: DroverAPI {
         .init(id: "thread-demo-review", engine: .codex, name: "demo-review", status: "idle",
               cwd: "~/code/demo", live: true, host: "demo-box"),
         .init(id: "manager", engine: .openclaw, name: "manager", status: "ready", live: true, host: "demo-box"),
+        .init(id: "grok:demo-alpha", engine: .grok, name: "Demo-alpha", status: "waiting", live: true, host: "local"),
     ]
 
     static let transcriptFixture: [Turn] = [
@@ -140,6 +153,27 @@ struct MockDroverAPI: DroverAPI {
     }
 
     func managerSweep(host: String?) async throws -> JSONValue { .object(["ok": .bool(true)]) }
+
+    /// The fixture's request is decided with the option pressed; any other id was answered elsewhere (409).
+    func answerApproval(id: String, choice: Int, via: String) async throws -> ApprovalAnswerResult {
+        try await Task.sleep(for: delay)
+        guard id == Self.approvalFixture.id, let option = Self.approvalFixture.options.first(where: { $0.n == choice }) else {
+            return .closed(message: "approval \(id) was answered already: Not now (web)")
+        }
+        return .decided(label: option.label, delivery: ApprovalDelivery(ok: true))
+    }
+
+    /// The fixture's request in full, as `GET /api/approvals?id=` gives it; other ids are not here.
+    func approval(id: String) async throws -> ApprovalRequest? {
+        try await Task.sleep(for: delay)
+        guard id == Self.approvalFixture.id else { return nil }
+        var full = Self.approvalFixture
+        full.details = (full.details ?? "") + " The plan includes the demo add-ons; it can be cancelled from the demo account page."
+        full.complete = true
+        full.status = "pending"
+        full.botName = "Demo-alpha"
+        return full
+    }
 
     func events() -> AsyncThrowingStream<ServerEvent, Error> {
         AsyncThrowingStream { c in

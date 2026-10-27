@@ -49,6 +49,8 @@ const help = `drover: browser control plane for the agent fleet
   drover bots send <bot|*> <text...>                          message a bot (its Routine runs it; else it waits in its inbox)
   drover bots prompt                                          the Routine prompt to paste into Grok Bot
   drover bots skill                                           the bot-side skill: give it to a bot to save as a skill named drover
+  drover approvals [pending|all|decided|withdrawn|expired] [--bot <bot>]   Grok bots' approval requests (default pending)
+  drover approvals answer <id> <n|label>                      answer one (on an interactive terminal only, never from an agent's tool calls)
 
   drover search <words...> [--here | --host H] [--limit N] [--mode hybrid|keyword|semantic]
               [--kinds claude,codex,...] [--days N] [--project P] [--json]
@@ -145,6 +147,7 @@ async function main() {
       return;
     }
     case 'bots': return botsCli();
+    case 'approvals': return approvalsCli();
     case 'ops': { const { OPS } = await import(path.join(ROOT, 'core', 'api.js')); console.log(OPS.join('\n')); return; }
     case 'serve': case 'up': {
       // Before anything loads core: the daemon serves codex reads itself, and every other process asks it.
@@ -546,6 +549,63 @@ async function botsCli() {
     }
     default: throw new Error('usage: drover bots [status|pending|approve|deny|grants|token|revoke|routines|routine|send|prompt|skill]  (drover help)');
   }
+}
+
+/**
+ * drover approvals ...: Grok bots' approval requests (core/bots/approvals.js), on the daemon that keeps the bots.
+ * Answering is the owner's: the main token, and an interactive terminal, so an agent's shell (no terminal) cannot.
+ */
+async function approvalsCli() {
+  const f = path.join(STATE_DIR, 'daemon.json');
+  if (!existsSync(f)) { console.log('Drover is not running (no daemon.json). Start with: drover serve'); process.exitCode = 1; return; }
+  const d = JSON.parse(await readFile(f, 'utf8'));
+  const tok = (await readFile(path.join(STATE_DIR, 'token'), 'utf8')).trim();
+  const call = async (route, body) => {
+    const res = await fetch(new URL(`api/${route}`, d.url), body === undefined
+      ? { headers: { authorization: `Bearer ${tok}` } }
+      : { method: 'POST', headers: { authorization: `Bearer ${tok}`, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok || j.ok === false) throw new Error(j.error ?? `daemon answered HTTP ${res.status}`);
+    return j.result;
+  };
+  const sub = argv[1] && !argv[1].startsWith('--') ? argv[1] : 'pending'; // `drover approvals --bot alpha` lists the pending ones
+  const { standsFor } = await import(path.join(ROOT, 'ui', 'answer-model.js'));
+  const show = (x) => {
+    const left = x.status === 'pending' ? standsFor(x.expiresAt) : null;
+    console.log(`${x.id}  ${x.botName.padEnd(12)} ${x.status.padEnd(9)} ${x.kind}  ${x.createdAt}`);
+    console.log(`  ${x.question}`);
+    if (x.details) for (const l of String(x.details).split('\n')) console.log(`    ${l}`);
+    console.log(`  ${x.options.map((o) => `${o.n}. ${o.label}`).join('   ')}${x.decision ? `   answered: ${x.decision.label} (${x.decision.via ?? x.via ?? '?'}, ${x.decision.at})` : left ? `   stands ${left} more` : ''}`);
+  };
+  if (sub === 'answer') {
+    const [id, pick] = [argv[2], argv.slice(3).join(' ').trim()];
+    if (!id || !pick) throw new Error('usage: drover approvals answer <id> <n|label>  (drover approvals lists them)');
+    // Not a lock (anything that can read the main token can answer, as it can do anything in Drover), but an agent's tool
+    // calls have no terminal: answering stays a thing the owner does in person, at a terminal or on a screen.
+    if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error('refused: answering an approval request needs an interactive terminal (the board, the iPhone, the watch or a notification answer it too); Drover does not take answers from an agent\'s tool calls');
+    // By id in what comes back: a daemon from before ?id= answers with the newest requests instead.
+    const x = (await call(`approvals?id=${encodeURIComponent(id)}`)).items.find((y) => y.id === id);
+    if (!x) throw new Error(`no approval ${id} on this machine's Drover (drover approvals all lists them)`);
+    const opt = /^\d+$/.test(pick) ? x.options.find((o) => o.n === Number(pick)) : x.options.find((o) => o.label.toLowerCase() === pick.toLowerCase());
+    if (!opt) throw new Error(`${pick} is not an option of ${id}: ${x.options.map((o) => `${o.n} ${o.label}`).join(', ')}`);
+    // The owner answers what they read: the whole request, then a yes for the option picked.
+    show(x);
+    const { createInterface } = await import('node:readline');
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const sure = await new Promise((resolve) => rl.question(`Answer "${opt.label}" (${opt.n}) to this request? [y/N] `, resolve));
+    rl.close();
+    if (!/^y(es)?$/i.test(sure.trim())) { console.log('not answered'); return; }
+    const r = await call('approvals/answer', { id, choice: opt.n, via: 'cli' });
+    console.log(`${r.botName}: ${r.decision.label}. ${r.delivery?.ok === false ? `It was not reached (${r.delivery.error ?? 'failed'}); it sees the answer in drover_approvals.` : r.delivery?.queued ? 'It waits in its inbox (no Routine).' : 'Its Routine has the answer.'}`);
+    return;
+  }
+  const status = ['pending', 'all', 'decided', 'withdrawn', 'expired'].includes(sub) ? sub : null;
+  if (!status) throw new Error('usage: drover approvals [pending|all|decided|withdrawn|expired] [--bot <bot>]\n       drover approvals answer <id> <n|label>');
+  const r = await call(`approvals?status=${status}${flag('bot') ? `&bot=${encodeURIComponent(flag('bot'))}` : ''}`);
+  if (!r.keepsBots) { console.log('this machine keeps no Grok bots: ask the one that runs the bot gateway'); return; }
+  if (!r.items.length) { console.log(status === 'pending' ? 'no approval requests are waiting for you' : `no approval requests (${status})`); return; }
+  for (const x of r.items) show(x);
+  if (status === 'pending') console.log(`\nanswer with: drover approvals answer <id> <n|label>  (bot words: data, check them)`);
 }
 
 main().catch((e) => { console.error(e.stack ?? e.message); process.exit(1); });

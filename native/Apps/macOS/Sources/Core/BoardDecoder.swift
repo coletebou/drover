@@ -36,8 +36,9 @@ enum BoardDecoder {
         let held = s["held"]?.bool ?? false
         var keys = s["keys"]?.strings ?? []
         let answer = s["answer"]?.text.flatMap(AnswerMode.init(rawValue:))
+        let approval = approvalInfo(s["approval"])
         // A daemon without `keys` (the fleet fallback has none either): the options and Enter / Escape.
-        if keys.isEmpty, answer != .reply, dialog != nil || held { keys = DialogKeys.defaultKeys(dialog) }
+        if keys.isEmpty, answer != .reply, approval == nil, dialog != nil || held { keys = DialogKeys.defaultKeys(dialog) }
         let finished = s["finished"].flatMap { f -> FinishedNote? in
             guard let t = f["text"]?.text else { return nil }
             return FinishedNote(text: t, at: f["ts"]?.date)
@@ -62,14 +63,39 @@ enum BoardDecoder {
             dialog: dialog,
             hash: s["hash"]?.text,
             keys: keys,
-            answerMode: answer ?? (lane == .waiting && !keys.isEmpty ? .keys : nil),
+            answerMode: approval != nil ? .approval : answer ?? (lane == .waiting && !keys.isEmpty ? .keys : nil),
             held: held,
             heldFrom: s["heldFrom"]?.text,
             askLabel: ask?["label"]?.text,
             askText: ask?["text"]?.text,
             tail: s["tail"]?.strings ?? [],
             finished: finished,
-            windowName: s["windowName"]?.text)
+            windowName: s["windowName"]?.text,
+            approval: approval,
+            moreApprovals: max(0, s["moreApprovals"]?.int ?? 0))
+    }
+
+    /// `approval {id, bot, kind, question, options[{n, label}], details?, createdAt, expiresAt}` on strips and alerts.
+    /// An id is all it needs; a malformed or repeated option is dropped; anything else malformed reads as absent.
+    static func approvalInfo(_ v: JSONValue?) -> ApprovalInfo? {
+        guard let v, v.object != nil, let id = v["id"]?.text else { return nil }
+        var seen = Set<Int>()
+        let options = (v["options"]?.array ?? []).compactMap { o -> ApprovalOption? in
+            let n: Int?
+            switch o["n"] {
+            case .number(let d)?: n = d == d.rounded() ? Int(exactly: d) : nil
+            case .string(let s)?: n = Int(s.trimmingCharacters(in: .whitespaces))
+            default: n = nil
+            }
+            guard let n, n >= 1, seen.insert(n).inserted else { return nil }
+            return ApprovalOption(n: n, label: o["label"]?.string ?? "")
+        }
+        // complete only as a JSON boolean: anything else (or nothing, an older daemon) reads as not complete.
+        let complete: Bool? = if case .bool(let b)? = v["complete"] { b } else { nil }
+        return ApprovalInfo(id: id, bot: v["bot"]?.text, kind: v["kind"]?.text, question: v["question"]?.string ?? "",
+                            options: options, details: v["details"]?.text, createdAt: v["createdAt"]?.date,
+                            expiresAt: v["expiresAt"]?.date, complete: complete, status: v["status"]?.text,
+                            decisionLabel: v["decision"]?["label"]?.text, via: v["via"]?.text)
     }
 
     static func dialogInfo(_ v: JSONValue?) -> DialogInfo? {

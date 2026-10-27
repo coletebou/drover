@@ -1,0 +1,21 @@
+{
+  "ok": true,
+  "ms": 4,
+  "cache": null,
+  "result": {
+    "generatedAt": "2026-10-27T10:00:00.000Z",
+    "hosts": [
+      { "name": "local", "up": true, "waiting": 2, "working": 0, "idle": 0 }
+    ],
+    "waiting": [
+      { "id": "00000000-demo-4000-8000-000000000002", "name": "demo-review", "host": "local", "engine": "claude", "since": "2026-10-27T09:50:00.000Z", "kind": "question", "headline": "Push the branch now, or wait for the second review?", "answer": "reply" },
+      { "id": "grok:demo-alpha", "name": "Demo-alpha", "host": "local", "engine": "grok", "since": "2026-10-27T09:58:00.000Z", "kind": "decision", "headline": "Buy the demo plan, 1 month, $9.99 on the demo store?", "answer": "approval",
+        "approval": { "id": "ap_0000000000a1", "bot": "grok:demo-alpha", "kind": "purchase", "question": "Buy the demo plan, 1 month, $9.99 on the demo store?", "options": [{ "n": 1, "label": "Buy it" }, { "n": 2, "label": "Not now" }], "details": "You asked for it this morning. Paid with the card on file; renews monthly unless cancelled.", "createdAt": "2026-10-27T09:58:00.000Z", "expiresAt": "2026-10-28T09:58:00.000Z", "complete": true, "untrusted": true },
+        "moreApprovals": 1 }
+    ],
+    "working": [],
+    "totals": { "waiting": 2, "working": 0, "idle": 0, "hosts": 1 },
+    "manager": { "up": false, "lastNoteAt": null },
+    "owner": "owner"
+  }
+}

@@ -19,7 +19,12 @@ struct ChatView: View {
                                emptyText: emptyText(chat), resetKey: session.key,
                                earlier: chat.hasEarlier ? { loadEarlier(chat) } : nil, loadingEarlier: chat.isLoading)
                 .environment(\.chatSessionWorking, session.isWorking)
-            if model.showsAnswerCard(session) {
+            if session.lane == .waiting, let approval = session.approval {
+                // A bot's approval request: answered by its options, not with the composer below.
+                // One view per request: the bot's next request starts afresh, and a press on the last one's buttons ends with it.
+                ApprovalAnswerView(session: session, approval: approval, style: .card).id(approval.id)
+                    .padding(.horizontal, 12).padding(.bottom, 10)
+            } else if model.showsAnswerCard(session) {
                 DialogAnswerView(session: session, style: .card)
                     .padding(.horizontal, 12).padding(.bottom, 10)
             } else if session.lane == .waiting, session.answerMode == .reply || session.waitKind == .question {
