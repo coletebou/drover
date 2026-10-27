@@ -323,6 +323,31 @@ drover op files.wait '{"host":"box-a","path":"~/runs/status","glob":"WS-*.md","s
   lists every shortcut. Direct peers (Settings) let the browser call another
   daemon over a forwarded port or the tailnet instead of ssh rpc.
 
+## Browser terminals
+
+`terminals.open` (`core/terminals.js`) starts one ttyd per tmux target on
+`127.0.0.1` and an ephemeral port, and returns `{ id, url }`. A second open of
+the same target, while that ttyd is still running, returns the one already
+open. `readOnly: true` omits ttyd's `-W`, so the session is view-only. The
+Terminals view (`r`) embeds `url` in an iframe and can pop it into its own
+tab; the drawer's Terminal button opens that tab directly. Both load ttyd's
+own page.
+
+ttyd is started with `-O`. Its websocket then accepts only a request whose
+`Origin` is that page. Browsers allow any site to open a websocket to
+loopback, so a page other than the ttyd page could otherwise type into the
+tmux session. An iframe or client that loads the url under a different origin
+gets no socket. The daemon stops a terminal two hours after it was opened
+(`lastSeen` is set at open and nothing refreshes it) and when `terminals.close`
+is called. Closing the browser tab leaves the ttyd running until then. The
+tmux window stays either way.
+
+`terminals.list` reports `{ available, terminals }`. `available` is null when
+ttyd is not installed, and the view says so; the drawer's Screen tab still
+works. Terminals bind loopback on the daemon's machine, so the view works
+only while the working host is local. The MCP tool is `drover_terminals`
+(`list`, `open`, `close`).
+
 ## Vitals, resource alerts and placement
 
 ```
