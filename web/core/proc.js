@@ -3,12 +3,42 @@
 import { spawn } from 'node:child_process';
 import { userInfo } from 'node:os';
 import path from 'node:path';
+import { redactCommand, redactEnvText, scrubValues } from './redact.js';
 
+// Of a command's stderr an error keeps the first 4096 characters, redacted, and its message the first 500 of those.
+// The cut drops the partial word it lands in, so no half of a secret is left for the rules to miss. That word is
+// looked for only where a word starts, so a long word before it is scanned once, not from each of its characters
+// (quadratic: 4 KB took 45 ms).
+const STDERR_KEEP = 500, STDERR_WINDOW = 4096;
+
+/** A command's stderr as its error keeps it: the command's own secret values out, then env assignments and secret shapes. */
+function errorStderr(stderr, hidden) {
+  // Scrubbed over twice the window only, so a huge stderr costs no pass per hidden value over all of it; a cut there
+  // drops its partial word first, since the head of a value is no value the scrub knows.
+  const raw = String(stderr ?? '');
+  let s = scrubValues(raw.length > 2 * STDERR_WINDOW ? raw.slice(0, 2 * STDERR_WINDOW).replace(/(?<!\S)\S*$/, '') : raw, hidden).trim();
+  if (s.length > STDERR_WINDOW) s = s.slice(0, STDERR_WINDOW).replace(/(?<!\S)\S*$/, '').trimEnd();
+  return redactEnvText(s);
+}
+
+/**
+ * A command that exited with a code it was not expected to. Its message goes to MCP callers, remote relays and the
+ * WAL, and the error itself can be logged, so its argv and stderr are redacted (core/redact.js redactCommand): a tmux
+ * launch passes the agent's credential as -e NAME=value, and the message once returned that value in clear.
+ */
 export class ProcError extends Error {
   constructor(file, argv, code, stderr) {
-    super(`${file} ${argv.join(' ')} exited ${code}: ${stderr.trim().slice(0, 500)}`);
-    this.file = file; this.argv = argv; this.code = code; this.stderr = stderr;
+    const { argv: shown, hidden } = redactCommand(argv);
+    const said = errorStderr(stderr, hidden);
+    super(`${file} ${shown.join(' ')} exited ${code}: ${said.slice(0, STDERR_KEEP)}`);
+    this.file = file; this.argv = shown; this.code = code; this.stderr = said;
   }
+}
+
+/** A spawn failure (ENOENT, EAGAIN) carries the whole argv as spawnargs: redacted the same way, for the same reasons. */
+function spawnError(e) {
+  if (Array.isArray(e?.spawnargs)) e.spawnargs = redactCommand(e.spawnargs).argv;
+  return e;
 }
 
 /**
@@ -22,7 +52,7 @@ export function run(file, argv = [], { input, timeoutMs = 30_000, env, cwd, okCo
     const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error(`${file} timed out after ${timeoutMs}ms`)); }, timeoutMs);
     child.stdout.setEncoding('utf8').on('data', (d) => { stdout += d; });
     child.stderr.setEncoding('utf8').on('data', (d) => { stderr += d; });
-    child.on('error', (e) => { clearTimeout(timer); reject(e); });
+    child.on('error', (e) => { clearTimeout(timer); reject(spawnError(e)); });
     child.on('close', (code) => {
       clearTimeout(timer);
       if (okCodes.includes(code)) resolve({ code, stdout, stderr });
@@ -80,7 +110,7 @@ export function runCapped(file, argv = [], { input, timeoutMs = 30_000, env, cwd
     child.stdout.on('data', keep(out, maxBytes));
     child.stderr.on('data', keep(err, maxStderr));
     child.stdin.on('error', () => { /* the child exited before reading its input */ });
-    child.on('error', (e) => { if (done) return; done = true; clearTimeout(timer); reject(e); });
+    child.on('error', (e) => { if (done) return; done = true; clearTimeout(timer); reject(spawnError(e)); });
     // After a timeout the child's exit settles it: a process that left the group could still hold the pipes open.
     child.on('exit', (code, signal) => { if (timedOut) { child.stdout.destroy(); child.stderr.destroy(); finish(code, signal); } });
     child.on('close', finish);
