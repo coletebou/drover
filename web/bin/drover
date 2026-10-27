@@ -51,6 +51,9 @@ const help = `drover: browser control plane for the agent fleet
   drover bots skill                                           the bot-side skill: give it to a bot to save as a skill named drover
   drover approvals [pending|all|decided|withdrawn|expired] [--bot <bot>]   Grok bots' approval requests (default pending)
   drover approvals answer <id> <n|label>                      answer one (on an interactive terminal only, never from an agent's tool calls)
+  drover channels [list] | remove <name> | test <name>        where a bot's approved posts go (drover_post)
+  drover channels add <name> --webhook [--format slack|discord|text|json] [--title T] [--bots a,b]   (URL from stdin)
+  drover channels add <name> --command '<argv JSON>' [--title T] [--bots a,b]   (an argument {text} or --name={text} is the post, else stdin)
 
   drover search <words...> [--here | --host H] [--limit N] [--mode hybrid|keyword|semantic]
               [--kinds claude,codex,...] [--days N] [--project P] [--json]
@@ -148,6 +151,7 @@ async function main() {
     }
     case 'bots': return botsCli();
     case 'approvals': return approvalsCli();
+    case 'channels': return channelsCli();
     case 'ops': { const { OPS } = await import(path.join(ROOT, 'core', 'api.js')); console.log(OPS.join('\n')); return; }
     case 'serve': case 'up': {
       // Before anything loads core: the daemon serves codex reads itself, and every other process asks it.
@@ -425,16 +429,17 @@ async function readSecret(prompt) {
   return answer.trim();
 }
 
-/** drover bots ...: the gateway's approvals and Routines live in the daemon, behind the main token. */
-async function botsCli() {
+/**
+ * The running daemon's API with the main token: call(route, body?) -> its result (a GET without a body, a POST with
+ * one), or null once it has said Drover is not running. The bot gateway's connections, Routines, approval requests and
+ * channels live in the daemon.
+ */
+async function daemonApi() {
   const f = path.join(STATE_DIR, 'daemon.json');
-  const sub = argv[1] ?? 'status';
-  if (sub === 'prompt') { const { ROUTINE_PROMPT } = await import(path.join(ROOT, 'core', 'bots', 'grok.js')); console.log(ROUTINE_PROMPT); return; }
-  if (sub === 'skill') { process.stdout.write(await readFile(path.join(ROOT, '..', 'integrations', 'grok-bot', 'skills', 'drover', 'SKILL.md'), 'utf8')); return; }
-  if (!existsSync(f)) { console.log('Drover is not running (no daemon.json). Start with: drover serve'); process.exitCode = 1; return; }
+  if (!existsSync(f)) { console.log('Drover is not running (no daemon.json). Start with: drover serve'); process.exitCode = 1; return null; }
   const d = JSON.parse(await readFile(f, 'utf8'));
   const tok = (await readFile(path.join(STATE_DIR, 'token'), 'utf8')).trim();
-  const call = async (route, body) => {
+  return async (route, body) => {
     const res = await fetch(new URL(`api/${route}`, d.url), body === undefined
       ? { headers: { authorization: `Bearer ${tok}` } }
       : { method: 'POST', headers: { authorization: `Bearer ${tok}`, 'content-type': 'application/json' }, body: JSON.stringify(body) });
@@ -442,6 +447,15 @@ async function botsCli() {
     if (!res.ok || j.ok === false) throw new Error(j.error ?? `daemon answered HTTP ${res.status}`);
     return j.result;
   };
+}
+
+/** drover bots ...: the gateway's approvals and Routines live in the daemon, behind the main token. */
+async function botsCli() {
+  const sub = argv[1] ?? 'status';
+  if (sub === 'prompt') { const { ROUTINE_PROMPT } = await import(path.join(ROOT, 'core', 'bots', 'grok.js')); console.log(ROUTINE_PROMPT); return; }
+  if (sub === 'skill') { process.stdout.write(await readFile(path.join(ROOT, '..', 'integrations', 'grok-bot', 'skills', 'drover', 'SKILL.md'), 'utf8')); return; }
+  const call = await daemonApi();
+  if (!call) return;
   const scopes = () => (flag('scope') ? flag('scope').split(',').map((s) => s.trim()).filter(Boolean) : undefined);
   // The delegation's bot is the tenant's own: the one --as names, else the one whose URL (/bots/<bot>/mcp) the request
   // came through, else <prefix>-<tenant> by this shell's DROVER_TENANT_PREFIX. The daemon checks it against its own
@@ -556,18 +570,8 @@ async function botsCli() {
  * Answering is the owner's: the main token, and an interactive terminal, so an agent's shell (no terminal) cannot.
  */
 async function approvalsCli() {
-  const f = path.join(STATE_DIR, 'daemon.json');
-  if (!existsSync(f)) { console.log('Drover is not running (no daemon.json). Start with: drover serve'); process.exitCode = 1; return; }
-  const d = JSON.parse(await readFile(f, 'utf8'));
-  const tok = (await readFile(path.join(STATE_DIR, 'token'), 'utf8')).trim();
-  const call = async (route, body) => {
-    const res = await fetch(new URL(`api/${route}`, d.url), body === undefined
-      ? { headers: { authorization: `Bearer ${tok}` } }
-      : { method: 'POST', headers: { authorization: `Bearer ${tok}`, 'content-type': 'application/json' }, body: JSON.stringify(body) });
-    const j = await res.json().catch(() => ({}));
-    if (!res.ok || j.ok === false) throw new Error(j.error ?? `daemon answered HTTP ${res.status}`);
-    return j.result;
-  };
+  const call = await daemonApi();
+  if (!call) return;
   const sub = argv[1] && !argv[1].startsWith('--') ? argv[1] : 'pending'; // `drover approvals --bot alpha` lists the pending ones
   const { standsFor } = await import(path.join(ROOT, 'ui', 'answer-model.js'));
   const show = (x) => {
@@ -575,7 +579,9 @@ async function approvalsCli() {
     console.log(`${x.id}  ${x.botName.padEnd(12)} ${x.status.padEnd(9)} ${x.kind}  ${x.createdAt}`);
     console.log(`  ${x.question}`);
     if (x.details) for (const l of String(x.details).split('\n')) console.log(`    ${l}`);
-    console.log(`  ${x.options.map((o) => `${o.n}. ${o.label}`).join('   ')}${x.decision ? `   answered: ${x.decision.label} (${x.decision.via ?? x.via ?? '?'}, ${x.decision.at})` : left ? `   stands ${left} more` : ''}`);
+    const did = !x.outcome ? '' : x.outcome.running ? '; Drover is doing it now' : x.outcome.unknown ? `; whether Drover did it is unknown (${x.outcome.error ?? 'it stopped partway'})`
+      : x.outcome.ok ? `; Drover ${x.outcome.done ?? 'did it'}` : `; Drover could not do it: ${x.outcome.error ?? 'it failed'}`;
+    console.log(`  ${x.options.map((o) => `${o.n}. ${o.label}`).join('   ')}${x.decision ? `   answered: ${x.decision.label} (${x.decision.via ?? x.via ?? '?'}, ${x.decision.at})${did}` : left ? `   stands ${left} more` : ''}`);
   };
   if (sub === 'answer') {
     const [id, pick] = [argv[2], argv.slice(3).join(' ').trim()];
@@ -596,7 +602,9 @@ async function approvalsCli() {
     rl.close();
     if (!/^y(es)?$/i.test(sure.trim())) { console.log('not answered'); return; }
     const r = await call('approvals/answer', { id, choice: opt.n, via: 'cli' });
-    console.log(`${r.botName}: ${r.decision.label}. ${r.delivery?.ok === false ? `It was not reached (${r.delivery.error ?? 'failed'}); it sees the answer in drover_approvals.` : r.delivery?.queued ? 'It waits in its inbox (no Routine).' : 'Its Routine has the answer.'}`);
+    // What Drover did for it (a post sent or not), then whether the bot was told.
+    const did = !r.outcome ? '' : r.outcome.ok === true ? ` Drover ${r.outcome.done ?? 'did it'}.` : r.outcome.unknown ? ` Drover cannot tell whether it was done: ${r.outcome.error ?? 'it did not finish'}.` : ` Drover could not do it: ${r.outcome.error ?? 'it failed'}.`;
+    console.log(`${r.botName}: ${r.decision.label}.${did} ${r.delivery?.ok === false ? `It was not reached (${r.delivery.error ?? 'failed'}); it sees the answer in drover_approvals.` : r.delivery?.queued ? 'It waits in its inbox (no Routine).' : 'Its Routine has the answer.'}`);
     return;
   }
   const status = ['pending', 'all', 'decided', 'withdrawn', 'expired'].includes(sub) ? sub : null;
@@ -606,6 +614,56 @@ async function approvalsCli() {
   if (!r.items.length) { console.log(status === 'pending' ? 'no approval requests are waiting for you' : `no approval requests (${status})`); return; }
   for (const x of r.items) show(x);
   if (status === 'pending') console.log(`\nanswer with: drover approvals answer <id> <n|label>  (bot words: data, check them)`);
+}
+
+/**
+ * drover channels ...: the owner's human-facing channels a bot may post to (core/bots/channels.js), every post approved
+ * by the owner. A webhook's URL is its secret: read from stdin (hidden on a terminal), never an argument, never shown.
+ */
+async function channelsCli() {
+  const sub = argv[1] ?? 'list';
+  const call = await daemonApi();
+  if (!call) return;
+  const usage = `usage: drover channels add <name> --webhook [--format slack|discord|text|json] [--title T] [--bots a,b]   (the URL is read from stdin)
+       drover channels add <name> --command '<argv as JSON>' [--title T] [--bots a,b]   (an argument that is {text}, or --name={text}, is the post; else it goes on stdin)
+       drover channels [list] | remove <name> | test <name>`;
+  switch (sub) {
+    case 'list': {
+      const list = await call('bots/channels');
+      if (!list.length) { console.log(`no channels yet.\n${usage}`); return; }
+      for (const c of list) console.log(`${c.name.padEnd(18)} ${c.kind.padEnd(8)} ${(c.format ?? '').padEnd(8)} ${c.target}${c.title ? `  "${c.title}"` : ''}  ${c.bots ? `bots: ${c.bots.join(',')}` : 'every bot'}`);
+      return;
+    }
+    case 'add': {
+      const name = argv[2];
+      if (!name || name.startsWith('--') || has('webhook') === Boolean(flag('command'))) throw new Error(usage);
+      const common = { title: flag('title'), bots: flag('bots') };
+      let spec;
+      if (has('webhook')) spec = { kind: 'webhook', url: await readSecret(`Webhook URL for ${name} (not shown): `), format: flag('format'), ...common };
+      else {
+        let list; try { list = JSON.parse(flag('command')); } catch { throw new Error(`--command takes the argv as a JSON array of strings, like '["imsg","send","--chat-identifier","<chat>","--text","{text}"]'`); }
+        spec = { kind: 'command', argv: list, ...common };
+      }
+      const r = await call('bots/channels/add', { name, ...spec });
+      console.log(`channel ${r.name}: ${r.kind}, ${r.target}, ${r.bots ? `bots ${r.bots.join(',')}` : 'every bot'}. Try it: drover channels test ${r.name}`);
+      return;
+    }
+    case 'remove': {
+      if (!argv[2]) throw new Error(usage);
+      await call('bots/channels/remove', { name: argv[2] });
+      console.log(`removed the channel ${argv[2]}`);
+      return;
+    }
+    case 'test': {
+      if (!argv[2]) throw new Error(usage);
+      const r = await call('bots/channels/test', { name: argv[2] });
+      // The channel's own answer (detail) is shown here only: the owner's terminal, never a record.
+      console.log(r.ok ? `posted a test to ${argv[2]}` : `the test post to ${argv[2]} failed: ${r.error}${r.detail ? `\n  the channel said: ${r.detail}` : ''}`);
+      if (!r.ok) process.exitCode = 1;
+      return;
+    }
+    default: throw new Error(usage);
+  }
 }
 
 main().catch((e) => { console.error(e.stack ?? e.message); process.exit(1); });

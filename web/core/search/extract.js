@@ -267,7 +267,7 @@ export function walEvent(ev) {
     case 'chat': text = pick(ev.text); title = `chat from ${ev.from ?? 'agent'}`; sessionId = ev.to?.id ?? null; break;
     case 'handoff': text = pick(ev.text, ev.summary, ev.path); title = 'handoff'; break;
     // A Grok bot's approval request (its words carry their untrusted mark) and the owner's answer, in the bot's thread.
-    case 'approval': text = pick(ev.question, ev.details, ev.decision?.label ? `answer: ${ev.decision.label}` : '', ev.state === 'withdrawn' ? 'withdrawn' : ''); title = `approval ${ev.state ?? ''} ${ev.aid ?? ''}`; sessionId = typeof ev.bot === 'string' ? ev.bot : null; break;
+    case 'approval': text = pick(ev.question, ev.details, ev.decision?.label ? `answer: ${ev.decision.label}` : '', ev.outcome ? (ev.outcome.ok ? 'done' : ev.outcome.unknown ? `not known whether done: ${ev.outcome.error ?? ''}` : `not done: ${ev.outcome.error ?? ''}`) : '', ev.state === 'withdrawn' ? 'withdrawn' : ''); title = `approval ${ev.state ?? ''} ${ev.aid ?? ''}${ev.action?.channel ? ` (post to ${ev.action.channel})` : ''}`; sessionId = typeof ev.bot === 'string' ? ev.bot : null; break;
     case 'survey-item': {
       const it = ev.item ?? {};
       text = pick(it.title, it.summary, it.next_step ? `next: ${it.next_step}` : '', it.evidence, [...(it.activities ?? []), ...(it.mrs ?? [])].join(' '));

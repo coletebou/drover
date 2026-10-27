@@ -550,8 +550,9 @@ gives the owner's bots Drover anyway, in both directions.
   message for its inbox when it has none; the bot answers with `drover_reply`, which lands as a `chat` event threaded
   under the message, and reports `drover_status`, which shows on the board. A reply raises a "finished" alert;
   `needs-owner` and `blocked` raise "needs you" and put the bot in the waiting lane until its next status (a bot taught
-  the earlier `needs-<DROVER_OWNER>` is read the same). Messages and replies carry read receipts, and a bot can ask the
-  owner to approve something before it acts, answered in one tap (both below). A bot is
+  the earlier `needs-<DROVER_OWNER>` is read the same). Messages and replies carry read receipts, a bot can ask the
+  owner to approve something before it acts, answered in one tap, and post to the owner's own chats, each post approved
+  (all below). A bot is
   live when it was heard from, or its Routine accepted a message, in the last day (a Routine alone makes it reachable,
   not live). One that should be acting and has gone silent, its last status `working` or a message its Routine
   accepted still unanswered, turns `stale` after `DROVER_BOTS_STALE_MINUTES` (default 30) and says why; waiting on
@@ -598,7 +599,7 @@ then passes through that bot's chat once, so OAuth is the better path).
 |---|---|
 | `drover.read` | `drover_whoami`, `drover_fleet`, `drover_search`, `drover_inbox`, `drover_sent`, `drover_approvals` (list, show), `drover_features`, `drover_reflections` (list, search, show), and with a brain plugin `drover_brain_search`, `drover_brain_get` |
 | `drover.write` | `drover_status`, `drover_reply`, `drover_note`, `drover_feature_upsert`, and with a brain plugin `drover_brain_note` (kinds memory and handoff, filed under `agent:grok-<bot>`) |
-| `drover.notify` | `drover_notify_owner`, also served as `drover_notify_<DROVER_OWNER>` for bots taught that name, and `drover_request_approval` and `drover_approval_withdraw` (12 alerts an hour per bot, counting `needs-owner` statuses and approval requests) |
+| `drover.notify` | `drover_notify_owner`, also served as `drover_notify_<DROVER_OWNER>` for bots taught that name, `drover_request_approval`, `drover_approval_withdraw` and `drover_post` (12 alerts an hour per bot, counting `needs-owner` statuses, approval requests and posts) |
 
 The brain tools exist only where a plugin provides the `brain.*` ops (search, get, note); without one, the bots are
 neither offered them nor told about them.
@@ -644,9 +645,9 @@ events (`{ of: [ids], thread, state: "read", by, via }`, `core/bots/grok.js`), a
 
 A bot asks before it does something that needs the owner's yes (a purchase, an action with consequences):
 `drover_request_approval` with one clear question, 2 to 4 options (default Approve / Deny), details, a kind
-(`purchase`, `action`, `post` or `other`) and how long it stands (default a day; 5 minutes to 7 days). `messageId` ties
-it to the inbox message it is about. The owner answers in one tap, and the answer goes back to the bot
-(`core/bots/approvals.js`).
+(`purchase`, `action` or `other`; `post` is what `drover_post` makes, Channels below) and how long it stands (default
+a day; 5 minutes to 7 days). `messageId` ties it to the inbox message it is about. The owner answers in one tap, and
+the answer goes back to the bot (`core/bots/approvals.js`).
 
 - Where it shows: the bot moves to the waiting lane with the question as its ask (`asks for your approval`), on its
   board strip and in its drawer; a needs-you alert carries it to the owner's screens; and
@@ -684,10 +685,51 @@ it to the inbox message it is about. The owner answers in one tap, and the answe
 - Ops: `approvals.list` (read-only) lists the requests on the host that keeps the bots, newest first; `bots.status`
   counts each bot's pending ones; `GET /api/approvals` is the same list for the owner's clients.
 
+### Channels
+
+A bot answering a request often has news for people who are not in Drover: a group chat with the owner and a friend,
+a team channel. Instead of asking an agent to relay it, the bot posts it with `drover_post { channel, text }`
+(`core/bots/channels.js`), and the owner approves every post.
+
+- The owner sets the channels up, with the main token (`/api/bots/channels/*`, never an op), on the host that keeps
+  the bots:
+  - `drover channels add team --webhook --format slack|discord|text|json [--title "Team"] [--bots alpha,beta]` reads the
+    webhook URL (the channel's secret) from stdin, hidden on a terminal, and stores it in `bots/channels.json` (0600);
+    it is shown as host and id tail only. Slack text has `&`, `<` and `>` escaped (no `<!channel>`), Discord posts
+    allow no mentions, `json` posts `{source, channel, bot, text}`. Each change gives the channel a new version: a
+    post asked for before it is not sent.
+  - `drover channels add cole-brett --command '["imsg","send","--chat-identifier","<chat>","--text","{text}"]'` runs
+    that argv on the host, never through a shell: an argument that is exactly `{text}` (or a long option's value,
+    `--text={text}`) becomes the post, as that one argument, and appears once; `{text}` anywhere else in an argument
+    is refused (in `osascript -e` or `node -e` the post would be read as code). Without one the post goes on stdin.
+    (`imsg` sends from the Messages account of the user the daemon runs as.)
+  - `--bots` limits a channel to some bots. `drover channels` lists them, `drover channels test <name>` sends a test
+    post, `drover channels remove <name>` removes one.
+- A bot sees the names and titles of the channels it may use in `drover_whoami` (`channels`), never where they lead.
+- A post is an approval request of kind `post` (Approvals above) with the options "Post it" and "Do not post". Its
+  card says where it goes (the channel's title and its name) and quotes the post, and its details are exactly the text
+  that will be sent: the bot's words, cleaned (secrets redacted, and nothing no one sees: every default-ignorable
+  character, such as bidi controls, zero-width marks, fillers, tag characters and variation selectors, goes; emoji
+  keep a joiner between two emoji and one presentation selector), behind its name ("Alpha (<owner>'s bot): ..."), so
+  the people in the channel know a bot speaks. Only "Post it" sends it, once, after the decision is stored, and only
+  to the channel as the card showed it: a channel changed since (where it leads, its title), removed or closed to the
+  bot sends nothing.
+- The outcome is recorded (the request's `outcome`, the decided event) and told to the bot in the decision message;
+  `drover_approvals` (`show`) and `drover approvals` have it too. `ok: true` is posted ("Drover did what it asked:
+  posted to team"); `ok: false` is not, said why in Drover's words (the channel's webhook answered HTTP 400, imsg is
+  not installed here), and the bot may ask again; `unknown: true` may have gone out (the webhook did not answer in
+  time or the connection broke, it answered 202, 302, 303, 408 or 5xx, a command ran and failed or timed out, Drover stopped
+  partway): the bot is told not to ask again unless the owner says so, and Drover never sends it again. While a post is being sent the request says
+  `running`. What a channel answers can echo the post, so a webhook's answer and a command's output stay out of the
+  records and the bot's message: only `drover channels test <name>` shows them, to the owner. A webhook's redirect is
+  not followed, and a Discord webhook is asked to wait until the message is saved (`wait=true`), so its 2xx means the
+  post is there.
+
 ### Security
 
-- Approving a connection, revoking it, minting a token and setting a Routine are main-token HTTP routes
-  (`/api/bots/*`), never ops, like pairing: no MCP tool or ssh rpc can let a bot in or redirect its Routine. Answering
+- Approving a connection, revoking it, minting a token, setting a Routine and setting up a channel are main-token
+  HTTP routes (`/api/bots/*`), never ops, like pairing: no MCP tool or ssh rpc can let a bot in, redirect its Routine
+  or point its posts somewhere else. Answering
   a bot's approval request is one too (`/api/approvals/answer`, Approvals above).
 - PKCE S256 is required; authorization codes are single use and live a minute; access tokens an hour; refresh tokens
   rotate (60 days), and replaying a used one revokes the whole grant. Tokens and keys are stored only as SHA-256
