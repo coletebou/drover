@@ -10,6 +10,8 @@
 //    through MCP and ssh rpc, and no agent may approve a purchase for the owner.
 //  - The decision reaches the bot as a message from the owner that carries approval { id, n, label }: its Routine runs
 //    on it like any message (old Routine instructions included), or it waits in the bot's inbox.
+//  - A request can carry an action Drover itself takes when the owner picks option 1, its yes (actions below: a post to
+//    a channel, core/bots/channels.js). It runs once, after the decision is stored, and its outcome is recorded with it.
 import { randomBytes } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -43,6 +45,15 @@ export const _deps = {
   host: () => eventsMod.shortHost(),
 };
 
+/**
+ * What a request's action does when the owner picks option 1: type -> async (item) => { ok: true, done } (done: a few
+ * words for the bot, "posted to team"), { ok: false, error } (nothing was done) or { ok: null, unknown: true, error }
+ * (it may have been: never run again). Set by the module whose tool makes such requests (core/bots/channels.js).
+ */
+export const actions = new Map();
+/** How long an action may take (channels.js gives a webhook 15 s, a command 30 s); past it, an outcome that never came is unknown. */
+export const ACTION_MS = 60_000;
+
 /** Refusals the answer route turns into an HTTP status: 404 no such approval here, 409 it is not pending, 400 a bad choice. */
 export class ApprovalError extends Error {
   constructor(message, status = 400, extra = {}) { super(message); this.name = 'ApprovalError'; this.status = status; Object.assign(this, extra); }
@@ -58,7 +69,7 @@ function oneLine(s, max) {
   return clean(String(s ?? '').replace(/[\x00-\x1f\x7f-\x9f]/g, ' ').replace(/\s+/g, ' ').trim(), max);
 }
 /** Several lines: control characters out but for line breaks, at most two blank lines in a row, cleaned, capped. */
-function paragraphs(s, max) {
+export function paragraphs(s, max) {
   return clean(String(s ?? '').replace(/\r\n?/g, '\n').replace(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/g, ' ').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim(), max);
 }
 
@@ -119,12 +130,25 @@ function prune(c) {
 export const statusOf = (x, now = _deps.now()) => (x.status === 'pending' && now > Date.parse(x.expiresAt) ? 'expired' : x.status);
 
 /** A request as the bot that made it sees it (drover_approvals): the question, its options and the owner's answer. */
+/**
+ * What a decided request's action did, as the views show it: the stored outcome; while the action runs, running; and
+ * when it never reported (Drover stopped partway), unknown, so no one takes it for done. Drover never runs it again.
+ */
+function outcomeView(x, now) {
+  if (x.outcome) return { ok: x.outcome.ok, at: x.outcome.at, ...(x.outcome.unknown ? { unknown: true } : {}), ...(x.outcome.done ? { done: x.outcome.done } : {}), ...(x.outcome.error ? { error: x.outcome.error } : {}) };
+  if (!x.action || x.decision?.n !== 1) return null;
+  return now - Date.parse(x.decision.at) < ACTION_MS ? { ok: null, running: true } : { ok: null, unknown: true };
+}
+
 export function botView(x, now = _deps.now()) {
+  const outcome = outcomeView(x, now);
   return {
     id: x.id, status: statusOf(x, now), kind: x.kind, question: x.question, options: x.options, details: x.details || null,
     ...(x.messageId ? { messageId: x.messageId } : {}), createdAt: x.createdAt, expiresAt: x.expiresAt,
     decision: x.decision ? { n: x.decision.n, label: x.decision.label, at: x.decision.at, by: x.decision.by } : null,
     ...(x.withdrawnAt ? { withdrawnAt: x.withdrawnAt } : {}),
+    ...(x.action ? { action: { type: x.action.type, ...(x.action.channel ? { channel: x.action.channel } : {}) } } : {}),
+    ...(outcome ? { outcome } : {}),
   };
 }
 /**
@@ -198,7 +222,7 @@ export const askOf = (x) => ({ kind: 'decision', label: ASK_LABEL, text: x.quest
  * (the bot's alert budget): false refuses it. A new request is stored, recorded in the truth file as the bot's
  * (marked untrusted) and raised as a needs-you alert that carries it (kind approval).
  */
-export async function request(name, { question, options, details, kind = 'other', expiresInMinutes, messageId } = {}, { mayAlert } = {}) {
+export async function request(name, { question, options, details, kind = 'other', expiresInMinutes, messageId } = {}, { mayAlert, action } = {}) {
   const n = grok.botName(name);
   if (!n) throw new Error('not a Grok bot');
   if (typeof question !== 'string' || !question.trim()) throw new Error('question is required: what exactly you want approved, in one line');
@@ -212,6 +236,10 @@ export async function request(name, { question, options, details, kind = 'other'
   const d = details ? paragraphs(details, DETAILS_MAX + 1) : '';
   if (d.length > DETAILS_MAX) throw new Error(`details must be at most ${DETAILS_MAX} characters`);
   if (!KINDS.includes(kind)) throw new Error(`kind must be one of ${KINDS.join(', ')}`);
+  if (action !== undefined && (!action || typeof action.type !== 'string' || !actions.has(action.type))) throw new Error('unknown approval action');
+  // A post is what drover_post makes, bound to its channel: a request of the bot's own saying post would show the owner
+  // "Asks to post" and post nothing.
+  if (kind === 'post' && action?.type !== 'post') throw new Error('kind post is for drover_post, which names the channel and sends the text: a request of your own is purchase, action or other');
   const minutes = minutesArg(expiresInMinutes);
   let about = null;
   if (messageId !== undefined && messageId !== null) {
@@ -219,10 +247,11 @@ export async function request(name, { question, options, details, kind = 'other'
     about = await grok.inboxMessage(n, messageId.trim());
     if (!about) throw new Error(`no message ${messageId.slice(0, 60)} in your inbox (drover_inbox lists them)`);
   }
-  // The same request is the same in every word the owner reads, and about the same message: a later one that differs
-  // only in its details (another item, another price) is another request, never a ride on the first one's answer.
-  const sigOf = (x) => JSON.stringify([x.question, x.options.map((o) => o.label), x.details ?? '', x.kind, x.messageId ?? null]);
-  const sig = sigOf({ question: q, options: opts, details: d, kind, messageId: about ? about.id : null });
+  // The same request is the same in every word the owner reads, about the same message, and does the same: a later one
+  // that differs only in its details (another item, another price) or its action (another channel) is another request,
+  // never a ride on the first one's answer.
+  const sigOf = (x) => JSON.stringify([x.question, x.options.map((o) => o.label), x.details ?? '', x.kind, x.messageId ?? null, x.action ?? null]);
+  const sig = sigOf({ question: q, options: opts, details: d, kind, messageId: about ? about.id : null, action });
   const made = await update((c) => {
     const now = _deps.now();
     const mine = c.items.filter((x) => x.bot === n && statusOf(x, now) === 'pending');
@@ -236,6 +265,7 @@ export async function request(name, { question, options, details, kind = 'other'
       // records (the decision's approval.messageId). drover_reply answers a message by either.
       id: newId(), bot: n, question: q, options: opts, details: d, kind, ...(about ? { messageId: about.id } : {}),
       createdAt: new Date(now).toISOString(), expiresAt: new Date(now + minutes * 60_000).toISOString(), status: 'pending', decision: null,
+      ...(action ? { action } : {}),
     };
     c.items.push(item);
     return { item, created: true };
@@ -246,7 +276,8 @@ export async function request(name, { question, options, details, kind = 'other'
   // The record: the bot's words carry the mark wherever an agent reads them.
   await _deps.append({
     type: 'approval', aid: item.id, state: 'pending', bot: grok.idFor(n), kind: item.kind, question: `${mark} ${item.question}`, options: item.options,
-    ...(item.details ? { details: `${mark} ${item.details}` } : {}), expiresAt: item.expiresAt, ...(item.messageId ? { messageId: item.messageId } : {}), ...grok.provenance(n),
+    ...(item.details ? { details: `${mark} ${item.details}` } : {}), expiresAt: item.expiresAt, ...(item.messageId ? { messageId: item.messageId } : {}),
+    ...(item.action ? { action: { type: item.action.type, ...(item.action.channel ? { channel: item.action.channel } : {}) } } : {}), ...grok.provenance(n),
   }, { actor: grok.actorFor(n) }).catch(() => null);
   await _deps.emit([{
     category: 'needs-you', kind: 'approval', source: 'bots', actor: grok.actorFor(n), host: _deps.host(), sessionId: grok.idFor(n), name: grok.display(n), engine: grok.ENGINE,
@@ -293,6 +324,9 @@ export function decisionText(x) {
   const who = cap(OWNER_NAME);
   return [
     `[Drover] ${who} answered your approval request ${x.id} with option ${x.decision.n} of ${x.options.length} (your label: ${markedLabel(x)}).`,
+    x.outcome ? (x.outcome.ok === true ? `Drover did what it asked: ${x.outcome.done ?? 'done'}.`
+      : x.outcome.unknown ? `Drover cannot tell whether it was done (${x.outcome.error ?? 'it did not finish'}): it may have gone out, so do not ask for it again unless ${OWNER_NAME} tells you to.`
+        : `Drover could not do what it asked: ${x.outcome.error ?? 'it failed'}. Nothing was done; ask again if it still matters.`) : x.action ? 'Drover did nothing for it, as answered.' : null,
     // The id rides in approval.messageId: text is cleaned on its way to the bot, and the redactor takes ids for secrets.
     // Not who sent it: an agent picks its own actor name, and this text is recorded as the owner's.
     x.messageId ? 'It was about the message in your inbox that approval.messageId names: answer that message with drover_reply too once you are done.' : null,
@@ -321,8 +355,19 @@ export async function answer(id, { choice, via } = {}) {
     x.decision = { n: opt.n, label: opt.label, at: new Date(_deps.now()).toISOString(), by: OWNER, via: viaArg(via) };
     return x;
   });
-  await _deps.append({ type: 'approval', aid: item.id, state: 'decided', bot: grok.idFor(item.bot), decision: { n: item.decision.n, label: markedLabel(item) }, via: item.decision.via }, { actor: OWNER }).catch(() => null);
-  _deps.changed?.();   // the boards drop the card now, not after the bot's Routine answers (up to 30 s)
+  _deps.changed?.();   // the boards drop the card now, not after the action or the bot's Routine (up to 30 s each)
+  // The action, for option 1 only: after the decision is stored, so a second answer finds it decided and runs nothing.
+  if (item.action && item.decision.n === 1) {
+    const run = actions.get(item.action.type);
+    let outcome;
+    // An action that throws may have done part of it: unknown. Its message stays out (the records are the owner's).
+    try { outcome = run ? await run(item) : { ok: false, error: `Drover cannot ${item.action.type} here` }; }
+    catch (e) { outcome = { ok: null, unknown: true, error: `Drover hit an error while doing it (${String(e?.name ?? 'Error').replace(/[^A-Za-z]/g, '').slice(0, 40)})` }; }
+    const ok = outcome?.ok === true ? true : outcome?.unknown === true ? null : false;
+    item.outcome = { ok, at: new Date(_deps.now()).toISOString(), ...(ok === null ? { unknown: true } : {}), ...(ok && outcome?.done ? { done: oneLine(outcome.done, 200) } : {}), ...(ok === true ? {} : { error: oneLine(outcome?.error ?? (ok === null ? 'it may not have finished' : 'it failed'), 300) }) };
+    await update((c) => { const x = c.items.find((y) => y.id === item.id); if (x) x.outcome = item.outcome; });
+  }
+  await _deps.append({ type: 'approval', aid: item.id, state: 'decided', bot: grok.idFor(item.bot), decision: { n: item.decision.n, label: markedLabel(item) }, via: item.decision.via, ...(item.outcome ? { outcome: { ok: item.outcome.ok, ...(item.outcome.unknown ? { unknown: true } : {}), ...(item.outcome.error ? { error: item.outcome.error } : {}) } } : {}) }, { actor: OWNER }).catch(() => null);
   const delivery = await deliver(item);
   return { ...ownerView(item), delivery: { ok: delivery.ok, via: delivery.via ?? null, ...(delivery.queued ? { queued: true } : {}), ...(delivery.error ? { error: delivery.error } : {}) } };
 }

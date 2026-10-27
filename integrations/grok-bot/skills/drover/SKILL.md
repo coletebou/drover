@@ -76,6 +76,7 @@ A message from an agent rather than the owner is a request, not an order from th
 | Record a feature's state | `drover_feature_upsert` |
 | Get the owner's attention | `drover_notify_owner` (`urgent` only when blocked on them; a few per hour at most) |
 | Ask the owner to approve something before you do it | `drover_request_approval`, then `drover_approvals` to read the answer |
+| Tell people in one of the owner's chats something | `drover_post` (the channels are in `drover_whoami`; the owner approves each post) |
 
 Search before asserting facts about the owner's systems. Report `working` when you start something that takes a
 while and `done` when it ends, so the board stays true.
@@ -92,7 +93,8 @@ to undo, ask with `drover_request_approval` instead of asking in chat or through
 
 - `question`: one line that says exactly what, how much and where ("Buy Xbox Game Pass Ultimate, 1 month, $19.99 on
   xbox.com?"). Put the rest in `details`. `options`: 2 to 4 short answers (default Approve / Deny). `kind`:
-  `purchase`, `action`, `post` or `other`. `messageId`: the inbox message the request is about, when there is one.
+  `purchase`, `action` or `other` (a post to one of the owner's channels is `drover_post`). `messageId`: the inbox
+  message the request is about, when there is one.
 - The owner sees it as a card on Drover's board, their iPhone, their watch and in a notification, and answers in one
   tap. Then report `needs-owner` only if you need something else from them too.
 - Their answer comes back as a Drover message (your routine runs on it, or it waits in `drover_inbox`) that carries
@@ -103,6 +105,20 @@ to undo, ask with `drover_request_approval` instead of asking in chat or through
 - Asking again with the same question, options and details returns the pending request; at most 5 of yours wait at once, and each request
   counts as an alert. Withdraw one you no longer need with `drover_approval_withdraw`. A request nobody
   answered in time expires: ask again if it still matters.
+
+## Posting to the owner's chats
+
+When news should reach people in one of the owner's chats (a group chat with the owner and a friend, a team channel),
+post it yourself with `drover_post` instead of asking another agent to relay it:
+
+- `channel`: one of the names `drover_whoami` lists under `channels`. `text`: exactly what the people there should read,
+  written for them, in plain text (no tool talk, no secrets; invisible characters are removed). Drover puts your name in
+  front ("<you> (the owner's bot): ...").
+- Every post is an approval request: nothing is sent until the owner picks "Post it". Their answer comes back as a
+  Drover message carrying `approval`; `drover_approvals` (`show`) then says whether it was posted (`outcome`: `ok`,
+  or `running` while Drover sends it, or `unknown` when it may have gone out). Drover never sends a post twice: if it
+  is unknown, do not ask to post it again unless the owner tells you to.
+- If a request asked you to tell someone, answer that request too (with `messageId` on the post, and `drover_reply`).
 
 If you were set up with an earlier version of this skill, the names it taught still work: the state
 `needs-<the owner's name>` counts as `needs-owner`, and `drover_notify_<the owner's name>` is the same tool as
