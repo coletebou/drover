@@ -14,7 +14,7 @@
 // recognition when Chrome has it; cloud only when allowed in Settings), and the
 // usual history / nudges / keys. The head has copy, pop-out, mute and share.
 import { h, clear, btn, engine, dot, ago, kv, fmtTime, shortPath, loading, empty, seg, plural } from './dom.js';
-import { tmuxWindowTarget } from './transcript.js';
+import { tmuxWindowTarget, isWindow } from './transcript.js';
 import { copyButton, copyText, saveText, canShare, share, fileToBase64 } from './clip.js';
 import { openMenu } from './menu.js';
 import * as dictation from './dictation.js';
@@ -114,7 +114,7 @@ export class Drawer {
       } else if (t.kind === 'window') {
         const wins = await this.#quiet('tmux.windows', { classify: false });
         if (!this.alive) return;
-        const w = wins.find((x) => x.target === t.id);
+        const w = wins.find((x) => isWindow(x, t.id));
         if (w) { t.window = w; t.name = t.name ?? w.name; t.tmux = w.target; if (w.agent?.sessionId && !t.session) { t.engine = w.agent.engine; t.sessionId = w.agent.sessionId; } }
       }
     } catch { /* header shows what we have */ }

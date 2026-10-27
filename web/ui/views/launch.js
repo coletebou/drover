@@ -154,7 +154,7 @@ export default {
       if (effort) argv.push(...(eng === 'codex' ? ['-c', `model_reasoning_effort="${effort}"`] : ['--effort', effort]));
       if (prompt && v.mode === 'tmux') argv.push('--', `"${prompt.slice(0, 60).replace(/\n/g, ' ')}${prompt.length > 60 ? '...' : ''}"`);
       const env = [...Object.entries(p?.env ?? {}).map(([k, val]) => `${k}=${val}`), ...credentialEnvRefs()].join(' ');
-      previewEl.textContent = `${v.mode === 'tmux' ? `tmux new-window -t ${f.tmuxSession.value || defaultSession()}${f.name.value ? ` -n ${f.name.value}` : ''} -c ${f.cwd.value || '$HOME'} ` : ''}${env ? env + ' ' : ''}${argv.join(' ')}`;
+      previewEl.textContent = `${v.mode === 'tmux' ? `tmux new-window -t =${f.tmuxSession.value || defaultSession()}:${f.name.value ? ` -n ${f.name.value}` : ''} -c ${f.cwd.value || '$HOME'} ` : ''}${env ? env + ' ' : ''}${argv.join(' ')}`;
     }
     async function loadHostBits() {
       const host = f.host.value;

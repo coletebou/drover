@@ -30,9 +30,11 @@ export function stripFor(state, t) {
   if (!t) return null;
   const host = t.host ?? 'local';
   const sid = t.kind === 'session' ? t.id : (t.sessionId ?? t.session?.sessionId ?? null);
-  const win = t.kind === 'window' ? t.id : tmuxWindowTarget(t.tmux);
+  // A strip names its window "session:index". A window opened by id ("session:@12", a launch's target) is matched by
+  // the index the drawer found it at (t.tmux), as well as by its id.
+  const wins = [t.kind === 'window' ? t.id : null, tmuxWindowTarget(t.tmux)].filter(Boolean);
   const all = currentStrips(state).filter((s) => (s.host ?? 'local') === host);
-  return (sid ? all.find((s) => s.sessionId === sid || s.id === sid) : null) ?? (win ? all.find((s) => s.tmux === win) : null) ?? null;
+  return (sid ? all.find((s) => s.sessionId === sid || s.id === sid) : null) ?? all.find((s) => wins.includes(s.tmux)) ?? null;
 }
 
 /** Live agents per host: from the board's host counts, else the fleet summary's live sessions. */
