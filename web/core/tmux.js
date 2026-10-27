@@ -253,6 +253,9 @@ export async function sendKeys(target, keys) {
  * in the child's PATH, which need not hold tmux at all.
  * Every argument goes through tmuxArg(), so the window runs exactly argv:
  * a prompt or model ending in ";" can neither lose it nor start a tmux command.
+ * The target returned is "session:@id", the window's id: tmux renumbers windows under renumber-windows on (dropping
+ * the placeholder of a new session does, and so does any window closing later), so a "session:index" can come to
+ * name another window or none, while an id stays this window's until it closes.
  */
 export async function newWindow({ session, name, cwd, argv, env }) {
   assertName(session);
@@ -261,13 +264,17 @@ export async function newWindow({ session, name, cwd, argv, env }) {
   const dirFlags = cwd ? ['-c', tmuxArg(cwd)] : [];
   const [bin, clientOpts] = env?.PATH ? [ownTmux(), { env: { ...process.env, PATH: env.PATH } }] : ['tmux', {}];
   const created = !(await hasSession(session));
-  // When this starts the tmux server, the server's global environment comes from this client too.
-  if (created) await run(bin, ['new-session', '-d', '-s', session, ...dirFlags], clientOpts);
-  const args = ['new-window', '-P', '-F', '#{session_name}:#{window_index}', '-t', session, ...envFlags, ...(name ? ['-n', name] : []), ...dirFlags, ...(argv?.length ? argv.map(tmuxArg) : [])];
+  // When this starts the tmux server, the server's global environment comes from this client too. It prints the id of
+  // the session's placeholder window, which is dropped below.
+  const placeholder = created ? (await run(bin, ['new-session', '-d', '-s', session, '-P', '-F', '#{window_id}', ...dirFlags], clientOpts)).stdout.trim() : null;
+  // "=session:" is this session exactly and no window in it, so the window takes the next free index. A bare name is
+  // a window first: tmux prefix-matches it against the window names of the current session, so session "work" hit its
+  // window "work-notes" and the launch failed with "index 1 in use"; and without "=" another session can match it.
+  const args = ['new-window', '-P', '-F', '#{session_name}:#{window_id}', '-t', `=${session}:`, ...envFlags, ...(name ? ['-n', name] : []), ...dirFlags, ...(argv?.length ? argv.map(tmuxArg) : [])];
   const { stdout } = await run(bin, args, clientOpts);
   const target = stdout.trim();
   // A fresh session comes with a placeholder shell window; drop it so the new window is the only one.
-  if (created) { const { stdout: wins } = await run('tmux', ['list-windows', '-t', session, '-F', '#{session_name}:#{window_index}']); const first = wins.trim().split('\n')[0]; if (first && first !== target) await run('tmux', ['kill-window', '-t', first]).catch(() => {}); }
+  if (placeholder) await run('tmux', ['kill-window', '-t', placeholder]).catch(() => {});
   return { target };
 }
 
