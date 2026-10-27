@@ -138,12 +138,18 @@ export function routineUrlAllowed(url) {
   return u.protocol === 'https:' || (u.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname));
 }
 
-/** Add or replace a bot's Routine. Main token only (HTTP /api/bots/routine, `drover bots routine add`). */
+/** The key a Routine may have: the bearer key Grok Bot shows for the webhook, one word, not absurdly long. */
+export const routineKeyAllowed = (key) => typeof key === 'string' && key.trim().length >= 8 && key.trim().length <= 512 && !/\s/.test(key.trim());
+
+/**
+ * Add or replace a bot's Routine. Main token only (HTTP /api/bots/routine, `drover bots routine add`), or a setup the
+ * owner approved by its code (core/bots/routine-setup.js).
+ */
 export async function setRoutine(name, { url, key, title } = {}) {
   const n = botName(name);
   if (!n) throw new Error('bot name must be lowercase letters, digits and dashes, like alpha');
   if (!routineUrlAllowed(url)) throw new Error('the Routine webhook URL must be https (for Grok Bot: https://api2.cursor.sh/automations/webhook/<id>)');
-  if (typeof key !== 'string' || key.trim().length < 8 || /\s/.test(key.trim())) throw new Error('the Routine key must be the bearer key Grok Bot showed for that webhook (crsr_...)');
+  if (!routineKeyAllowed(key)) throw new Error('the Routine key must be the bearer key Grok Bot showed for that webhook (crsr_...)');
   return updateConfig((c) => {
     c.bots[n] = { ...(c.bots[n] ?? {}), title: typeof title === 'string' ? title.slice(0, 80) : c.bots[n]?.title ?? null, webhook: { url: url.trim(), key: key.trim() }, updatedAt: new Date(_deps.now()).toISOString() };
     return { bot: n, routine: describeRoutine(c.bots[n]) };
@@ -159,12 +165,17 @@ export async function removeRoutine(name) {
   });
 }
 
+/** What may be shown about a webhook URL: its host and the tail of its id, never the rest (nor any key). */
+export function describeWebhook(url) {
+  let host = '?', tail = '';
+  try { const u = new URL(url); host = u.host; tail = u.pathname.split('/').filter(Boolean).at(-1)?.slice(-6) ?? ''; } catch { /* stored by an older version */ }
+  return { host, webhook: tail ? `…${tail}` : null };
+}
+
 /** What may be shown about a Routine: host and webhook id tail, never the key. */
 function describeRoutine(b) {
   if (!b?.webhook?.url) return null;
-  let host = '?', tail = '';
-  try { const u = new URL(b.webhook.url); host = u.host; tail = u.pathname.split('/').filter(Boolean).at(-1)?.slice(-6) ?? ''; } catch { /* stored by an older version */ }
-  return { host, webhook: tail ? `…${tail}` : null, hasKey: Boolean(b.webhook.key), updatedAt: b.updatedAt ?? null };
+  return { ...describeWebhook(b.webhook.url), hasKey: Boolean(b.webhook.key), updatedAt: b.updatedAt ?? null };
 }
 
 export async function routines() {
@@ -566,18 +577,35 @@ export async function hasRoutine(name) {
   return Boolean(n && (await loadConfig()).bots[n]?.webhook?.url);
 }
 
+/**
+ * What a webhook answered, as a delivery keeps it: never the webhook's own key, URL or id, whatever it echoes back (a
+ * delivery is recorded in the truth file and shown to the owner, a terminal included); control characters and
+ * whitespace folded to one space, at most max characters.
+ */
+function webhookText(b, v, max) {
+  let id = '';
+  try { id = new URL(b.webhook.url).pathname.split('/').filter(Boolean).at(-1) ?? ''; } catch { /* stored by an older version */ }
+  let s = String(v ?? '');
+  for (const secret of [b.webhook.url, b.webhook.key, id].filter((x) => typeof x === 'string' && x.length >= 8).sort((x, y) => y.length - x.length)) s = s.split(secret).join('[redacted]');
+  return s.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
+}
+
 /** POST one event to a bot's routine. Grok Bot answers 200 {success, runUuid} when the run started. */
 async function postRoutine(b, body, ref) {
   let res;
   try {
     res = await _deps.fetch(b.webhook.url, { method: 'POST', headers: { authorization: `Bearer ${b.webhook.key}`, 'content-type': 'application/json', 'user-agent': 'drover-grok/1' }, body: JSON.stringify(body), signal: AbortSignal.timeout(_deps.timeoutMs) });
   } catch (e) {
-    return { ok: false, ref, via: ROUTINE_VIA, error: `the Routine webhook is unreachable: ${e?.cause?.code ?? e?.cause?.message ?? e?.message ?? e}` };
+    return { ok: false, ref, via: ROUTINE_VIA, error: `the Routine webhook is unreachable: ${webhookText(b, e?.cause?.code ?? e?.cause?.message ?? e?.message ?? e, 200)}` };
   }
   const raw = await res.text().catch(() => '');
   let data = null; try { data = JSON.parse(raw); } catch { /* not JSON */ }
-  if (res.ok) return { ok: true, ref, via: ROUTINE_VIA, status: res.status, ...(typeof data?.runUuid === 'string' ? { runUuid: data.runUuid.slice(0, 80) } : {}) };
-  const detail = String(data?.error ?? data?.message ?? raw).replace(/\s+/g, ' ').trim().slice(0, 200);
+  if (res.ok) {
+    // A run id is an id: one that is not (or that carries the key) is left out.
+    const run = typeof data?.runUuid === 'string' ? webhookText(b, data.runUuid, 80) : '';
+    return { ok: true, ref, via: ROUTINE_VIA, status: res.status, ...(/^[\w.-]+$/.test(run) ? { runUuid: run } : {}) };
+  }
+  const detail = webhookText(b, data?.error ?? data?.message ?? raw, 200);
   const why = res.status === 400 ? 'the Routine is paused or rejected the body (Grok Bot answers 400 for a paused Routine)'
     : res.status === 401 || res.status === 403 ? 'the Routine key was refused; set it again with drover bots routine add'
     : res.status === 404 ? 'the Routine webhook no longer exists; set it again with drover bots routine add'
