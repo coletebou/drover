@@ -277,6 +277,24 @@ describe('sessions.message reaches a handoff successor', () => {
     assert.equal(in1.got.length + in2.got.length, 0);
   });
 
+  test('a name recorded for two generations of one chain: each is checked, and one that still runs stops the redirect', async () => {
+    const ids = [1, 2, 3].map((n) => sid('c2c2', n));
+    await chain('november-chain', [{ id: ids[0], name: 'work' }, { id: ids[1], name: 'work' }, { id: ids[2], name: 'work-3' }]);
+    const in1 = await inbox('n1'), in3 = await inbox('n3');
+    await register({ id: ids[0], name: 'work-renamed', socket: in1.file });
+    await register({ id: ids[2], name: 'work-3', socket: in3.file });
+    const e = await send('work').then(() => null, (x) => x);
+    assert.equal(e.message, `session not found; work (generation 1, ${ids[0]}) of handoff chain november-chain still runs here under another name, so nothing was redirected: send to its session id`);
+    // Neither runs any more: the name is that chain's twice over, and its live newest generation takes the message.
+    await rm(REGISTRY, { recursive: true }); await mkdir(REGISTRY);
+    await register({ id: ids[2], name: 'work-3', socket: in3.file });
+    const r = await send('work');
+    assert.deepEqual([r.resolvedFrom.gen, r.resolvedTo.gen], [2, 3]);
+    await settle();
+    assert.equal(in1.got.length, 0);
+    assert.equal(in3.got.length, 1);
+  });
+
   test('a marker that cannot be read stops the redirect: nothing is sent, and the error says why', async () => {
     const [k1, k2, k3] = [1, 2, 3].map((n) => sid('e1e1', n));
     await chain('kilo-chain', [{ id: k1, name: 'kilo' }, { id: k2, name: 'kilo-2' }, { id: k3, name: 'kilo-3' }]);

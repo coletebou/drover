@@ -71,9 +71,10 @@ export async function loadChain(dir, fallbackName = null) {
 }
 
 /**
- * The chains target is a generation of, [{ chain, gen }]. sessionId given (target is that session's full id): that id
- * only. Otherwise a generation's session id, an id prefix of 8 hex digits or more, or its name. A full id's own marker
- * names its chain at once; anything else reads every chain the markers name.
+ * The chains target is a generation of, [{ chain, gen, matched }]: gen the newest generation it matches, matched every
+ * one (a name can be recorded for more than one generation). sessionId given (target is that session's full id): that
+ * id only. Otherwise a generation's session id, an id prefix of 8 hex digits or more, or its name. A full id's own
+ * marker names its chain at once; anything else reads every chain the markers name.
  */
 export async function chainsOf(target, { sessionId = null, dir = markersDir() } = {}) {
   const want = sessionId ?? String(target ?? '');
@@ -82,7 +83,7 @@ export async function chainsOf(target, { sessionId = null, dir = markersDir() } 
     const m = markerOf(await readJson(path.join(dir, `${safeId(want)}.json`)));
     const chain = m ? await loadChain(m.dir, m.chain) : null;
     const g = chain?.gens.find((x) => x.sessionId === want);
-    if (g) return [{ chain, gen: g.gen }];
+    if (g) return [{ chain, gen: g.gen, matched: [g] }];
   }
   const matches = sessionId ? (g) => g.sessionId === sessionId
     : (g) => g.sessionId === want || g.name === want || (ID_PREFIX.test(want) && g.sessionId.startsWith(want));
@@ -91,8 +92,8 @@ export async function chainsOf(target, { sessionId = null, dir = markersDir() } 
   const out = [];
   for (const [d, name] of dirs) {
     const chain = await loadChain(d, name);
-    const hit = chain?.gens.filter((g) => !g.unreadable && matches(g)).at(-1);
-    if (hit) out.push({ chain, gen: hit.gen });
+    const matched = chain?.gens.filter((g) => !g.unreadable && matches(g)) ?? [];
+    if (matched.length) out.push({ chain, gen: matched.at(-1).gen, matched });
   }
   return out;
 }
@@ -150,19 +151,20 @@ export async function successor(target, { sessionId = null, registry = [], answe
   const found = await chainsOf(target, { sessionId, ...(dir ? { dir } : {}) });
   if (!found.length) return { to: null, note: null, candidates: [] };
   const reg = registryIndex(registry);
-  const rows = found.map(({ chain, gen }) => {
+  const rows = found.map(({ chain, gen, matched }) => {
     const from = chain.gens.find((g) => g.gen === gen);
     const later = chain.gens.filter((g) => g.gen > gen).reverse().map((g) => ({ g, state: stateOf(g, reg) }));
     const head = later.find((x) => x.state !== 'not started') ?? null;
     // What the sender is shown: the head, and every other later generation still live here or started elsewhere.
     const shown = later.filter((x) => x === head || ['live', 'no messaging socket', 'elsewhere'].includes(x.state)).map((x) => candidateOf(chain, x.g, x.state));
-    return { chain, from, fromState: stateOf(from, reg), later, head, shown };
+    return { chain, from, matched, later, head, shown };
   });
-  const inChains = new Set(rows.map((r) => r.from.sessionId));
+  const inChains = new Set(rows.flatMap((r) => r.matched.map((g) => g.sessionId)));
   const outside = [...new Set(answering)].filter((x) => !inChains.has(x));
-  // The generation the target names may still run under another name (a session can be renamed): it is live, so its
+  // A generation the target names may still run under another name (a session can be renamed): it is live, so its
   // message is not sent on.
-  const stillRuns = rows.filter((r) => r.fromState === 'live' || r.fromState === 'no messaging socket');
+  const stillRuns = rows.flatMap((r) => r.matched.map((g) => ({ chain: r.chain, g, state: stateOf(g, reg) })))
+    .filter((x) => x.state === 'live' || x.state === 'no messaging socket');
   if (rows.length === 1 && !outside.length && !stillRuns.length && rows[0].head?.state === 'live') {
     const { chain, from, later, head } = rows[0];
     const passed = later.filter((x) => x !== head && x.state === 'live').map((x) => x.g.name ?? x.g.sessionId);
@@ -170,11 +172,11 @@ export async function successor(target, { sessionId = null, registry = [], answe
       + (passed.length ? `; ${passed.join(', ')} ${passed.length > 1 ? 'are' : 'is'} live too but handed off` : '');
     return { to: { session: reg.get(head.g.sessionId), gen: head.g.gen, id: head.g.sessionId, name: head.g.name }, chain: chain.name, from, why };
   }
-  const candidates = [...stillRuns.map((r) => candidateOf(r.chain, r.from, r.fromState)), ...rows.flatMap((r) => r.shown)];
+  const candidates = [...stillRuns.map((x) => candidateOf(x.chain, x.g, x.state)), ...rows.flatMap((r) => r.shown)];
   let note;
   if (stillRuns.length) {
-    note = stillRuns.map((r) => `${label(r.from)} of handoff chain ${r.chain.name} still runs here${r.from.name === target ? ' under another name' : ''}`).join('; ')
-      + ', so nothing was redirected: send to its session id';
+    note = stillRuns.map((x) => `${label(x.g)} of handoff chain ${x.chain.name} still runs here${x.g.name === target ? ' under another name' : ''}`).join('; ')
+      + `, so nothing was redirected: send to ${stillRuns.length > 1 ? 'one by its' : 'its'} session id`;
   } else if (outside.length) {
     note = `${target} also names ${outside.length > 1 ? `${outside.length} sessions` : 'a session'} in no handoff chain (${outside.join(', ')}), so nothing was redirected: `
       + rows.map((r) => `chain ${r.chain.name}: ${label(r.from)}${r.shown.length ? `, then ${r.shown.map(describe).join('; ')}` : ' is its newest generation'}`).join(' | ');
