@@ -14,7 +14,8 @@ Zero npm dependencies. Node 24 (already on every box via node-tools).
 ```
 drover serve                   # foreground daemon, http://127.0.0.1:7337
 drover open                    # print the URL with the token (and open a browser)
-drover status
+drover status                  # is the daemon up, which commit did it load, does it need a restart to load the checkout?
+drover op fleet.versions '{"commit":"1a2b3c4"}'   # what each host runs; everywhere: true when the whole fleet has 1a2b3c4
 drover clients                 # apps that authenticated to this daemon in the last day
 drover op sessions.list        # any op from the CLI, JSON out
 drover op sessions.list '{"host":"box-a","cwd":"~/code/webapp","engine":"claude","live":true,"compact":true,"limit":10}'

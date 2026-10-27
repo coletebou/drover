@@ -28,6 +28,7 @@ import { ops as uploadOps } from './uploads.js';
 import { ops as fileOps } from './files.js';
 import { ops as fileWaitOps, waitLimits } from './filewait.js';
 import { filterSessions, filtersGiven } from './session-filter.js';
+import * as version from './version.js';
 import { ops as searchOps } from './search/service.js';
 import * as docker from './docker.js';
 import * as vitals from './vitals.js';
@@ -172,6 +173,7 @@ export const local = {
   // ---- host facts
   async 'host.facts'() { return hosts.localFacts(); },
   async 'host.identity'() { const f = await hosts.localFacts(); return { host: f.host, identity: f.identity, node: f.node }; },
+  async 'host.version'({ commit } = {}) { return version.hostVersion({ commit }); },
   async 'host.vitals'({ fresh = false } = {}) { return localVitals({ fresh: fresh === true || fresh === 'true' }); },
 
   // ---- tmux
@@ -415,7 +417,7 @@ function headlessTurns(evs = []) {
 }
 
 /** Ops that must never be forwarded (they are about the front itself). */
-const FRONT_ONLY = new Set(['host.list', 'host.probe', 'fleet.summary', 'fleet.vitals', 'fleet.place', 'native.summary', 'native.board', 'native.notifications', 'search.fleet', 'search.grepFleet', 'docker.fleet']);
+const FRONT_ONLY = new Set(['host.list', 'host.probe', 'fleet.summary', 'fleet.vitals', 'fleet.place', 'fleet.versions', 'native.summary', 'native.board', 'native.notifications', 'search.fleet', 'search.grepFleet', 'docker.fleet']);
 
 // Per-host board data goes through the shared cache (stale-while-revalidate,
 // persisted) so the board renders at once and a down host still shows its last
@@ -441,6 +443,25 @@ async function hostSummary(host, { maxAgeMs, fresh = false }) {
   };
   const r = await cache.get(key, loader, { ttl: maxAgeMs, maxStale: 24 * 3600_000, fresh });
   return { ...r.value, cache: r.meta };
+}
+
+/**
+ * fleet.versions in this process: the hosts are search.fleet's (the ones named, or local plus every fleet host that
+ * answered the last probe), and each remote row is answered by this process's ssh peer there, so its contains covers
+ * the ops this process sends that host too. With commit and no hosts named, everywhere is true only when every fleet
+ * host answered and contains it; coverage names the hosts that could not be asked. A named subset gets no everywhere
+ * (it would read as the fleet's): its rows say it.
+ */
+async function fleetVersionsHere({ hosts: names, commit: wanted } = {}) {
+  const commit = version.commitArg(wanted);
+  const { targets, known } = await fleetTargets(names);
+  const t0 = Date.now();
+  const perHost = (await askHosts(targets, 'host.version', commit ? { commit } : {}, (r) => r)).map(({ results: _r, ...p }) =>
+    (!p.ok && /unknown op host\.version/.test(p.error ?? '') ? { ...p, error: `${p.host} runs Drover code from before host.version: update Drover there (${UPDATE_HINT})` } : p));
+  const coverage = fleetCoverage({ known, targets, perHost, probes: lastProbe, chosen: Boolean(names?.length), vectors: false });
+  const verdict = !commit ? {} : names?.length ? { commit }
+    : { commit, everywhere: perHost.every((p) => p.ok && p.contains === true) && !coverage.notCovered.length };
+  return { ts: new Date().toISOString(), ms: Date.now() - t0, ...verdict, hosts: perHost, coverage };
 }
 
 export const front = {
@@ -539,6 +560,25 @@ export const front = {
       } catch (e) { return vitalsRow(t, null, { ok: false, ms: Date.now() - t1, error: String(e.message).slice(0, 300) }); }
     }));
     return { ts: new Date().toISOString(), ms: Date.now() - t0, identity: me.identity, catalog: cat.found ? cat.file : null, ...(cat.errors.length ? { catalogErrors: cat.errors } : {}), hosts: rows };
+  },
+  /**
+   * host.version on the fleet's hosts in parallel (fleetVersionsHere), so "is this fix live everywhere?" is one call.
+   * Outside the daemon the daemon answers: its ssh peers carry the board's and the sessions' ops and can predate a
+   * pull, while a peer this process opened now would always be current. When this machine's daemon runs but does not
+   * answer (busy, or from before this op), the answer made here says so in note and its everywhere is null: those
+   * peers were not asked. Never cached: the answer changes when a host pulls or restarts.
+   */
+  async 'fleet.versions'(args = {}) {
+    version.commitArg(args.commit);
+    const ep = await daemonEndpoint();
+    if (ep) {
+      try { return await callDaemon(ep, 'fleet.versions', args, { timeoutMs: 60_000 }); }
+      catch (e) { if (!(e.unreachable || (e.fromDaemon && /unknown op/i.test(e.message)))) throw e; }
+    }
+    const r = await fleetVersionsHere(args);
+    const d = await version.daemonInfo();
+    if (!d?.running || d.pid === process.pid) return r;
+    return { ...r, ...('everywhere' in r ? { everywhere: null } : {}), note: `answered outside this machine's daemon (pid ${d.pid}), which did not answer: its ssh peers, which carry the board's and the sessions' ops, were not asked` };
   },
   /**
    * Where the next workload of a class should run: among this identity's catalog hosts with a placement policy, the
