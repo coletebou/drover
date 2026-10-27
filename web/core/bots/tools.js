@@ -7,13 +7,14 @@
 // Prose names the owner as DROVER_OWNER_NAME says (core/owner.js).
 import * as grok from './grok.js';
 import * as eventsMod from '../events.js';
-import { OWNER, OWNER_NAME } from '../owner.js';
+import * as settingsMod from '../settings.js';
+import { muteFor } from '../../ui/notify-policy.js';
+import { OWNER, OWNER_NAME, isOwner } from '../owner.js';
 import { SHARED_BOT } from './oauth.js';
 import { accessForGrant } from './access.js';
 import { tenantTools } from './tenant-tools.js';
 import { sanitizeSearchHits, sanitizeFeatures, sanitizeSession, projectMatches, clean } from './policy.js';
 
-const Owner = OWNER_NAME.charAt(0).toUpperCase() + OWNER_NAME.slice(1);   // at the start of a sentence
 const N = grok.NEEDS_OWNER;
 
 /** The alert tool. Its earlier name (LEGACY_NOTIFY_TOOL) is served too, for bots set up with it. */
@@ -35,6 +36,7 @@ export function instructionsFor({ brain = true } = {}) {
     `You are one of ${OWNER_NAME}'s Grok bots. This connection lets you see the fleet, search what the agents said${brain ? ' and saved' : ''}, keep ${OWNER_NAME} informed${brain ? ', and save memories' : ''}.`,
     'Call drover_whoami first: it says which bot this connection belongs to and how many inbox messages are unanswered. Drover records everything you write under that bot; no tool takes a bot name.',
     'Check drover_inbox when you start and whenever Drover triggers you, and answer each message with drover_reply (its messageId).',
+    `Read receipts: drover_inbox and drover_sent say whether ${OWNER_NAME} (or the agent that asked) has read your replies; a message you get from drover_inbox, or start on with drover_status, is marked read for its sender.`,
     `Report what you are doing with drover_status (working, idle, blocked, ${N}, done) when a task starts and when it ends; ${N} and blocked alert ${OWNER_NAME}.`,
     `Search before asserting: drover_search (what the agents said)${brain ? ', drover_brain_search (saved memories)' : ''}, drover_features and drover_reflections (tracked work), drover_fleet (who is busy now).`,
     `Save durable learnings with ${brain ? 'drover_brain_note' : 'drover_note'}. Use ${NOTIFY_TOOL} only when you need ${OWNER_NAME} in person.`,
@@ -106,19 +108,48 @@ export function botTools(grant, { dispatch, host = eventsMod.shortHost(), readEv
   const schema = (properties, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
   /** A hit from another bot's thread (a message to it, its reply: search sessionId grok:<name>). Broadcasts, grok:*, are everyone's. */
   const othersThread = (h) => grok.isGrokId(h.sessionId) && grok.botName(h.sessionId) !== me;
+  /**
+   * Truth-file hits in this bot's own thread (a message to it, its reply) with their event and read state: a
+   * message's receipt (delivered, read, answered), a reply's (to, read). Anything else gets nothing.
+   */
+  const mine = (h) => h.kind === 'wal' && h.ref && grok.isGrokId(h.sessionId) && grok.botName(h.sessionId) === me;
+  async function ownReceipts(hits) {
+    if (!hits.some(mine)) return [];
+    const { evs, idx } = await grok.threadState();
+    const chats = new Map(evs.filter((e) => e.type === 'chat' && e.actor === grok.actorFor(me)).map((e) => [e.id, e]));
+    return hits.map((h) => {
+      if (!mine(h)) return null;
+      const m = h.role === 'message' ? idx.messages.get(h.ref) : null;
+      if (m) { const r = grok.messageReceipt(m, me, idx); return { event: h.ref, messageId: m.ref ?? m.id, receipt: { state: r.state, readAt: r.read?.at ?? null, answered: Boolean(r.answered) } }; }
+      const c = h.role === 'chat' ? chats.get(h.ref) : null;
+      if (c) { const r = grok.replyReceipt(c, idx); return { event: h.ref, receipt: { to: r.to, state: r.state, read: r.read ? { at: r.read.at, by: r.read.by } : null } }; }
+      return null;
+    });
+  }
+  /**
+   * How a reply reaches who it is for. The owner: an alert on their screens, raised as the reply is recorded (muted:
+   * true when their settings mute this bot or bot replies, so it waits in Drover silently). An agent: the bot's
+   * thread, which it reads with drover_session_transcript.
+   */
+  async function deliveryOf(n, to) {
+    if (!isOwner(to)) return { delivered: true, via: 'thread' };
+    const settings = await settingsMod.current().then((c) => c.settings).catch(() => null);
+    const muted = settings ? Boolean(muteFor({ category: 'finished', kind: 'bot-reply', host, sessionId: grok.idFor(n), name: grok.display(n) }, settings, Date.now())) : false;
+    return { delivered: true, via: 'alert', ...(muted ? { muted: true } : {}) };
+  }
 
   const tools = [
     {
       name: 'drover_whoami', scope: READ, title: 'Who am I here',
-      description: `Your identity on this connection (the bot your writes are recorded as), the scopes ${OWNER_NAME} granted, and how many inbox messages you have not answered. Call it first.`,
+      description: `Your identity on this connection (the bot your writes are recorded as), the scopes ${OWNER_NAME} granted, how many inbox messages you have not answered (and not read), and how many of your replies from the last week their recipient has not read yet. Call it first.`,
       inputSchema: schema({}), annotations: READ_HINTS,
       async run() {
         const connection = { client: grant.clientName, bot: me ?? 'shared', scopes: grant.scopes };
         if (!me) return { you: null, connection: { ...connection, shared: true }, note: `a shared, read-only connection: it reads the fleet but acts as no bot, so statuses, replies, notes, memories, alerts and an inbox need your own connection (ask ${OWNER_NAME} to connect one for you)`, gateway: host, now: new Date().toISOString() };
-        const unanswered = grok.unansweredCount(await grok.botEvents(), me);
+        const { evs, idx } = await grok.threadState();
         const hasRoutine = (await grok.routines()).some((r) => r.bot === me && r.routine);
         return {
-          you: grok.idFor(me), connection, inbox: { unanswered },
+          you: grok.idFor(me), owner: OWNER, connection, inbox: grok.inboxCounts(evs, me, idx), replies: { unread: grok.unreadSent(evs, me, idx) },
           routine: hasRoutine ? { configured: true } : {
             configured: false, instruction: grok.ROUTINE_PROMPT,
             setup: `So Drover can send you tasks: create exactly one routine named "Drover" on yourself, trigger webhook, with the instruction above copied exactly. In the same message where you tell ${OWNER_NAME} it is ready, give them the two links that open its Webhook URL and its Webhook key in Grok Bot's routine panel, where they can copy them (a link to the routine itself does not open), and the command to run on the machine Drover runs on: drover bots routine add ${me} --url <the Webhook URL>, pasting the key at its prompt. You cannot see either value: never try to read, repeat or pass them, and never ask for the key in chat. Ask them for an "Always allow" rule on the Drover tools so routine runs are not held for review.`,
@@ -157,16 +188,34 @@ export function botTools(grant, { dispatch, host = eventsMod.shortHost(), readEv
         const lim = Math.max(1, Math.min(25, Math.round(Number(args.limit) || 10)));
         // Asks for more than lim: other bots' messages are dropped after the search.
         const r = await dispatch('search.fleet', { query: args.query, limit: Math.min(100, lim * 3), kinds: args.kinds?.length ? args.kinds : SEARCH_KINDS, ...(args.days ? { days: args.days } : {}), ...(project ? { project } : {}) });
-        return { query: args.query, results: sanitizeSearchHits((r?.results ?? []).filter((h) => !othersThread(h))).slice(0, lim), searched: r?.coverage?.searched ?? [] };
+        const hits = (r?.results ?? []).filter((h) => !othersThread(h)).slice(0, lim);
+        const receipts = me ? await ownReceipts(hits) : [];
+        return { query: args.query, results: sanitizeSearchHits(hits).map((h, i) => (receipts[i] ? { ...h, ...receipts[i] } : h)), searched: r?.coverage?.searched ?? [] };
       },
     },
     {
       name: 'drover_inbox', scope: READ, self: true, title: 'Your inbox',
-      description: `Messages ${OWNER_NAME} (or Drover) sent you, oldest first, including ones sent to every bot. Each has a messageId to answer with drover_reply and whether you answered it. since is a messageId or ISO time to start after.`,
+      description: `Messages ${OWNER_NAME} (or Drover) sent you, oldest first, including ones sent to every bot. Each has a messageId to answer with drover_reply, whether you answered it, when you first read it, and your reply with whether its recipient has read it (reply.read). Messages it hands you are marked read for their sender. since is a messageId or ISO time to start after.`,
       inputSchema: schema({ since: STR('messageId or ISO time to start after'), limit: NUM('max messages, default 20') }), annotations: READ_HINTS,
       async run(args) {
-        const msgs = grok.inboxFrom(await grok.botEvents(), me, { since: args.since, limit: args.limit });
+        const { evs, idx } = await grok.threadState();
+        let msgs = grok.inboxFrom(evs, me, { since: args.since, limit: args.limit, idx });
+        // Handing a message over is reading it: its sender sees it read (a receipt that fails to land loses nothing).
+        const fresh = msgs.filter((m) => !m.readAt).map((m) => m.messageId);
+        if (fresh.length && await grok.markRead(me, fresh, { via: 'inbox' }).catch(() => 0)) {
+          const now = new Date().toISOString();
+          msgs = msgs.map((m) => (m.readAt ? m : { ...m, readAt: now }));
+        }
         return { you: grok.idFor(me), messages: msgs.map((m) => ({ ...m, text: clean(m.text, 20_000) })) };
+      },
+    },
+    {
+      name: 'drover_sent', scope: READ, self: true, title: 'Your replies, read or not',
+      description: `What you said through Drover (your replies, and messages to ${OWNER_NAME} on your own thread), newest first: who each was for (to: ${OWNER_NAME}'s actor, named in owner, or the agent that asked), and read { at, by } once they read it, or null. since is an event id or ISO time to start after.`,
+      inputSchema: schema({ since: STR('event id or ISO time to start after'), limit: NUM('max items, default 20') }), annotations: READ_HINTS,
+      async run(args) {
+        const { evs, idx } = await grok.threadState();
+        return { you: grok.idFor(me), owner: OWNER, sent: grok.sentFrom(evs, me, { since: args.since, limit: args.limit, idx }).map((c) => ({ event: c.event, ts: c.ts, inReplyTo: c.inReplyTo, to: c.to, state: c.state, read: c.read, text: clean(c.text, 600) })) };
       },
     },
     {
@@ -250,13 +299,15 @@ export function botTools(grant, { dispatch, host = eventsMod.shortHost(), readEv
     },
     {
       name: 'drover_reply', scope: WRITE, self: true, title: 'Answer a message',
-      description: `Answer a message from your inbox (messageId from drover_inbox or from the Drover trigger that started you). Without messageId it starts a message to ${OWNER_NAME} on your own thread. ${Owner} gets an alert either way.`,
+      description: `Answer a message from your inbox (messageId from drover_inbox or from the Drover trigger that started you). Without messageId it starts a message to ${OWNER_NAME} on your own thread. The answer says who it is for and how it reaches them: an alert on ${OWNER_NAME}'s screens (unless they muted you), or the thread an agent that asked reads. drover_sent says when it was read.`,
       inputSchema: schema({ messageId: STR('the message you are answering'), text: STR('your answer (markdown, max 20000 characters)') }, ['text']),
       annotations: writeHints(),
       async run(args) {
         const n = me;
         const ev = await grok.reply(n, { messageId: args.messageId, text: args.text, host });
-        return { ok: true, event: ev.id, inReplyTo: ev.inReplyTo ?? null };
+        const { idx } = await grok.threadState();
+        const to = grok.recipientOf(ev, idx);
+        return { ok: true, event: ev.id, inReplyTo: ev.inReplyTo ?? null, to, delivery: await deliveryOf(n, to), read: null };
       },
     },
     {

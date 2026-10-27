@@ -232,7 +232,7 @@ describe('bot gateway over HTTP', () => {
 
     const list = await mcp(t.access_token, 'tools/list', {}, { sid: init.sid });
     const names = list.body.result.tools.map((x) => x.name).sort();
-    assert.deepEqual(names, ['drover_brain_get', 'drover_brain_note', 'drover_brain_search', 'drover_features', 'drover_feature_upsert', 'drover_fleet', 'drover_inbox', 'drover_note', 'drover_reflections', 'drover_reply', 'drover_search', 'drover_status', 'drover_whoami'].sort());
+    assert.deepEqual(names, ['drover_brain_get', 'drover_brain_note', 'drover_brain_search', 'drover_features', 'drover_feature_upsert', 'drover_fleet', 'drover_inbox', 'drover_note', 'drover_reflections', 'drover_reply', 'drover_search', 'drover_sent', 'drover_status', 'drover_whoami'].sort());
     for (const tool of list.body.result.tools) {
       assert.equal(tool.inputSchema.properties.host, undefined, `${tool.name} takes no host`);
       assert.equal(tool.inputSchema.properties.agent, undefined, `${tool.name}: a bound connection needs no agent`);

@@ -131,9 +131,16 @@ struct HTTPDroverAPI: DroverAPI {
     }
 
     func transcript(_ ref: SessionRef, since: Int?, limit: Int) async throws -> TranscriptPage {
-        var args = Self.merge(Self.hostArgs(ref.hostArg), ["id": .string(ref.id), "limit": .number(Double(limit))])
+        try await op("sessions.transcript", Self.transcriptArgs(ref, since: since, limit: limit))
+    }
+
+    /// What `sessions.transcript` gets. A Grok bot's thread names this client as its reader (`seenBy`), so the bot's
+    /// replies on screen here count as read (web/README.md "Read receipts"); only the detail screen reads transcripts.
+    static func transcriptArgs(_ ref: SessionRef, since: Int?, limit: Int) -> [String: JSONValue] {
+        var args = merge(hostArgs(ref.hostArg), ["id": .string(ref.id), "limit": .number(Double(limit))])
         if let since { args["since"] = .number(Double(since)) }
-        return try await op("sessions.transcript", args)
+        if ref.id.hasPrefix("grok:") { args["seenBy"] = .string(DroverIDs.actor) }
+        return args
     }
 
     func lastReply(_ ref: SessionRef) async throws -> LastReply {

@@ -83,6 +83,14 @@ Details as built by core (these refine the bullets above; DroverKit models and `
 - Transcript turns: assistant `tools[{id,name,input,summary,description?}]`, tool_result `results[{toolUseId,isError,
   text,chars}]`, user turns relayed through an inbox `via:"drover"` (with the `actor` who typed it) or `via:"peer"` with `from`.
 
+## Grok bot read receipts (added 2026-10-27)
+- A Grok bot's `sessions.transcript` (`id` `grok:<name>`) turns carry `id` (their event) and `receipt`: a user turn (a
+  message to the bot) `{state: queued|delivered|read|answered, delivered?{at,via}, read?{at,via}, answered?{at,event},
+  failed?}`, an assistant turn (its reply) `{to, state: delivered|read, read?{at,by,via}}`. The answer's `receipts`
+  (`id -> receipt`) repeats them for the thread's last turns, so a client that reads only new turns can update older ones.
+- Pass `seenBy` (the client's own actor, e.g. `ios`) when the bot's thread is on screen: the bot's replies to the owner
+  count as read. A bot's session in `sessions.list` carries `unread` (replies the owner has not read); board strips too.
+
 ## The owner (added 2026-10-23)
 - The daemon belongs to one person, its owner: `DROVER_OWNER` on the daemon (default `owner`; `web/core/owner.js`).
   Clients never hardcode that name. On writes they send the generic actor `owner` (the macOS and menu bar apps,

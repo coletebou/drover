@@ -111,7 +111,7 @@ export const TOOLS = [
       limit: { type: 'number', description: 'Maximum turns to return. Default 200.' },
       thread: { type: 'string', description: 'Manager only: the conversation (default main).' },
     }, ['id']),
-    run: (dispatch, args) => dispatch('sessions.transcript', pick(args, ['id', 'since', 'limit', 'host', 'thread'])),
+    run: (dispatch, args) => dispatch('sessions.transcript', mcpArgs('sessions.transcript', pick(args, ['id', 'since', 'limit', 'host', 'thread']))),
   },
   {
     name: 'drover_send',
@@ -379,8 +379,15 @@ export const MCP_WAIT_MAX_SEC = 110;
 // in the calling session's working directory. Both are set here, after argument checks, over anything the caller
 // passed. The front drops callerCwd before the search goes to any host.
 const withCallerCwd = (a) => ({ ...a, callerCwd: process.cwd(), remote: true });
+// An agent that reads a Grok bot's thread has read the bot's answers to it (read receipts, core/bots/grok.js): the read,
+// and sessions.seen, name this server's actor, never one an agent passes, so no agent marks a reply read for the owner
+// or for another reader. Sessions that are not bots ignore seenBy.
+const withSeenBy = (a) => ({ ...a, seenBy: writeActor(undefined) });
 const MCP_ARGS = {
   'files.wait': (a) => { const n = Number(a.timeoutSec ?? MCP_WAIT_MAX_SEC); return { ...a, timeoutSec: Number.isFinite(n) ? Math.min(n, MCP_WAIT_MAX_SEC) : a.timeoutSec }; },
+  'sessions.transcript': withSeenBy,
+  'sessions.lastReply': withSeenBy,
+  'sessions.seen': (a) => ({ ...a, actor: writeActor(undefined) }),
   'search.semantic': withCallerCwd,
   'search.fleet': withCallerCwd,
 };

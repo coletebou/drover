@@ -8,6 +8,7 @@ import { h, clear, engine, ago, dot, empty, loading, fmtTime, plural } from '../
 import { mountManagerChat } from '../manager-chat.js';
 import { answerModel, pressKey, pressedLabel } from '../answer-model.js';
 import { mdText } from '../markdown.js';
+import { receiptText } from '../chat-model.js';
 
 const LANES = [
   { id: 'wait', title: 'Waiting on you', hint: 'a dialog is open or the agent stopped and asked', none: 'Nothing needs you.' },
@@ -19,7 +20,27 @@ const ms = (v) => (v == null ? 0 : typeof v === 'number' ? (v < 1e11 ? v * 1000 
 
 /** What a strip shows, as one string: an unchanged signature keeps its element. */
 function stripSig(s) {
-  return JSON.stringify([s.lane, s.faded, s.name, s.engine, s.status, ms(s.since), s.host, s.tmux, s.windowName, s.ask?.label, s.ask?.text, s.finished?.ts, s.tail, s.hash, s.keys, s.dialog?.options?.map((o) => [o.n, o.label, o.selected])]);
+  return JSON.stringify([s.lane, s.faded, s.name, s.engine, s.status, ms(s.since), s.host, s.tmux, s.windowName, s.ask?.label, s.ask?.text, s.finished?.ts, s.tail, s.hash, s.keys, s.dialog?.options?.map((o) => [o.n, o.label, o.selected]), s.unread]);
+}
+
+/** One line of the board's recent-events feed. */
+export function feedLine(e) {
+  switch (e.type) {
+    case 'message': return `${e.actor} → ${e.to?.name ?? e.to?.id}: ${e.text}`;
+    case 'chat': return `${e.from}: ${e.error ? `did not answer: ${e.error}` : e.text}`;
+    case 'notify': return [e.category, e.name ?? e.sessionName, e.title ?? e.message].filter(Boolean).join(': ');
+    case 'op': return `${e.op}${e.target && e.target !== 'local' ? ` on ${e.target}` : ''}${e.ok === false ? ` failed${e.error ? `: ${e.error}` : ''}` : ''}`;
+    case 'launch': return `${e.engine} ${e.mode} ${e.profile} ${e.result?.tmux ?? ''}`;
+    case 'feature': return `${e.fid} ${e.state ?? ''} ${e.title ?? ''}`;
+    case 'note': return `${e.about}: ${e.text}`;
+    case 'status': return `${e.name ?? e.agent} ${e.state}${e.summary ? `: ${e.summary}` : ''}`;
+    case 'receipt': return receiptText(e);
+    case 'survey': return `${e.count} items from ${e.file?.split('/').pop()}`;
+    case 'survey-item': return e.item?.title ?? e.item?.id ?? '';
+    case 'pin': case 'unpin': return e.target;
+    case 'handoff': return e.path;
+    default: return JSON.stringify(e).slice(0, 120);
+  }
 }
 
 export default {
@@ -110,7 +131,9 @@ export default {
         class: `strip ${color}${s.faded ? ' faded' : ''}${isNew && s.lane === 'wait' ? ' new' : ''}${busy.has(s.key) ? ' sending' : ''}`, tabindex: 0, 'data-key': s.key,
         onclick: () => open(s), onkeydown: (e) => { if (e.key === 'Enter' && e.target === el) open(s); },
       },
-      h('div', { class: 'title' }, engine(s.engine), h('span', { class: 'name', title: s.cwd ?? '' }, s.name), s.status === 'busy' || s.lane === 'work' ? dot('busy', { pulse: true }) : null),
+      h('div', { class: 'title' }, engine(s.engine), h('span', { class: 'name', title: s.cwd ?? '' }, s.name), s.status === 'busy' || s.lane === 'work' ? dot('busy', { pulse: true }) : null,
+        // A Grok bot's replies the owner has not read yet (read receipts): opening its chat reads them.
+        s.unread ? h('span', { class: 'unread', title: `${plural(s.unread, 'reply', 'replies')} you have not read; open the chat to read them` }, `${s.unread} unread`) : null),
       h('span', { class: 'age', title: s.since ? new Date(ms(s.since)).toLocaleString() : '' }, s.since ? ago(s.since) : ''),
       h('div', { class: 'where' }, [s.host !== 'local' ? s.host : null, s.tmux, s.windowName && s.windowName !== s.name ? s.windowName : null].filter(Boolean).join('  ')),
       s.ask ? h('div', { class: 'ask-label' }, s.ask.label) : s.finished ? h('div', { class: 'ask-label quiet' }, 'finished') : null,
@@ -184,23 +207,7 @@ export default {
       } catch { /* quiet */ }
     }
     function renderFoot() { renderLaunches(); renderEvents(); }
-    function summarize(e) {
-      switch (e.type) {
-        case 'message': return `${e.actor} → ${e.to?.name ?? e.to?.id}: ${e.text}`;
-        case 'chat': return `${e.from}: ${e.error ? `did not answer: ${e.error}` : e.text}`;
-        case 'notify': return [e.category, e.name ?? e.sessionName, e.title ?? e.message].filter(Boolean).join(': ');
-        case 'op': return `${e.op}${e.target && e.target !== 'local' ? ` on ${e.target}` : ''}${e.ok === false ? ` failed${e.error ? `: ${e.error}` : ''}` : ''}`;
-        case 'launch': return `${e.engine} ${e.mode} ${e.profile} ${e.result?.tmux ?? ''}`;
-        case 'feature': return `${e.fid} ${e.state ?? ''} ${e.title ?? ''}`;
-        case 'note': return `${e.about}: ${e.text}`;
-        case 'status': return `${e.name ?? e.agent} ${e.state}${e.summary ? `: ${e.summary}` : ''}`;
-        case 'survey': return `${e.count} items from ${e.file?.split('/').pop()}`;
-        case 'survey-item': return e.item?.title ?? e.item?.id ?? '';
-        case 'pin': case 'unpin': return e.target;
-        case 'handoff': return e.path;
-        default: return JSON.stringify(e).slice(0, 120);
-      }
-    }
+    const summarize = feedLine;
 
     // ------------------------------------------------------------ the manager dock
     // Wide: a column beside the lanes; narrow: a card above them. Hidden, it is a slim bar (a rail when wide) that

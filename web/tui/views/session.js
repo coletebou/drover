@@ -81,7 +81,9 @@ export class SessionView {
     const sid = this.sid(); if (!sid) return;
     if (this.busyChat) return; this.busyChat = true;
     try {
-      const r = await this.app.client.call('sessions.transcript', { id: sid, since: incremental ? this.offset : 0, limit: this.limit, ...this.hostArg });
+      // A Grok bot's replies shown here are read by the owner (read receipts, web/README.md).
+      const seen = this.engine() === 'grok' ? { seenBy: 'tui' } : {};
+      const r = await this.app.client.call('sessions.transcript', { id: sid, since: incremental ? this.offset : 0, limit: this.limit, ...this.hostArg, ...seen });
       if (!incremental) { this.turns = []; this.seen = new Set(); }
       let added = 0;
       for (const t of r?.turns ?? []) if (this.take(t)) added++;

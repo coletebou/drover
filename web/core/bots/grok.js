@@ -8,6 +8,7 @@
 //  - bot -> Drover: the gateway's MCP tools (server/botgate.js, core/bots/tools.js). drover_status, drover_reply
 //    and drover_note land in the truth file as status, chat and note events with actor grok:<name>; a bot's
 //    transcript and board status are folded from those events.
+//  - receipts: who has read what in a bot's conversations, as receipt events Drover writes itself (Receipts below).
 // Routines are configured with `drover bots routine add` (main token), never through an op: an agent able to
 // point a bot's Routine elsewhere could read every message the owner sends that bot.
 import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
@@ -17,7 +18,7 @@ import { stateDir } from '../paths.js';
 import * as eventsMod from '../events.js';
 import { uuidv7 } from '../ids.js';
 import { envvar } from '../envvars.js';
-import { OWNER, OWNER_NAME, isOwner } from '../owner.js';
+import { OWNER, OWNER_NAME, isOwner, isOwnerClient } from '../owner.js';
 import { BOT_NAME_RE } from './oauth.js';
 import { clean } from './policy.js';
 
@@ -167,20 +168,29 @@ export async function routines() {
 // ---------------------------------------------------------------- what the truth file says about the bots
 // One fold over the bot events, cached on the file's size and mtime: sessions.list runs every 15 s and the truth
 // file is a few MB.
-let foldCache = null; // { sig, value }
+let foldCache = null; // { sig, value, index }
 
 const isBotActor = (a) => typeof a === 'string' && a.startsWith('grok:') && BOT_NAME_RE.test(a.slice(5));
-const touchesBot = (e) => isBotActor(e.actor) || e.to?.kind === ENGINE || (e.type === 'status' && isBotActor(e.agent));
+/** A bot's conversation (grok:<name>, or grok:* for every bot): where a receipt says it belongs. */
+const isBotThread = (t) => t === BROADCAST || isBotActor(t);
+const touchesBot = (e) => isBotActor(e.actor) || e.to?.kind === ENGINE || (e.type === 'status' && isBotActor(e.agent)) || (e.type === 'receipt' && isBotThread(e.thread));
 
 export async function botEvents() {
   let sig = null;
   try { const s = await stat(_deps.eventsPath()); sig = `${s.size}:${s.mtimeMs}`; } catch { /* no file yet */ }
   if (sig && foldCache?.sig === sig) return foldCache.value;
   const value = (await _deps.readEvents()).filter(touchesBot);
-  if (sig) foldCache = { sig, value };
+  if (sig) foldCache = { sig, value, index: null };
   return value;
 }
 export function _resetCache() { foldCache = null; }
+
+/** The bot events and their receipt index (receiptIndex), built once per change of the truth file. */
+async function botState() {
+  const evs = await botEvents();
+  if (foldCache?.value === evs) return { evs, idx: (foldCache.index ??= receiptIndex(evs)) };
+  return { evs, idx: receiptIndex(evs) };
+}
 
 /** A bot's roster entry before any of its events: foldRoster fills it in. */
 const rosterEntry = (n) => ({ name: n, display: display(n), status: null, lastSeenAt: null, lastReplyAt: null, lastDeliveredAt: null });
@@ -239,7 +249,7 @@ function staleness(b, now, limit) {
  * went quiet while it should be acting (staleness) has status stale and says why.
  */
 export async function listSessions({ host } = {}) {
-  const [cfg, evs] = await Promise.all([loadConfig(), botEvents()]);
+  const [cfg, { evs, idx }] = await Promise.all([loadConfig(), botState()]);
   const roster = foldRoster(evs);
   const now = _deps.now();
   const limit = staleMs();
@@ -249,13 +259,14 @@ export async function listSessions({ host } = {}) {
     const b = roster.get(n) ?? rosterEntry(n);
     const st = b.status;
     const stale = staleness(b, now, limit);
+    const unread = unreadSent(evs, n, idx, { to: OWNER, now });
     return {
       id: idFor(n), name: b.display, engine: ENGINE, kind: ENGINE, cwd: null, host: host ?? null,
       live: [b.lastSeenAt, b.lastDeliveredAt].some((t) => t && now - Date.parse(t) < LIVE_MS),
       // Own names only: any agent can append a status event, and state "__proto__" must not read as a status.
       status: stale ? 'stale' : Object.hasOwn(SESSION_STATUS, st?.state) ? SESSION_STATUS[st.state] : 'idle', statusUpdatedAt: st?.ts ?? null,
       state: st?.state ?? null, summary: st?.summary ?? null, task: st?.task ?? null, title: cfg.bots[n]?.title ?? null,
-      lastSeenAt: b.lastSeenAt, routine: Boolean(cfg.bots[n]?.webhook), ...(stale ? { stale } : {}),
+      lastSeenAt: b.lastSeenAt, routine: Boolean(cfg.bots[n]?.webhook), ...(stale ? { stale } : {}), ...(unread ? { unread } : {}),
     };
   });
 }
@@ -276,32 +287,191 @@ export async function findSession(id) {
 
 /** Messages delivered or queued to this bot (or to every bot, grok:*). */
 const inboxOf = (evs, name) => evs.filter((e) => e.type === 'message' && addressedTo(e, name));
-const answeredBy = (evs, name) => new Set(evs.filter((e) => e.type === 'chat' && e.actor === actorFor(name) && e.inReplyTo).map((e) => e.inReplyTo));
+/** The id a bot answers a message with (drover_reply messageId), and that its receipts name. */
+const messageIdOf = (e) => e.ref ?? e.id;
+/** What a bot said: its replies, and its messages to the owner on its own thread. */
+const chatsOf = (evs, name) => evs.filter((e) => e.type === 'chat' && e.actor === actorFor(name));
 
-/** The inbox oldest first, a page at a time: since is the last messageId (or an ISO time) the bot has seen. */
-export function inboxFrom(evs, name, { since, limit = 20 } = {}) {
-  const answered = answeredBy(evs, name);
+// ---------------------------------------------------------------- receipts
+// Who has read what in a bot's conversations. Drover writes receipt events itself, { type: 'receipt', of: [ids],
+// thread, state: 'read', by, via }: a bot reads a message when drover_inbox hands it over or it starts on it
+// (drover_status with that task), and answering a message counts as reading it. The owner, or an agent, reads a bot's
+// reply when a client shows the bot's thread (sessions.transcript or sessions.lastReply with seenBy, sessions.seen). A
+// receipt counts only when its event's actor is the reader it names, and for a reply only from the reply's recipient:
+// whoever sent the message it answers, the owner for a message on the bot's own thread. The owner's clients are one
+// reader. Delivered needs no receipt: a Routine that accepted a message delivered it then; a queued one is delivered
+// when the bot reads it; a reply is delivered once recorded (the owner's screens get an alert unless muted).
+export const RECEIPT_IDS_MAX = 200;   // ids one receipt event may name
+const UNREAD_DAYS = 7;                // replies older than this no longer count as unread
+
+/** Who a message or a receipt comes from, as one reader: every owner client is the owner. */
+export const readerOf = (actor) => (isOwnerClient(actor) ? OWNER : String(actor ?? ''));
+
+/** The ids a receipt names: one id, or a list. */
+const receiptIds = (of) => (typeof of === 'string' ? [of] : Array.isArray(of) ? of.filter((x) => typeof x === 'string') : []).filter(Boolean);
+
+/** Receipts and replies by id: read (id -> Map(reader -> { at, via })), replies (`grok:<bot>|<messageId>` -> its first reply), messages (id and ref -> event). */
+export function receiptIndex(evs) {
+  const read = new Map(), replies = new Map(), messages = new Map();
+  for (const e of evs) {
+    if (e.type === 'receipt') {
+      const who = readerOf(e.by);
+      if (e.state !== 'read' || !who || readerOf(e.actor) !== who) continue;   // only from the reader it names
+      for (const of of receiptIds(e.of)) {
+        if (!read.has(of)) read.set(of, new Map());
+        if (!read.get(of).has(who)) read.get(of).set(who, { at: e.ts, via: typeof e.via === 'string' ? e.via.slice(0, 40) : null });
+      }
+    } else if (e.type === 'chat' && isBotActor(e.actor) && typeof e.inReplyTo === 'string') {
+      const k = `${e.actor}|${e.inReplyTo}`;
+      if (!replies.has(k)) replies.set(k, e);
+    } else if (e.type === 'message' && e.to?.kind === ENGINE) {
+      // The first message with an id or ref keeps it, as reply() threads under the first: a later one reusing a ref
+      // cannot take over who an earlier reply is for.
+      if (!messages.has(e.id)) messages.set(e.id, e);
+      if (e.ref && !messages.has(e.ref)) messages.set(e.ref, e);
+    }
+  }
+  return { read, replies, messages };
+}
+
+/** The bot's first reply to a message, or null. */
+const replyOf = (e, name, idx) => idx.replies.get(`${actorFor(name)}|${messageIdOf(e)}`) ?? idx.replies.get(`${actorFor(name)}|${e.id}`) ?? null;
+
+/**
+ * Who a bot's chat is for: the recipient it recorded when the bot sent it, else whoever sent the message it answers,
+ * else (its own thread) the owner.
+ */
+export function recipientOf(chat, idx) {
+  if (typeof chat.recipient === 'string' && chat.recipient) return readerOf(chat.recipient);
+  const m = chat.inReplyTo ? idx.messages.get(chat.inReplyTo) : null;
+  return m ? readerOf(m.actor ?? OWNER) : OWNER;
+}
+
+/**
+ * How far a message to the bot `name` got: state queued, delivered, read or answered; delivered { at, via: routine
+ * (its Routine accepted it) | inbox (the bot read it there) }, read { at, via }, answered { at, event }, and failed
+ * (why its Routine refused it: it waited in the inbox).
+ */
+export function messageReceipt(e, name, idx) {
+  const reply = replyOf(e, name, idx);
+  const own = idx.read.get(messageIdOf(e))?.get(actorFor(name)) ?? null;
+  const read = own ? { at: own.at, via: own.via } : reply ? { at: reply.ts, via: 'reply' } : null;
+  const delivered = e.delivery?.ok === true && e.delivery.via === ROUTINE_VIA ? { at: e.ts, via: 'routine' } : read ? { at: read.at, via: 'inbox' } : null;
+  return {
+    state: reply ? 'answered' : read ? 'read' : delivered ? 'delivered' : 'queued',
+    delivered, read, answered: reply ? { at: reply.ts, event: reply.id } : null,
+    ...(e.delivery?.ok === false && e.delivery.error ? { failed: clean(e.delivery.error, 300) } : {}),
+  };
+}
+
+/** Whether a bot's chat reached its recipient's eyes: { to, state: delivered | read, read: { at, by, via } | null }. */
+export function replyReceipt(chat, idx) {
+  const to = recipientOf(chat, idx);
+  const r = idx.read.get(chat.id)?.get(to) ?? null;
+  return { to, state: r ? 'read' : 'delivered', read: r ? { at: r.at, by: to, via: r.via } : null };
+}
+
+/** How many of the bot's chats of the last week their recipient (only `to`, when given) has not read. */
+export function unreadSent(evs, name, idx, { to, now = _deps.now() } = {}) {
+  return chatsOf(evs, name).filter((c) => now - Date.parse(c.ts) < UNREAD_DAYS * 86_400_000 && (!to || recipientOf(c, idx) === readerOf(to)) && replyReceipt(c, idx).state !== 'read').length;
+}
+
+/** Write one receipt per RECEIPT_IDS_MAX ids, recorded as the reader. Returns how many ids it marked. */
+async function writeReceipts(ids, { by, thread, via }) {
+  for (let i = 0; i < ids.length; i += RECEIPT_IDS_MAX) {
+    await _deps.append({ type: 'receipt', of: ids.slice(i, i + RECEIPT_IDS_MAX), thread, state: 'read', by, via, ...(isBotActor(by) ? provenance(by.slice(5)) : {}) }, { actor: by });
+  }
+  return ids.length;
+}
+
+/**
+ * The bot `name` read these messages of its inbox (drover_inbox handed them over, or it started on one with
+ * drover_status): a receipt for each one addressed to it that it had neither read nor answered. Returns how many.
+ */
+export async function markRead(name, ids, { via = 'inbox' } = {}) {
+  const want = new Set((Array.isArray(ids) ? ids : [ids]).filter((x) => typeof x === 'string' && x));
+  if (!want.size) return 0;
+  const { evs, idx } = await botState();
+  const fresh = new Set();
+  for (const e of inboxOf(evs, name)) if ((want.has(messageIdOf(e)) || want.has(e.id)) && !messageReceipt(e, name, idx).read) fresh.add(messageIdOf(e));
+  return writeReceipts([...fresh], { by: actorFor(name), thread: idFor(name), via });
+}
+
+/**
+ * A reader saw a bot's thread (by: an actor; every owner client is the owner): a receipt for each of the bot's chats
+ * for that reader it had not read, up to and including the chat upTo when given. Returns how many it marked.
+ */
+export async function markSeen(id, { by = OWNER, upTo, via = 'thread' } = {}) {
+  const n = String(id ?? '').trim() === BROADCAST ? null : botName(id);
+  const who = readerOf(by);
+  if (!n || !who || isBotActor(who)) return 0;   // a bot reads its own inbox, never another bot's thread
+  const { evs, idx } = await botState();
+  const chats = chatsOf(evs, n);
+  const end = upTo === undefined || upTo === null ? chats.length - 1 : chats.findIndex((c) => c.id === upTo);
+  const fresh = chats.slice(0, end + 1).filter((c) => recipientOf(c, idx) === who && !idx.read.get(c.id)?.has(who)).map((c) => c.id);
+  return writeReceipts(fresh, { by: who, thread: idFor(n), via });
+}
+
+/**
+ * The inbox oldest first, a page at a time: since is the last messageId (or an ISO time) the bot has seen. Each
+ * message says whether it was answered, when the bot first read it, and its reply with whether that was read.
+ */
+export function inboxFrom(evs, name, { since, limit = 20, idx = receiptIndex(evs) } = {}) {
   let msgs = inboxOf(evs, name);
   if (since) { const i = msgs.findIndex((e) => e.id === since || e.ref === since); msgs = i >= 0 ? msgs.slice(i + 1) : msgs.filter((e) => e.ts > since); }
   const lim = Math.max(1, Math.min(100, Number(limit) || 20));
-  return msgs.slice(0, lim).map((e) => ({ messageId: e.ref ?? e.id, ts: e.ts, from: e.actor ?? null, text: e.text, answered: answered.has(e.ref ?? e.id) || answered.has(e.id), broadcast: e.to.id === BROADCAST }));
+  return msgs.slice(0, lim).map((e) => {
+    const r = messageReceipt(e, name, idx);
+    const reply = replyOf(e, name, idx);
+    return {
+      messageId: messageIdOf(e), ts: e.ts, from: e.actor ?? null, text: e.text, answered: Boolean(reply), broadcast: e.to.id === BROADCAST,
+      readAt: r.read?.at ?? null, reply: reply ? { event: reply.id, at: reply.ts, read: replyReceipt(reply, idx).read } : null,
+    };
+  });
 }
 
 /** How many messages in the whole inbox the bot has not answered. */
 export function unansweredCount(evs, name) {
-  const answered = answeredBy(evs, name);
-  return inboxOf(evs, name).filter((e) => !answered.has(e.ref ?? e.id) && !answered.has(e.id)).length;
+  const idx = receiptIndex(evs);
+  return inboxOf(evs, name).filter((e) => !replyOf(e, name, idx)).length;
 }
 
-/** A bot's transcript: what was sent to it, what it said, and its statuses and notes, oldest first. */
+/** The inbox in numbers: messages not answered, and of those the ones the bot has not read either. */
+export function inboxCounts(evs, name, idx = receiptIndex(evs)) {
+  let unanswered = 0, unread = 0;
+  for (const e of inboxOf(evs, name)) { const r = messageReceipt(e, name, idx); if (!r.answered) { unanswered++; if (!r.read) unread++; } }
+  return { unanswered, unread };
+}
+
+/** What the bot said, newest first (since: a chat event id or ISO time to start after), with whether each was read. */
+export function sentFrom(evs, name, { since, limit = 20, idx = receiptIndex(evs) } = {}) {
+  let chats = chatsOf(evs, name);
+  if (since) { const i = chats.findIndex((c) => c.id === since); chats = i >= 0 ? chats.slice(i + 1) : chats.filter((c) => c.ts > since); }
+  const lim = Math.max(1, Math.min(100, Number(limit) || 20));
+  return chats.slice(-lim).reverse().map((c) => ({ event: c.id, ts: c.ts, inReplyTo: c.inReplyTo ?? null, text: c.text, ...replyReceipt(c, idx) }));
+}
+
+/** The bot events and receipt index, for the gateway tools (one fold per change of the truth file). */
+export const threadState = () => botState();
+
+/** How many receipts the last turns of a transcript carry for clients that read it incrementally (they update old turns). */
+const RECEIPTS_TAIL = 60;
+
+/**
+ * A bot's transcript: what was sent to it, what it said, and its statuses and notes, oldest first. Messages and chats
+ * carry id (their event) and receipt (messageReceipt, replyReceipt); receipts repeats them for the last turns of the
+ * whole thread, whatever page was asked for, so a client reading only new turns still sees older ones being read.
+ */
 export async function transcript(id, { since = 0, limit = 200 } = {}) {
   const n = botName(id);
-  const evs = (await botEvents()).filter((e) => addressedTo(e, n) || e.actor === actorFor(n));
+  const { evs: all, idx } = await botState();
+  const evs = all.filter((e) => e.type !== 'receipt' && (addressedTo(e, n) || e.actor === actorFor(n)));
   const turns = evs.map((e) => {
-    if (e.type === 'message') return { role: 'user', ts: e.ts, text: e.text, from: e.actor, messageId: e.ref ?? e.id, delivery: e.delivery?.via ?? null };
+    // actor names the sender for chat views (ui/chat-model.js speaker): an agent's message is not the owner's.
+    if (e.type === 'message') return { role: 'user', id: e.id, ts: e.ts, text: e.text, from: e.actor, actor: e.actor ?? null, messageId: messageIdOf(e), delivery: e.delivery?.via ?? null, receipt: messageReceipt(e, n, idx) };
     // Everything else here the bot wrote: whoever reads the transcript sees where it came from.
     const own = provenance(n);
-    if (e.type === 'chat') return { role: 'assistant', ts: e.ts, text: e.text, inReplyTo: e.inReplyTo ?? null, ...own };
+    if (e.type === 'chat') return { role: 'assistant', id: e.id, ts: e.ts, text: e.text, inReplyTo: e.inReplyTo ?? null, receipt: replyReceipt(e, idx), ...own };
     if (e.type === 'status') return { role: 'system', ts: e.ts, text: `status ${canonicalState(e.state)}${e.summary ? `: ${e.summary}` : ''}${e.task ? ` (task: ${e.task})` : ''}`, ...own };
     if (e.type === 'note') return { role: 'system', ts: e.ts, text: `note about ${e.about}: ${e.text}`, ...own };
     if (e.type === 'feature') return { role: 'system', ts: e.ts, text: `feature ${e.fid}${e.state ? ` ${e.state}` : ''}${e.title ? `: ${e.title}` : ''}`, ...own };
@@ -309,13 +479,15 @@ export async function transcript(id, { since = 0, limit = 200 } = {}) {
   });
   const from = Math.max(0, Number(since) || 0);
   const page = turns.slice(from, from + Math.max(1, Number(limit) || 200));
-  return { engine: ENGINE, turns: page, offset: from + page.length };   // the next read continues after what was returned
+  const receipts = Object.fromEntries(turns.filter((t) => t.receipt).slice(-RECEIPTS_TAIL).map((t) => [t.id, t.receipt]));
+  return { engine: ENGINE, turns: page, offset: from + page.length, receipts };   // the next read continues after what was returned
 }
 
 export async function lastReply(id) {
   const n = botName(id);
-  const e = (await botEvents()).filter((x) => x.type === 'chat' && x.actor === actorFor(n)).at(-1);
-  return e ? { text: e.text, ts: e.ts, ...provenance(n) } : null;
+  const { evs, idx } = await botState();
+  const e = chatsOf(evs, n).at(-1);
+  return e ? { text: e.text, ts: e.ts, event: e.id, receipt: replyReceipt(e, idx), ...provenance(n) } : null;
 }
 
 // ---------------------------------------------------------------- Drover -> bot
@@ -388,7 +560,10 @@ export async function postStatus(name, { state: asked, summary = '', task, displ
   if (typeof summary !== 'string' || summary.length > 500) throw new Error('summary must be a string of at most 500 characters');
   if (task !== undefined && (typeof task !== 'string' || task.length > 200)) throw new Error('task must be a string of at most 200 characters');
   const ev = { type: 'status', agent: actorFor(name), state, summary: summary.trim(), ...(task ? { task: task.trim() } : {}), ...(shown ? { name: shown } : {}), ...provenance(name) };
-  return _deps.append(ev, { actor: actorFor(name) });
+  const stored = await _deps.append(ev, { actor: actorFor(name) });
+  // Starting on a message (its task is the message's id) is reading it. A receipt that fails to land loses nothing.
+  if (task?.trim()) await markRead(name, [task.trim()], { via: 'status' }).catch(() => 0);
+  return stored;
 }
 
 /** A reply to an inbox message (threaded under it), or with no messageId a message to the owner on the bot's own thread. */
@@ -396,12 +571,14 @@ export async function reply(name, { messageId, text, host } = {}) {
   if (typeof text !== 'string' || !text.trim()) throw new Error('text is required');
   if (text.length > 20_000) throw new Error('text is too long (20000 characters max)');
   let to = { kind: ENGINE, host: host ?? eventsMod.shortHost(), id: idFor(name), name: display(name) };
-  let inReplyTo = null;
+  let inReplyTo = null, recipient = OWNER;
   if (messageId !== undefined) {
     const ev = (await botEvents()).find((e) => e.type === 'message' && addressedTo(e, name) && (e.ref === messageId || e.id === messageId));
     if (!ev) throw new Error(`no message ${String(messageId).slice(0, 60)} in your inbox (drover_inbox lists them)`);
     if (ev.to.id !== BROADCAST) to = ev.to;
     inReplyTo = ev.ref ?? ev.id;
+    recipient = readerOf(ev.actor ?? OWNER);
   }
-  return _deps.append({ type: 'chat', to, from: idFor(name), text, ...(inReplyTo ? { inReplyTo } : {}), ...provenance(name) }, { actor: actorFor(name) });
+  // recipient: who the answer is for, fixed as it is sent (read receipts count only from them).
+  return _deps.append({ type: 'chat', to, from: idFor(name), text, ...(inReplyTo ? { inReplyTo } : {}), recipient, ...provenance(name) }, { actor: actorFor(name) });
 }

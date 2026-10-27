@@ -19,7 +19,7 @@ import { copyButton, copyText, saveText, canShare, share, fileToBase64 } from '.
 import { openMenu } from './menu.js';
 import * as dictation from './dictation.js';
 import { ChatView, atBottom } from './chat.js';
-import { chatItems, mergeTurns, rebase } from './chat-model.js';
+import { chatItems, mergeTurns, rebase, withReceipts, lastUnreadReply } from './chat-model.js';
 import { answerCard } from './answer.js';
 import { answerModel, readScreen, screenHash } from './answer-model.js';
 import { owner } from './owner.js';
@@ -171,7 +171,9 @@ export class Drawer {
     this.lastReadAt = Date.now();
     try {
       const t0 = performance.now();
-      const r = await this.#quiet('sessions.transcript', { id: sid, since: incremental ? this.offset : 0, limit: 300 });
+      // A Grok bot's replies are read once they are on screen here (read receipts): only while this page is visible.
+      const seen = this.target.engine === 'grok' && document.visibilityState === 'visible' ? { seenBy: 'owner' } : {};
+      const r = await this.#quiet('sessions.transcript', { id: sid, since: incremental ? this.offset : 0, limit: 300, ...seen });
       if (!this.alive || this.tab !== 'chat' || this.sessionIdForChat() !== sid) return;
       // The front daemon pushes turns only for a local interactive Claude session; a headless, Codex or remote one is
       // read every 3 s, and so is a followed one until its first turn event shows the push works.
@@ -179,12 +181,21 @@ export class Drawer {
       if (!incremental && !this.following && this.target.engine === 'claude' && (this.target.host ?? 'local') === 'local' && !sess?.headless && sess?.kind !== 'headless') { this.following = sid; this.ctx.follow(sid, true).catch(() => { this.following = null; }); }
       const turns = r.turns ?? [];
       // Codex rollouts answer offset 0 every time: a read is the whole tail again, so it lines up like a full read.
-      this.turns = !incremental || !r.offset ? rebase(this.turns, turns) : mergeTurns(this.turns, turns);
+      this.turns = withReceipts(!incremental || !r.offset ? rebase(this.turns, turns) : mergeTurns(this.turns, turns), r.receipts);
       if (r.offset !== undefined) this.offset = r.offset;
+      // Replies read in while the page was hidden were not marked; now that it shows them, they are read.
+      if (seen.seenBy) this.#markShown(sid);
       if (!incremental || !this.chat || !body.querySelector('.turns')) this.#renderChat(body, r.summary);
       else this.#updateChat();
       this.ctx.perf?.('drawer.read', performance.now() - t0);
     } catch (e) { if (!incremental) { clear(body); body.append(empty('Could not read the transcript', e.message)); } }
+  }
+  /** Mark a bot's thread read up to the last reply shown that the owner has not read (sessions.seen), once per reply. */
+  #markShown(sid) {
+    const upTo = lastUnreadReply(this.turns);
+    if (!upTo || this.markedUpTo === upTo) return;
+    this.markedUpTo = upTo;
+    this.#quiet('sessions.seen', { id: sid, upTo }).catch(() => { this.markedUpTo = null; });
   }
   #renderChat(body, summary) {
     // A chat already on screen (shown from what was known while the read ran) keeps its open groups: only the
@@ -211,7 +222,8 @@ export class Drawer {
     const n = this.ctx.state.notifies?.[sid];
     if (n && Date.now() - Date.parse(n.ts) < 20 * 60_000) body.append(h('div', { class: 'notice' }, h('span', { class: 'em' }, `asked ${fmtTime(n.ts)}: `), n.message));
     if (summary?.firstPrompt) body.append(h('p', { class: 'muted small first-prompt' }, h('span', { class: 'em' }, 'First prompt: '), summary.firstPrompt.slice(0, 400)));
-    this.chat = new ChatView({ assistantLabel: this.target.engine === 'codex' ? 'codex' : 'assistant', onRetry: (t) => this.send(t.text) });
+    // A Grok bot's replies carry its name, which its receipts use too ("queued in Dominus's inbox").
+    this.chat = new ChatView({ assistantLabel: this.target.engine === 'codex' ? 'codex' : this.target.engine === 'grok' ? (this.target.name ?? 'bot') : 'assistant', onRetry: (t) => this.send(t.text) });
     body.append(this.chat.el);
     this.#updateChat({ stick: true });
   }
