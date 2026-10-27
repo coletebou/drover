@@ -46,6 +46,7 @@ const help = `drover: browser control plane for the agent fleet
   drover bots token --as <bot> [--scope ...] [--days 90] [--note N]   a static bearer token, for a bot that cannot do OAuth (printed on a terminal only)
   drover bots routine add <bot> --url <webhook-url> [--title T] [--no-test]   the bot's Routine webhook (key read from stdin), then a connection test
   drover bots routine remove <bot> | routines
+  drover bots subscriptions | unsubscribe <bot>               what bots asked Drover to push to their Routine (drover_subscribe), and ending one
   drover bots send <bot|*> <text...>                          message a bot (its Routine runs it; else it waits in its inbox)
   drover bots prompt                                          the Routine prompt to paste into Grok Bot
   drover bots skill                                           the bot-side skill: give it to a bot to save as a skill named drover
@@ -533,6 +534,22 @@ async function botsCli() {
       if (!argv[2]) throw new Error('usage: drover bots revoke <grantId> (drover bots grants lists them)');
       const r = await call('bots/revoke', { grantId: argv[2] });
       console.log(`revoked ${r.grantId}: ${r.client} as ${asBot(r.bot)}`);
+      return;
+    }
+    case 'subscriptions': {
+      const list = await call('bots/subscriptions');
+      if (!list.length) { console.log('no bot has subscribed to pushes (a bot does with drover_subscribe)'); return; }
+      for (const s of list) {
+        const last = s.lastResult ? `${s.lastResult.ok ? 'last push ok' : `last push failed: ${s.lastResult.error}`} at ${s.lastResult.at}` : 'no push yet';
+        console.log(`${s.bot.padEnd(14)} ${s.events.join(',').padEnd(36)} every ${s.minIntervalMinutes} min at most  ${s.pushesToday} today  ${last}${s.waiting ? `  (${s.waiting} waiting)` : ''}`);
+      }
+      return;
+    }
+    case 'unsubscribe': {
+      const bot = argv[2];
+      if (!bot) throw new Error('usage: drover bots unsubscribe <bot>');
+      const r = await call('bots/subscriptions/remove', { bot });
+      console.log(r.removed ? `${r.bot} gets no more pushes` : `${r.bot} had no subscription`);
       return;
     }
     case 'routines': {

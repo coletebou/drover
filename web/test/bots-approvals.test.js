@@ -481,10 +481,11 @@ describe('approvals: a Grok bot asks, the owner answers in one tap', () => {
 
   test('the Routine instruction knows approvals, and whoami tells a bot with an older routine to update it', async () => {
     assert.match(grok.ROUTINE_PROMPT, /If it carries approval, it is .*'s answer to your approval request approval\.id: confirm it with the drover_approvals tool/);
-    assert.match(grok.ROUTINE_PROMPT, /\(Drover routine instruction v2\)$/);
+    assert.match(grok.ROUTINE_PROMPT, new RegExp(`\\(Drover routine instruction v${grok.ROUTINE_VERSION}\\)$`));
+    assert.ok(grok.ROUTINE_VERSION >= 2, 'versioned since approvals');
     await grok.setRoutine('alpha', { url: HOOK, key: KEY });
     const who = await toolsOf('alpha')('drover_whoami');
-    assert.deepEqual([who.routine.configured, who.routine.instructionVersion], [true, 2]);
+    assert.deepEqual([who.routine.configured, who.routine.instructionVersion], [true, grok.ROUTINE_VERSION]);
     assert.equal(who.routine.instruction, grok.ROUTINE_PROMPT);
     assert.ok(!JSON.stringify(who).includes(KEY), 'never the key');
   });
