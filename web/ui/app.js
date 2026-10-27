@@ -327,8 +327,10 @@ setInterval(() => { if (pairEl.childElementCount) drawPairing(); }, 10_000);   /
 const botAuthEl = h('div', { class: 'pairing', 'aria-live': 'assertive' });
 document.body.append(botAuthEl);
 async function drawBotAuth() {
-  let list;
-  try { list = await api.botsPending(); } catch { return; }
+  // Both lists before anything is cleared: two redraws at once (an event and the 10 s timer) then each draw it whole,
+  // never one row twice. A daemon without routine setups (an older one) has none.
+  let list, setups;
+  try { [list, setups] = await Promise.all([api.botsPending(), api.routineSetups().catch(() => [])]); } catch { return; }
   // The banner redraws every 10 s and on every botauth event: keep what the owner is typing, and where.
   const typed = new Map([...botAuthEl.querySelectorAll('input[data-code]')].map((i) => [i.dataset.code, i.value]));
   const focused = document.activeElement?.closest?.('.pairing') === botAuthEl ? document.activeElement.dataset.code : null;
@@ -355,6 +357,27 @@ async function drawBotAuth() {
       h('button', { class: 'btn sm', type: 'button', onclick: () => decide(true) }, 'Approve'),
       h('button', { class: 'btn sm quiet', type: 'button', onclick: () => decide(false) }, 'Deny')));
     if (focused === r.code) who.focus();
+  }
+  // Routine setups sent from the gateway's page: where the webhook leads (host and id tail), never its URL or key.
+  // Everything shown came from an unauthenticated form or request (from): h() keeps it text.
+  for (const r of setups) {
+    const code = `${r.code.slice(0, 3)} ${r.code.slice(3)}`;
+    const decide = async (approve) => {
+      try {
+        const res = await api.routineSetupDecide(r.code, approve);
+        if (!approve) toast(`Denied: ${res.bot}'s routine did not change`, 'info');
+        else toast(res.test.ok ? `Set ${res.bot}'s routine and sent it a connection test` : `Set ${res.bot}'s routine, but the connection test failed: ${res.test.error}`, res.test.ok ? 'ok' : 'error');
+      } catch (e) { toast(`Routine setup: ${e.message}`, 'error'); }
+      drawBotAuth();
+    };
+    const where = `${r.webhook.host} ${r.webhook.webhook ?? ''}`.trim();
+    botAuthEl.append(h('div', { class: 'pair-req', role: 'alert' },
+      h('div', { class: 'pair-text' },
+        'Set ', h('strong', null, r.bot), '\'s Drover routine to ', h('code', null, where),
+        h('div', { class: 'pair-sub' }, `${r.replaces ? `Replaces ${r.replaces.host} ${r.replaces.webhook ?? ''}. ` : ''}Sent from ${r.from || 'an unknown address'}. Approve only if your setup page shows this code.`)),
+      h('code', { class: 'pair-code' }, code),
+      h('button', { class: 'btn sm', type: 'button', onclick: () => decide(true) }, 'Approve'),
+      h('button', { class: 'btn sm quiet', type: 'button', onclick: () => decide(false) }, 'Deny')));
   }
 }
 setInterval(() => { if (botAuthEl.childElementCount) drawBotAuth(); }, 10_000);

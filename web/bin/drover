@@ -45,7 +45,8 @@ const help = `drover: browser control plane for the agent fleet
   drover bots deny <code> | grants [--all] | revoke <grantId>
   drover bots token --as <bot> [--scope ...] [--days 90] [--note N]   a static bearer token, for a bot that cannot do OAuth (printed on a terminal only)
   drover bots routine add <bot> --url <webhook-url> [--title T] [--no-test]   the bot's Routine webhook (key read from stdin), then a connection test
-  drover bots routine remove <bot> | routines
+  drover bots routine pending | approve <code> | deny <code>   setups sent from the gateway page /bots/<bot>/routine (approve: set, then test)
+  drover bots routine test <bot> | remove <bot> | routines
   drover bots subscriptions | unsubscribe <bot>               what bots asked Drover to push to their Routine (drover_subscribe), and ending one
   drover bots send <bot|*> <text...>                          message a bot (its Routine runs it; else it waits in its inbox)
   drover bots prompt                                          the Routine prompt to paste into Grok Bot
@@ -407,8 +408,13 @@ async function startBots() {
     // Alerts are deduplicated and throttled per address (core/bots/oauth.js mayAlert); the browser banner shows every request.
     if (a.alert) notifier.emit([{ category: 'needs-you', kind: 'bot-auth', source: 'bots', name: 'Drover bots', title: `${a.clientName} wants to connect ${a.bot ?? 'a bot'}`, body: `Approve only if the page shows ${botAuth.formatCode(a.code)}: drover bots approve ${a.code}${a.bot ? '' : ' --as <bot>'}${isTenantBot(a.bot) ? ' --tenant <tenant> --requester <id> --projects <canonical,checkout,paths> --hosts <exact,names>' : ''}`, key: `bot-auth|${a.code}` }]).catch(() => {});
   };
+  // A routine setup sent from the gateway's page (core/bots/routine-setup.js): its code and bot only, never its webhook.
+  const onRoutineSetup = (r) => {
+    broadcast('botauth', { routineSetup: r.code });
+    if (r.alert) notifier.emit([{ category: 'needs-you', kind: 'routine-setup', source: 'bots', name: 'Drover bots', title: `Set ${r.bot}'s Drover routine?`, body: `Approve only if the setup page shows ${botAuth.formatCode(r.code)}: drover bots routine approve ${r.code}`, key: `routine-setup|${r.code}` }]).catch(() => {});
+  };
   try {
-    const gw = await startBotGateway({ base, port: botAuth.gatewayPort(), dispatch: (op, args) => dispatchCached(op, args).then((r) => r.result), hasOp: (op) => OPS.includes(op), log: (...p) => console.error('[bots]', ...p), onPending });
+    const gw = await startBotGateway({ base, port: botAuth.gatewayPort(), dispatch: (op, args) => dispatchCached(op, args).then((r) => r.result), hasOp: (op) => OPS.includes(op), log: (...p) => console.error('[bots]', ...p), onPending, onRoutineSetup });
     console.log(`Bot gateway on ${gw.url} (public ${base}/mcp)`);
   } catch (e) { console.error(`bot gateway failed to start: ${e.message}`); }
 }
@@ -561,7 +567,31 @@ async function botsCli() {
     case 'routine': {
       const action = argv[2]; const bot = argv[3];
       if (action === 'remove' && bot) { await call('bots/routine/remove', { bot }); console.log(`removed the Routine for ${bot}`); return; }
-      if (action !== 'add' || !bot || !flag('url')) throw new Error('usage: drover bots routine add <bot> --url <webhook-url> [--title T]  (the key comes from stdin)\n       drover bots routine remove <bot>');
+      if (action === 'test' && bot) {
+        const t = await call('bots/routine/test', { bot });
+        console.log(t.ok ? `sent a connection test (run ${t.runUuid ?? 'started'}); ${bot} should answer "connected" within a minute: drover bots status` : `the connection test failed: ${t.error}`);
+        if (!t.ok) process.exitCode = 1;
+        return;
+      }
+      // Setups the owner sent from the gateway's page: listed by code with where their webhook leads (host and id tail).
+      if (action === 'pending') {
+        const list = await call('bots/routine/pending');
+        if (!list.length) { console.log('no routine setups are waiting'); return; }
+        for (const r of list) console.log(`${r.code.slice(0, 3)} ${r.code.slice(3)}  ${r.bot}  ${r.webhook.host} ${r.webhook.webhook ?? ''}${r.replaces ? `  replaces ${r.replaces.host} ${r.replaces.webhook ?? ''}` : ''}  from ${r.from || '?'}  expires ${r.expiresAt}`);
+        console.log('approve the one whose code your setup page shows: drover bots routine approve <code>');
+        return;
+      }
+      if (action === 'approve' || action === 'deny') {
+        const code = argv.slice(3).join('');
+        if (!code) throw new Error(`usage: drover bots routine ${action} <code>  (drover bots routine pending lists them)`);
+        if (action === 'deny') { const r = await call('bots/routine/deny', { code }); console.log(`denied: ${r.bot}'s routine did not change`); return; }
+        const r = await call('bots/routine/approve', { code });
+        console.log(`Routine set for ${r.bot}: ${r.routine?.host ?? '?'} ${r.routine?.webhook ?? ''}`);
+        console.log(r.test.ok ? `sent a connection test (run ${r.test.runUuid ?? 'started'}); ${r.bot} should answer "connected" within a minute: drover bots status` : `the connection test failed: ${r.test.error}`);
+        if (!r.test.ok) process.exitCode = 1;
+        return;
+      }
+      if (action !== 'add' || !bot || !flag('url')) throw new Error('usage: drover bots routine add <bot> --url <webhook-url> [--title T]  (the key comes from stdin)\n       drover bots routine pending | approve <code> | deny <code> | test <bot> | remove <bot>');
       const key = await readSecret(`Routine key for ${bot} (crsr_..., not shown): `);
       const r = await call('bots/routine', { bot, url: flag('url'), key, title: flag('title') });
       console.log(`Routine set for ${r.bot}: ${r.routine.host} ${r.routine.webhook ?? ''}`);

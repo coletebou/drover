@@ -543,8 +543,9 @@ MCP server only through OAuth with dynamic client registration. The bot gateway 
 gives the owner's bots Drover anyway, in both directions.
 
 - **Bots to Drover**: a second listener, `127.0.0.1:7338` (`DROVER_BOTS_PORT`), on when `DROVER_BOTS_URL` names its
-  public origin. It serves only OAuth (`/.well-known/*`, `/oauth/*`), an authorize page, and MCP over Streamable HTTP
-  at `/mcp`: purpose-built tools (below), never `/api/`, the UI or an op by name.
+  public origin. It serves only OAuth (`/.well-known/*`, `/oauth/*`), an authorize page, a bot's routine setup page
+  (`/bots/<bot>/routine`, step 5 below), and MCP over Streamable HTTP at `/mcp`: purpose-built tools (below), never
+  `/api/`, the UI or an op by name.
 - **Drover to bots**: bots are sessions (engine `grok`, ids `grok:<name>`) on the host that runs the gateway.
   `sessions.message` (`drover_send`, the drawer, `drover bots send`) POSTs to the bot's Routine webhook, or queues the
   message for its inbox when it has none; the bot answers with `drover_reply`, which lands as a `chat` event threaded
@@ -584,10 +585,22 @@ gives the owner's bots Drover anyway, in both directions.
    are shared by all bots and enabled per bot). In Grok Bot, add an **Always allow** rule for the Drover tools, or
    routine runs, which do not count as user intent, are held for review.
 5. Per bot, for Drover to send it tasks: the bot creates one routine named "Drover" (webhook trigger, the instruction
-   `drover_whoami` gives it) and hands you two links that open the routine's Webhook URL and Webhook key in Grok
-   Bot's routine panel (a link to the routine itself does not open); copy both from there and run
-   `drover bots routine add <bot> --url <url>` (the key is read from a hidden prompt, never argv). A connection test
-   follows; the bot should answer "connected".
+   `drover_whoami` gives it) and hands you its setup link, `<public origin>/bots/<bot>/routine`, with two links that
+   open the routine's Webhook URL and Webhook key in Grok Bot's routine panel (a link to the routine itself does not
+   open). Open the setup link on any device, paste both there, and approve the 6-digit code the page then shows in
+   Drover: the browser banner, or `drover bots routine approve <code>` (`drover bots routine pending` lists them). The
+   Routine is set only then, and a connection test follows; the bot should answer "connected", and the page says how
+   the test went. On the gateway host, `drover bots routine add <bot> --url <url>` does the same in one step (the key
+   from a hidden prompt, never argv), and so does the bot's drawer (Info, Routine) in the browser.
+   - The page is the bot gateway's, public like its sign-in: what it is sent waits in memory only for ten minutes, the
+     key and the URL go nowhere else (no log, event, alert or page; the banner and the CLI show the webhook as host
+     and id tail, and the Routine it would replace), and nothing is kept until the code is approved. What a webhook
+     answers is kept without its own key, URL and id, whatever it echoes back. Its form carries a single-use nonce
+     from the page that address opened, and a form sent from another site is refused. An address keeps at most five
+     forms open (opening more drops only its own oldest) and 500 are open in all (then a new page waits, and no open
+     form is dropped for it). The same address sending again for the same bot replaces its earlier setup; at most
+     three wait from one address and twenty in all, ten a minute from one address. Approving and denying are
+     main-token routes (`/api/bots/routine/*`), never ops.
 
 `drover bots` lists the gateway, connections, Routines and each bot's last state; `drover bots revoke <grantId>` cuts
 a connection off at once; `drover bots token --as <bot>` mints a static bearer token for a bot that cannot do OAuth (the token
@@ -1006,7 +1019,7 @@ core/search/    the search index: extract, chunk, store (node:sqlite), indexer, 
 core/bots/      Grok bots: oauth (the gateway's OAuth server), tools (the bot tools), tenant-tools and access (native tenants), policy (what leaves for bots: cleaned, secrets redacted), grok (bots as sessions, Routines)
 core/docker.js  docker stacks and the docker.* verbs (core/docker-format.js: drover stacks text; ui/stacks-text.js: summaries both use)
 server/http.js  HTTP + SSE front, bearer token, static ui/
-server/botgate.js  the bot gateway: OAuth endpoints, authorize page, MCP over Streamable HTTP for Grok bots
+server/botgate.js  the bot gateway: OAuth endpoints, authorize page, routine setup page, MCP over Streamable HTTP for Grok bots
 ui/             single-page app, vanilla ES modules
 mcp/server.js   MCP over stdio, maps tools onto core/api.js
 profiles.json   default launch profiles (claude: default, plan, yolo; codex: default, read-only, workspace, yolo), model aliases, tmux sessions; DROVER_PROFILES points at a fleet's own copy
