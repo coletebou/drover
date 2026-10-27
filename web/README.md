@@ -159,7 +159,7 @@ is never followed.
 | not live, its chain's newest generation after it ended, has no messaging socket, or was started on another host | fails as before, and the error lists those generations (`candidates` on the error in process): an `elsewhere` one names the host to resend with |
 | not live, and the newest generation of its chain | fails as before, saying nothing continues it |
 | a name or id prefix found in more than one chain, or that also names a session in no chain | fails as before and lists each chain's later generations: nothing is sent, even when only one chain has a live successor |
-| a marker or chain record that cannot be read (anything but absent: no permission, not JSON) | fails as before, saying so: a chain that could not be read might have named the target too |
+| a marker or chain record that cannot be read (anything but absent: no permission, not JSON), or a generation directory whose record names no session | fails as before, saying so: a chain that could not be read might have named the target too |
 
 A later generation whose launch never started (no `started_at`, never seen here) is passed over. A generation that
 handed off but is still open (its window is kept while its jobs finish) is not a successor while a newer one is live.

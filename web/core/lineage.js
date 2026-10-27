@@ -51,19 +51,19 @@ async function allMarkers(dir) {
 }
 
 /**
- * One chain, its generations oldest first: { gen, sessionId, name, alias, started }, or { gen, unreadable: true } for
- * a generation directory without a record that names its session. null when dir holds no chain.json, so a marker
- * cannot point anywhere else.
+ * One chain, its generations oldest first: { gen, sessionId, name, alias, started }. null when dir holds no chain.json,
+ * so a marker cannot point anywhere else. A generation directory without a record that names its session throws, as
+ * an unreadable file does: the writer never leaves one, and it could be the generation a target names.
  */
 export async function loadChain(dir, fallbackName = null) {
   const chain = await readJson(path.join(dir, 'chain.json'));
   if (!chain || typeof chain !== 'object') return null;
   const gens = [];
   for (const [n, g] of (await list(dir)).map((x) => x.match(GEN_DIR)).filter(Boolean)) {
-    const r = await readJson(path.join(dir, n, 'session.json'));
-    const gen = Number(g);
-    if (typeof r?.session_id !== 'string' || !r.session_id) { gens.push({ gen, unreadable: true }); continue; }
-    gens.push({ gen, sessionId: r.session_id, name: typeof r.name === 'string' && r.name ? r.name : null,
+    const file = path.join(dir, n, 'session.json');
+    const r = await readJson(file);
+    if (typeof r?.session_id !== 'string' || !r.session_id) throw new Error(`${file} names no session`);
+    gens.push({ gen: Number(g), sessionId: r.session_id, name: typeof r.name === 'string' && r.name ? r.name : null,
       alias: typeof r.ssh_alias === 'string' && r.ssh_alias ? r.ssh_alias : null, started: Boolean(r.started_at || r.first_response_at) });
   }
   gens.sort((a, b) => a.gen - b.gen);
@@ -92,7 +92,7 @@ export async function chainsOf(target, { sessionId = null, dir = markersDir() } 
   const out = [];
   for (const [d, name] of dirs) {
     const chain = await loadChain(d, name);
-    const matched = chain?.gens.filter((g) => !g.unreadable && matches(g)) ?? [];
+    const matched = chain?.gens.filter(matches) ?? [];
     if (matched.length) out.push({ chain, gen: matched.at(-1).gen, matched });
   }
   return out;
@@ -100,11 +100,10 @@ export async function chainsOf(target, { sessionId = null, dir = markersDir() } 
 
 /**
  * A generation's state here, from this host's Claude registry (session id -> entry): live, no messaging socket (its
- * process runs without an inbox), ended, elsewhere (started on another host, alias; only that host knows), not
- * started (its launch never got that far), or unreadable.
+ * process runs without an inbox), ended, elsewhere (started on another host, alias; only that host knows), or not
+ * started (its launch never got that far).
  */
 export function stateOf(g, registry) {
-  if (g.unreadable) return 'unreadable';
   const e = registry.get(g.sessionId);
   if (e?.alive) return e.socket ? 'live' : 'no messaging socket';
   if (e) return 'ended';
@@ -124,11 +123,11 @@ export function registryIndex(entries = []) {
 }
 
 // g: a generation ({ sessionId }) or a candidate ({ id }).
-const label = (g) => `${g.name ?? 'unnamed'} (generation ${g.gen}, ${g.sessionId ?? g.id ?? 'no session id'})`;
+const label = (g) => `${g.name ?? 'unnamed'} (generation ${g.gen}, ${g.sessionId ?? g.id})`;
 /** One candidate ({ gen, id, name, state, host? }) for an error message. */
 function describe(c) {
   if (c.state === 'elsewhere') return `${label(c)} on ${c.host}: resend with host ${c.host}`;
-  return `${label(c)}, ${c.state === 'unreadable' ? 'its record is unreadable' : c.state}`;
+  return `${label(c)}, ${c.state}`;
 }
 const candidateOf = (chain, g, state) => ({ chain: chain.name, gen: g.gen, id: g.sessionId ?? null, name: g.name ?? null, state, ...(g.alias ? { host: g.alias } : {}) });
 

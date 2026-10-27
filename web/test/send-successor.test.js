@@ -315,6 +315,10 @@ describe('sessions.message reaches a handoff successor', () => {
     const dir = path.join(BRIEFS, 'kilo-chain');
     await writeFile(path.join(dir, 'chain.json'), '{"name": ');
     assert.match((await send('kilo-2').then(() => null, (x) => x)).message, /could not be read, so nothing was redirected \(.*chain\.json is not JSON\)$/);
+    // A generation directory whose record names no session: it might be the kilo-2 meant.
+    await writeFile(path.join(dir, 'chain.json'), JSON.stringify({ name: 'kilo-chain' }));
+    await mkdir(path.join(dir, 'gen-04'));
+    assert.match((await send('kilo-2').then(() => null, (x) => x)).message, /could not be read, so nothing was redirected \(.*gen-04\/session\.json names no session\)$/);
     await settle();
     assert.equal(in3.got.length, 0);
   });
@@ -354,7 +358,7 @@ describe('core/lineage', () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  test('stateOf: live, no messaging socket, ended, elsewhere, not started, unreadable', () => {
+  test('stateOf: live, no messaging socket, ended, elsewhere, not started', () => {
     const reg = lineage.registryIndex([
       { sessionId: 'a', alive: true, socket: '/s' }, { sessionId: 'b', alive: true, socket: null }, { sessionId: 'c', alive: false, socket: '/s' },
       // A dead entry left by a session that runs again under the same id does not hide the live one.
@@ -367,6 +371,5 @@ describe('core/lineage', () => {
     assert.equal(lineage.stateOf({ sessionId: 'e', alias: 'box-b' }, reg), 'elsewhere');
     assert.equal(lineage.stateOf({ sessionId: 'e', started: true }, reg), 'ended');
     assert.equal(lineage.stateOf({ sessionId: 'e' }, reg), 'not started');
-    assert.equal(lineage.stateOf({ gen: 3, unreadable: true }, reg), 'unreadable');
   });
 });
