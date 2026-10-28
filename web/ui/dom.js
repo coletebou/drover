@@ -91,7 +91,7 @@ export function dot(state, { pulse = false } = {}) {
 }
 export function mark(state, label) { return h('span', { class: 'mark' }, dot(state), label ?? state ?? ''); }
 export function engine(e) {
-  const k = e === 'claude' ? 'CC' : e === 'codex' ? 'CX' : e === 'headless' ? 'HL' : e === 'openclaw' ? 'OC' : e === 'grok' ? 'GK' : e === 'shell' ? 'sh' : '??';
+  const k = e === 'claude' ? 'CC' : e === 'codex' ? 'CX' : e === 'headless' ? 'HL' : e === 'openclaw' ? 'OC' : e === 'grok' ? 'GK' : e === 'hermes' ? 'HM' : e === 'shell' ? 'sh' : '??';
   return h('span', { class: `engine ${e ?? ''}`, title: e ?? '' }, k);
 }
 export function empty(title, hint) { return h('div', { class: 'empty' }, title ? h('b', null, title) : null, hint ?? ''); }

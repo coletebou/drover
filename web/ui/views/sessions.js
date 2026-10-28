@@ -20,7 +20,7 @@ export default {
     function drawBar() {
       clear(bar);
       bar.append(seg([['live', 'Live'], ['all', 'All, incl. recent transcripts']], filt.scope, (v) => { filt.scope = v; render(); }));
-      bar.append(h('span', { class: 'chips' }, ...['claude', 'codex', 'headless', 'openclaw', 'grok'].map((e) => chip(e, filt.engine === e, () => { filt.engine = filt.engine === e ? '' : e; render(); }))));
+      bar.append(h('span', { class: 'chips' }, ...['claude', 'codex', 'hermes', 'headless', 'openclaw', 'grok'].map((e) => chip(e, filt.engine === e, () => { filt.engine = filt.engine === e ? '' : e; render(); }))));
     }
     function visible() {
       return sessions

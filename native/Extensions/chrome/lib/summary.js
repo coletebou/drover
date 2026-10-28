@@ -12,7 +12,8 @@ import { dialogFields } from './answer.js';
 // waiting[].kind is decision|question (a finished session is idle); notifications add more kinds.
 export const KINDS = Object.freeze(['decision', 'question']);
 // grok: the owner's Grok bots (grok:<name>), which the daemon lists as sessions on the host that runs the bot gateway.
-export const ENGINES = Object.freeze(['claude', 'codex', 'headless', 'openclaw', 'grok']);
+// hermes: Hermes Agent sessions, on a host with ~/.hermes.
+export const ENGINES = Object.freeze(['claude', 'codex', 'headless', 'openclaw', 'grok', 'hermes']);
 
 const str = (v, max = 400) => (typeof v === 'string' ? v.slice(0, max) : v == null ? '' : String(v).slice(0, max));
 const count = (v) => (Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0);

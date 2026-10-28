@@ -14,10 +14,10 @@ export default {
     // Effort levels per engine from launch.efforts on the selected host; null while loading or when that
     // host's apx predates efforts (it would ignore the field, so the select stays disabled there).
     let efforts = null; let effortsError = null;
-    const v = { engine: saved.engine === 'codex' ? 'codex' : 'claude', mode: saved.mode === 'headless' ? 'headless' : 'tmux', credential: typeof saved.credential === 'string' && saved.credential ? saved.credential : 'auto' };
+    const v = { engine: ['codex', 'hermes'].includes(saved.engine) ? saved.engine : 'claude', mode: saved.mode === 'headless' ? 'headless' : 'tmux', credential: typeof saved.credential === 'string' && saved.credential ? saved.credential : 'auto' };
 
     const f = {};
-    f.engine = seg([['claude', 'Claude Code'], ['codex', 'Codex']], v.engine, (x) => { v.engine = x; fillProfiles(); toggleCredential(); preview(); });
+    f.engine = seg([['claude', 'Claude Code'], ['codex', 'Codex'], ['hermes', 'Hermes']], v.engine, (x) => { v.engine = x; fillProfiles(); toggleCredential(); preview(); });
     f.mode = seg([['tmux', 'tmux window'], ['headless', 'headless']], v.mode, (x) => { v.mode = x; toggleMode(); preview(); });
     const modeHint = h('span', { class: 'muted small' });
     f.credential = h('select', { 'aria-label': 'Credential', onchange: () => { v.credential = f.credential.value; preview(); } },
@@ -28,6 +28,7 @@ export default {
     f.model = h('select', { 'aria-label': 'Model', onchange: preview });
     f.effort = h('select', { 'aria-label': 'Effort', disabled: true, onchange: preview });
     const effortHint = h('span', { class: 'muted small' }, 'effort levels: loading');
+    const profileHint = h('span', { class: 'muted small' });
     f.cwd = h('input', { list: 'l-cwd-list', value: saved.cwd ?? '', placeholder: 'on the target host; blank for home', autocomplete: 'off', oninput: preview });
     f.cwdList = h('datalist', { id: 'l-cwd-list' });
     // Blank until the profiles load: then the last session used here, else the profiles' default (defaultSession).
@@ -59,7 +60,7 @@ export default {
       segField('Engine', f.engine),
       credField,
       segField('Mode', h('div', null, f.mode, h('div', null, modeHint))),
-      field('Profile', f.profile),
+      field('Profile', h('div', null, f.profile, h('div', null, profileHint))),
       field('Model', f.model),
       field('Effort', h('div', null, f.effort, h('div', null, effortHint))),
       field('Working directory', f.cwd),
@@ -69,7 +70,7 @@ export default {
       field('Prompt', f.prompt, { wide: true }),
       h('div', { class: 'wide' }, h('div', { class: 'em small' }, 'Will run'), previewEl),
       h('div', { class: 'toolbar wide' }, f.submit, h('span', { class: 'muted small' }, 'The launch is recorded as a launch event in the truth file.')));
-    root.append(h('div', { class: 'view-head' }, h('h1', null, 'Launch'), h('span', { class: 'muted small' }, 'start a Claude Code or Codex agent on any host')), form, result);
+    root.append(h('div', { class: 'view-head' }, h('h1', null, 'Launch'), h('span', { class: 'muted small' }, 'start a Claude Code, Codex or Hermes agent on any host')), form, result);
 
     function currentProfiles() { return profiles?.[v.engine]?.profiles ?? []; }
     // Where a launch that names no session opens its window: the same rule as core/launch.js defaultTmuxSession.
@@ -81,6 +82,10 @@ export default {
       for (const p of currentProfiles()) f.profile.append(h('option', { value: p.id, selected: (want ? p.id === want : p.default) ? true : null, title: p.requires ? `requires ${p.requires} in the host environment` : null }, `${p.label}${p.requires ? ` (needs ${p.requires})` : ''}`));
       f.model.append(h('option', { value: '' }, 'profile default'));
       for (const m of profiles?.[eng]?.models ?? []) f.model.append(h('option', { value: m.id, selected: saved.model?.[eng] === m.id ? true : null }, `${m.label} (${m.id})`));
+      // A host whose profiles.json has no section for this engine runs Drover code from before it (Hermes is the newest).
+      const none = profiles && !currentProfiles().length;
+      profileHint.textContent = none ? `${f.host.value} has no ${eng} profiles: its Drover code predates ${eng} launches, so update Drover there` : '';
+      f.submit.disabled = Boolean(none);
       fillEfforts();
     }
     /** Levels for the current engine, or a disabled select that says why there are none. */
@@ -141,10 +146,11 @@ export default {
     }
     function preview() {
       const eng = v.engine; const p = currentProfiles().find((x) => x.id === f.profile.value);
-      const argv = [eng === 'codex' ? 'codex' : 'claude', ...(p?.argv ?? [])];
+      const argv = [eng === 'codex' ? 'codex' : eng === 'hermes' ? 'hermes' : 'claude', ...(eng === 'hermes' ? ['chat'] : []), ...(p?.argv ?? [])];
       const model = f.model.value;
       const effort = chosenEffort();
       const prompt = f.prompt.value.trim();
+      if (eng === 'hermes') { previewEl.textContent = hermesPreview(p, { model, effort, prompt }); return; }
       if (v.mode === 'headless') {
         if (eng === 'claude') argv.push('-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--session-id', '<uuid7>');
         else { previewEl.textContent = `codex app-server thread/start {cwd: ${f.cwd.value || '$HOME'}${model ? `, model: ${model}` : ''}${effort ? `, config: {model_reasoning_effort: "${effort}"}` : ''}}${prompt ? ' + turn/start with the prompt' : ''}`; return; }
@@ -155,6 +161,15 @@ export default {
       if (prompt && v.mode === 'tmux') argv.push('--', `"${prompt.slice(0, 60).replace(/\n/g, ' ')}${prompt.length > 60 ? '...' : ''}"`);
       const env = [...Object.entries(p?.env ?? {}).map(([k, val]) => `${k}=${val}`), ...credentialEnvRefs()].join(' ');
       previewEl.textContent = `${v.mode === 'tmux' ? `tmux new-window -t =${f.tmuxSession.value || defaultSession()}:${f.name.value ? ` -n ${f.name.value}` : ''} -c ${f.cwd.value || '$HOME'} ` : ''}${env ? env + ' ' : ''}${argv.join(' ')}`;
+    }
+    /** The command core/hermes.js builds (display only): a TUI that Drover finds again by its title, or one-shot turns. */
+    function hermesPreview(p, { model, effort, prompt }) {
+      const cwd = f.cwd.value || '$HOME';
+      const opts = [...(model ? [`--model=${model}`] : []), ...(effort ? ['--reasoning', effort] : []), `--in=${cwd}`];
+      if (v.mode === 'headless') return `hermes chat --oneshot --query-file - --format stream-json ${[...(p?.argv ?? []).filter((a) => !['--tui', '--cli'].includes(a)), ...opts].join(' ')}${prompt ? '  (each turn one run, the prompt on stdin)' : ''}`;
+      const title = `${f.name.value || 'hermes'}-xxxxxx`;
+      const query = prompt ? ` --query="${prompt.slice(0, 60).replace(/\n/g, ' ')}${prompt.length > 60 ? '...' : ''}"` : '';
+      return `tmux new-window -t ${f.tmuxSession.value || defaultSession()}${f.name.value ? ` -n ${f.name.value}` : ''} -c ${cwd} hermes chat ${[...(p?.argv ?? []), ...opts].join(' ')} --continue=${title} --create-if-missing${query}`;
     }
     async function loadHostBits() {
       const host = f.host.value;

@@ -21,6 +21,7 @@ import * as survey from './survey.js';
 import { ops as credentialOps } from './credpool.js';
 import * as openclaw from './openclaw.js';
 import * as grok from './bots/grok.js';
+import * as hermes from './hermes.js';
 import * as botAuth from './bots/oauth.js';
 import * as native from './native.js';
 import { ops as settingsOps } from './settings.js';
@@ -94,30 +95,61 @@ async function preferDaemon(op, args, local) {
 const readCodexThreads = (opts) => preferDaemon('codex.threads', opts, () => codex.listThreads(opts));
 const readCodexThread = (threadId) => preferDaemon('codex.thread', { threadId }, () => codex.readThread(threadId));
 
-/** Merge Claude registry, Codex threads, headless sessions, the OpenClaw manager and the Grok bots into one list. */
+/** Merge Claude registry, Codex threads, headless sessions, the OpenClaw manager, the Grok bots and Hermes sessions into one list. */
 async function listSessionsLocal({ includeRecent = true } = {}) {
-  const [cl, cx, recent, rollouts, manager, bots] = await Promise.all([
+  const [cl, cx, recent, rollouts, manager, bots, hermesSessions] = await Promise.all([
     claude.listSessions(),
     readCodexThreads({ limit: 60 }).catch((e) => ({ error: e.message })),
     includeRecent ? claude.recentTranscripts({ days: 4, limit: 200 }) : [],
     includeRecent ? codex.recentRollouts({ days: 4, limit: 100 }) : [],
     openclaw.listSessions().catch(() => []),
     grok.configured() ? grok.listSessions({ host: hosts.localShortName() }).catch(() => []) : [],
+    hermes.configured() ? hermes.listSessions({ includeRecent }).catch((e) => { process.stderr.write(`[hermes] listing failed: ${e.message}\n`); return []; }) : [],
   ]);
   const live = new Set(cl.map((s) => s.sessionId));
   const codexThreads = Array.isArray(cx) ? cx : [];
   const codexIds = new Set(codexThreads.map((t) => t.threadId));
-  const headless = launchMod.headlessList();
+  // A headless Hermes session is listed once, as its headless entry (core/launch.js), not again as the conversation it
+  // made; a prompt that conversation holds (a one-shot that needed a human left it to the gateway) comes with the entry.
+  // Matched by conversation: a resumed one-shot may report a later segment, and the list keys conversations.
+  const hermesById = new Map(hermesSessions.map((s) => [s.id, s]));
+  const rawHeadless = launchMod.headlessList();
+  const hermesIds = rawHeadless.filter((h) => h.engine === hermes.ENGINE && h.sessionId).map((h) => h.sessionId);
+  // In whichever profile has it: a headless launch may run under a named profile's HERMES_HOME.
+  const convOf = new Map(hermesIds.length && hermes.configured() ? hermesIds.map((id) => [id, hermes.conversationIdOf(id)]) : []);
+  const headlessHermes = new Set();
+  const headless = rawHeadless.map((h) => {
+    if (h.engine !== hermes.ENGINE || !h.sessionId) return h;
+    const conv = convOf.get(h.sessionId) ?? h.sessionId;
+    headlessHermes.add(conv);
+    const item = hermesById.get(conv);
+    // With no one-shot running, the entry is its conversation: the gateway's status while it is live, else idle.
+    if (!h.running && h.status !== 'stopped') { const st = item?.live ? item.status : 'idle'; launchMod.headlessSettle(h.id, st); return withHermesPrompt({ ...h, status: st }, item); }
+    return withHermesPrompt(h, item);
+  });
   const out = [
     ...cl.map((s) => ({ ...s, id: s.sessionId, engine: 'claude', live: s.alive })),
     ...codexThreads.map((t) => ({ ...t, id: t.threadId, engine: 'codex', live: t.loaded || /active|running|busy/i.test(t.status) })),
     ...headless.map((h) => ({ ...h, kind: 'headless', engine: h.engine, live: !['exited', 'stopped'].includes(h.status) })),
     ...manager,
     ...bots,
+    ...hermesSessions.filter((s) => !headlessHermes.has(s.id)),
   ];
   for (const r of recent) if (!live.has(r.sessionId)) out.push({ ...r, id: r.sessionId, engine: 'claude', live: false, status: 'transcript', cwd: null });
   for (const r of rollouts) if (!codexIds.has(r.threadId)) out.push({ ...r, id: r.threadId, engine: 'codex', live: false, status: 'rollout', cwd: null });
   return { sessions: out, codexError: Array.isArray(cx) ? null : cx.error, host: hosts.localShortName() };
+}
+
+/** A headless Hermes entry with the prompt its conversation holds (dialog, hash, keys, answer, prompt), when it holds one. */
+function withHermesPrompt(entry, item) {
+  if (!item?.live || !item.hash) return entry;
+  const { dialog, hash, keys, answer, prompt } = item;
+  return { ...entry, status: 'waiting', dialog, hash, keys, answer, prompt };
+}
+
+/** The Hermes conversation a headless Hermes entry made, live state included, or null before it reported one. */
+async function headlessHermesSession(h) {
+  return h?.engine === hermes.ENGINE && h.sessionId && hermes.configured() ? hermes.findSession(h.sessionId).catch(() => null) : null;
 }
 
 async function sessionById(id) {
@@ -133,6 +165,8 @@ async function sessionById(id) {
   // The OpenClaw manager ("manager", "openclaw"), on a host that has its state dir.
   const manager = await openclaw.findSession(id);
   if (manager) return manager;
+  // A Hermes conversation (by id, or its exact title), live or stored, on a host that keeps Hermes state.
+  if (hermes.configured()) { const h = await hermes.findSession(id).catch(() => null); if (h) return h; }
   // Not live: maybe a transcript or rollout on disk.
   const recent = await claude.recentTranscripts({ days: 365, limit: 5000 });
   const r = recent.find((x) => x.sessionId === id);
@@ -172,7 +206,8 @@ const windowOf = (t) => String(t).replace(/\.%\d+$/, '');
 const NO_PANE = 'this session has no tmux pane; reply with a message instead';
 /**
  * The window a session's dialog is on: a window target as given, else a Claude session's registry tmux field. Only
- * Claude sessions name their pane; any other session (Codex, headless, the manager, a bot) is answered with a message.
+ * Claude sessions name their pane; any other session (Codex, headless, the manager, a bot) is answered with a message,
+ * except a Hermes prompt, which its gateway answers (sessions.answer).
  */
 async function answerTarget(id) {
   if (WINDOW_TARGET.test(id)) return id;
@@ -259,7 +294,13 @@ export const local = {
    * that changed since `expect` was read, and a key the dialog does not take.
    */
   async 'sessions.answer'({ id, key, expect, actor = OWNER }) {
-    const target = await answerTarget(str(id, 'id', { max: 200 }));
+    const sid = str(id, 'id', { max: 200 });
+    // A Hermes session's approval or question is held by its gateway, not drawn in a pane: answered there (core/hermes.js
+    // answer). A headless Hermes entry answers for the conversation it made.
+    const h = WINDOW_TARGET.test(sid) || !hermes.configured() || (await claude.findSession(sid)) ? null
+      : (await headlessHermesSession(launchMod.headlessGet(sid))) ?? await hermes.findSession(sid).catch(() => null);
+    if (h) return answerHermes(h, str(key, 'key', { max: 20 }), expect, actor);
+    const target = await answerTarget(sid);
     return { ...(await local['tmux.answer']({ target, key, expect, actor })), target };
   },
   async 'tmux.new'({ session, name, cwd, argv }) {
@@ -281,9 +322,18 @@ export const local = {
   async 'sessions.transcript'({ id, since = 0, limit = 200, thread }) {
     const s = await sessionById(str(id, 'id'));
     if (!s) throw new Error('session not found');
+    // A headless Hermes session reads its conversation from the database once it has one: that also has what the gateway
+    // ran after its one-shot left (an approval answered here, then the rest of the turn).
+    if (s.headless && s.engine === hermes.ENGINE && s.sessionId && hermes.configured()) {
+      // A full read each time (offset 0, as a Codex thread's): before its conversation is known this entry answered from
+      // its own events, whose offsets are not row ids, so a cursor from one would be wrong in the other.
+      const h = await hermes.findSession(s.sessionId).catch(() => null);
+      if (h) return { ...hermes.transcript(h, { limit }), offset: 0, headless: true };
+    }
     if (s.headless) return { engine: s.engine, headless: true, turns: headlessTurns(s.events), offset: s.events.length };
     if (s.engine === 'openclaw') return openclaw.transcript({ since, limit, thread });
     if (s.engine === grok.ENGINE) return grok.transcript(s.id, { since, limit });
+    if (s.engine === hermes.ENGINE) return hermes.transcript(s, { since, limit });
     if (s.engine === 'claude') { const r = await claude.readTranscript(s.transcript, { since, limit }); return { engine: 'claude', ...r, summary: since ? undefined : await claude.transcriptSummary(s.transcript).catch(() => null) }; }
     // codex: read the rollout file first. thread/read materializes every turn inside the
     // app-server, and on a long session it reached 19 GB in 8 minutes (2026-10-15) and
@@ -300,19 +350,24 @@ export const local = {
     const s = await sessionById(str(id, 'id'));
     if (!s) throw new Error('session not found');
     let r = null;
-    if (s.headless) {
+    const hh = s.headless ? await headlessHermesSession(s) : null;
+    if (hh) r = hermes.lastReply(hh);
+    else if (s.headless) {
       const evs = launchMod.headlessGet(s.id)?.events ?? [];
       const turns = headlessTurns(evs).filter((t) => (t.role === 'assistant' || t.role === 'result') && t.text?.trim() && !t.delta);
       const t = turns.at(-1); if (t) r = { text: t.text, ts: t.ts ?? null };
     } else if (s.engine === 'claude') r = await claude.lastAssistantText(s.transcript);
     else if (s.engine === 'openclaw') { const t = (await openclaw.transcript({ limit: 50 })).turns.filter((x) => x.role === 'assistant' && !x.pending).at(-1); if (t) r = { text: t.text, ts: t.ts }; }
     else if (s.engine === grok.ENGINE) r = await grok.lastReply(s.id);
+    else if (s.engine === hermes.ENGINE) r = hermes.lastReply(s);
     else if (s.engine === 'codex') {
       const file = s.file ?? (await codex.recentRollouts({ days: 30, limit: 2000 })).find((x) => x.threadId === s.threadId)?.file;
       if (file) { const t = (await codex.readRollout(file, { limit: 40 })).turns?.filter((x) => x.role === 'assistant' && x.text?.trim()).at(-1); if (t) r = { text: t.text, ts: t.ts ?? null }; }
     }
     let ask = null;
     if (s.engine === 'claude' && !s.headless) { const a = await askContextFor({ transcript: s.transcript, tmux: s.tmux }); const { lastText, lastTs, ...rest } = a; ask = rest; }
+    // A prompt the Hermes gateway holds is what it waits on, whatever its last reply said.
+    else if (s.engine === hermes.ENGINE && s.dialog) ask = classifyAsk({ screenState: 'dialog', dialog: s.dialog });
     else if (r?.text) ask = classifyAsk({ text: r.text });
     // A Grok bot's reply comes marked (core/bots/grok.js provenance): the mark goes with it to whoever asked.
     return r ? { id: s.id ?? s.sessionId ?? s.threadId, name: s.name ?? null, engine: s.engine, text: r.text.slice(-4000), line: claude.lastLine(r.text), ts: r.ts ?? null, ask, ...(r.untrusted === true ? { source: r.source ?? null, untrusted: true } : {}) } : { id: s.id ?? s.sessionId ?? s.threadId, name: s.name ?? null, engine: s.engine, text: null, line: null, ask };
@@ -344,6 +399,7 @@ export const local = {
       if (s.headless) delivery = await launchMod.headlessSend(s.id, text);
       else if (s.engine === grok.ENGINE) delivery = await grok.send(s.id, text, { actor });
       else if (s.engine === 'claude') delivery = await claude.sendToSession(s, text, { fromName: `drover (${actor})` });
+      else if (s.engine === hermes.ENGINE) delivery = await hermes.send(s, text);
       else delivery = await codex.sendTurn(s.threadId, text, { cwd: s.cwd });
     } catch (e) { delivery = { ok: false, error: resolved ? `${e.message} (sent on: ${resolved.resolvedWhy})` : withNote(e.message, handoff) }; }
     const to = { kind: s.engine, host: hosts.localShortName(), id: s.id ?? s.sessionId ?? s.threadId, name: s.name ?? null };
@@ -433,11 +489,21 @@ export const local = {
     };
   },
 
+  // ---- Hermes Agent (core/hermes.js)
+  async 'hermes.status'() { return hermes.status(); },
+
   // ---- terminals (ttyd)
   async 'terminals.list'() { return { available: await terminals.ttydAvailable(), terminals: terminals.list() }; },
   async 'terminals.open'({ target, readOnly = false }) { return terminals.open(target, { readOnly }); },
   async 'terminals.close'({ id }) { return terminals.close(str(id, 'id')); },
 };
+
+/** sessions.answer for a Hermes session: the gateway answers the prompt it holds; an answer that went through is recorded as a message. */
+async function answerHermes(s, key, expect, actor) {
+  const r = await hermes.answer(s, key, { expect });
+  if (r.ok) await events.append({ type: 'message', to: { kind: hermes.ENGINE, host: hosts.localShortName(), id: s.id, name: s.name ?? null }, text: `[${r.choice ? `approval: ${r.choice}` : `answer: ${r.answer}`}]`, delivery: { ok: true, via: r.via, question: r.dialog?.question ?? null } }, { actor });
+  return { ...r, target: s.id };
+}
 
 function headlessTurns(evs = []) {
   const out = [];
@@ -448,8 +514,15 @@ function headlessTurns(evs = []) {
     else if (e.type === 'item/agentMessage/delta') out.push({ role: 'assistant', ts: e.ts, text: e.params?.delta ?? '' , delta: true });
     else if (e.type === 'item/completed' && e.params?.item?.type === 'agentMessage') out.push({ role: 'assistant', ts: e.ts, text: e.params.item.text ?? e.params.item.content ?? '' });
     else if (e.type === 'exit') out.push({ role: 'system', ts: e.ts, text: `exited ${e.code}` });
+    // A headless Hermes turn (core/hermes.js HeadlessHermes): its stream-json, the text deltas of one reply joined.
+    else if (e.type === 'hermes/user') out.push({ role: 'user', ts: e.ts, text: e.text });
+    else if (e.type === 'hermes/text') { const last = out.at(-1); if (last?.role === 'assistant' && last.hermesText) last.text += e.text ?? ''; else out.push({ role: 'assistant', ts: e.ts, text: e.text ?? '', tools: [], hermesText: true }); }
+    else if (e.type === 'hermes/tool_use') out.push({ role: 'assistant', ts: e.ts, text: '', tools: [hermes.streamToolCall(e)] });
+    else if (e.type === 'hermes/tool_result') { const o = hermes.toolOutput(e.output); out.push({ role: 'tool_result', ts: e.ts, count: 1, text: (o.failed || e.is_error ? '[error] ' : '') + o.text.slice(0, 400) }); }
+    else if (e.type === 'hermes/result') out.push({ role: 'result', ts: e.ts, text: String(e.text ?? '').slice(0, 2000), turns: null });
+    else if (e.type === 'hermes/error') out.push({ role: 'system', ts: e.ts, text: `hermes exited ${e.code}${e.text ? `: ${e.text}` : ''}` });
   }
-  return out;
+  return out.map(({ hermesText, ...t }) => t);
 }
 
 /** Ops that must never be forwarded (they are about the front itself). */
@@ -767,7 +840,7 @@ const NEVER_CONNECTED = /connect to host .* (timed out|Connection refused|No rou
  */
 async function launchPlaced(args) {
   const { placement: placementClass, placementExclude, ...launchArgs } = args;
-  const className = placementClass || (launchArgs.engine === 'codex' ? 'codex-session' : 'claude-session');
+  const className = placementClass || ({ codex: 'codex-session', hermes: 'hermes-session' })[launchArgs.engine] || 'claude-session';
   const exclude = (Array.isArray(placementExclude) ? placementExclude : placementExclude ? [placementExclude] : []).map(String);
   let failed = null;
   for (let attempt = 0; ; attempt++) {
@@ -943,7 +1016,8 @@ export async function dispatch(op, args = {}) {
   // A manager on another host answers inside the call (its drover rpc is not the daemon, so wait: false waits there):
   // give it the manager's own 15-minute budget, not the minute every other forwarded op gets.
   if (op === 'sessions.message' && openclaw.isManagerId(rest.id)) return callOn(host, op, rest, dispatchLocal, { timeoutMs: 905_000 });
-  if (op === 'launch.start' && effortGiven(rest.effort)) await requireLaunchEfforts(host);
+  if (op === 'launch.start' && rest.engine === hermes.ENGINE) await requireHermesLaunch(host);
+  else if (op === 'launch.start' && effortGiven(rest.effort)) await requireLaunchEfforts(host);
   if (op === 'files.wait') return callOn(host, op, rest, dispatchLocal, { timeoutMs: hostTimeoutMs(op, rest) }).catch((e) => {
     throw /unknown op files\.wait/.test(e?.message ?? '') ? new Error(`${host} runs Drover code from before files.wait: update Drover there (${UPDATE_HINT})`) : e;
   });
@@ -970,6 +1044,20 @@ async function answerOn(host, args) {
     }
     const r = await callOn(host, 'tmux.answer', { target, key: args.key, expect: args.expect, actor: args.actor }, dispatchLocal, { timeoutMs: hostTimeoutMs('tmux.answer') });
     return { ...r, target };
+  }
+}
+
+/**
+ * Before a Hermes launch goes to another host, make sure the code that will run it launches Hermes: older code reads
+ * any engine but codex as claude and would start a Claude session. Code that launches Hermes knows hermes.status (an
+ * effort on the launch is covered too: it came with efforts), and callOn first retires a peer that predates the
+ * host's update, so only a host that really runs old code is refused, and nothing is started there.
+ */
+async function requireHermesLaunch(host) {
+  try { await callOn(host, 'hermes.status', {}, dispatchLocal, { timeoutMs: 60_000 }); }
+  catch (e) {
+    if (/unknown op hermes\.status/.test(e?.message ?? '')) throw new Error(`${host} runs Drover code that cannot launch Hermes (it would start Claude instead), so nothing was started; update Drover there (${UPDATE_HINT})`);
+    throw e;
   }
 }
 
@@ -1001,7 +1089,7 @@ export const CACHE_POLICY = {
   'reflections.list': 30_000, 'reflections.repos': 30_000, 'terminals.list': 5_000, 'headless.list': 3_000,
   'credentials.status': 3_000, 'survey.list': 10_000,
   'files.roots': 30_000, 'openclaw.status': 30_000, 'openclaw.check': 30_000, 'openclaw.feed': 10_000, 'native.summary': 5_000, 'native.board': 3_000, 'openclaw.threads': 3_000,
-  'docker.stacks': 30_000,
+  'docker.stacks': 30_000, 'hermes.status': 10_000,
 };
 const INVALIDATES = {
   'tmux.send': ['tmux.'], 'tmux.keys': ['tmux.'], 'tmux.new': ['tmux.', 'fleet.'], 'tmux.kill': ['tmux.', 'fleet.'], 'tmux.rename': ['tmux.', 'fleet.'],

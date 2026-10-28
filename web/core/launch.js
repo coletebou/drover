@@ -11,6 +11,7 @@ import { uuidv7 } from './ids.js';
 import * as tmux from './tmux.js';
 import * as claude from './claude.js';
 import * as codex from './codex.js';
+import * as hermes from './hermes.js';
 import { append } from './events.js';
 import { checkEffort, checkModelEffort } from './effort.js';
 import { loginShellPath } from './proc.js';
@@ -21,11 +22,23 @@ import * as credentials from './credpool.js';
 
 function expandHome(s) { return typeof s === 'string' ? s.replace(/^~(?=$|\/)/, process.env.HOME) : s; }
 
-/** The launch profiles: DROVER_PROFILES (a leading ~ is this user's home), else the profiles.json beside web/core. */
-export const PROFILES_FILE = expandHome(envvar('PROFILES')) || path.join(dirname(fileURLToPath(import.meta.url)), '..', 'profiles.json');
+/** The profiles.json beside web/core: the default, and what a custom file falls back to for an engine it has no section for. */
+const SHIPPED_PROFILES = path.join(dirname(fileURLToPath(import.meta.url)), '..', 'profiles.json');
+/** The launch profiles: DROVER_PROFILES (a leading ~ is this user's home), else the shipped profiles.json. */
+export const PROFILES_FILE = expandHome(envvar('PROFILES')) || SHIPPED_PROFILES;
+/** The engines a profiles file has a section for. */
+const ENGINE_SECTIONS = ['claude', 'codex', 'hermes'];
 
+/**
+ * The profiles file. A custom one (DROVER_PROFILES) written before an engine existed, as a fleet's own file usually is
+ * when Hermes arrives, gets that engine's shipped section, so the engine launches without the file being edited; a
+ * section the file has is always its own.
+ */
 export async function loadProfiles() {
-  return JSON.parse(await readFile(PROFILES_FILE, 'utf8'));
+  const own = JSON.parse(await readFile(PROFILES_FILE, 'utf8'));
+  if (PROFILES_FILE === SHIPPED_PROFILES || ENGINE_SECTIONS.every((e) => own[e])) return own;
+  const shipped = JSON.parse(await readFile(SHIPPED_PROFILES, 'utf8'));
+  return { ...own, ...Object.fromEntries(ENGINE_SECTIONS.filter((e) => !own[e] && shipped[e]).map((e) => [e, shipped[e]])) };
 }
 
 /** The tmux session a tmux launch that names none opens its window in, used when the profiles name none either. */
@@ -48,8 +61,11 @@ export async function resolveProfile(engine, profileId) {
 
 const SAFE_NAME = (s) => String(s ?? '').replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'agent';
 
-/** Test seams: the tmux window spawner, the headless Claude class, the Codex thread starter, the Codex model catalog, the agent PATH and the folder trust step. Default to the real adapters. */
-export const _deps = { newWindow: (opts) => tmux.newWindow(opts), HeadlessClaude: claude.HeadlessClaude, startCodexThread: (opts) => codex.startThread(opts), codexModelEfforts: () => codex.modelEfforts(), agentPath: () => loginShellPath(), trustFolder: (engine, dir, opts) => trustFolder(engine, dir, opts) };
+/** Test seams: the tmux window spawner, the headless Claude and Hermes classes, the Codex thread starter, the Codex model catalog, the agent PATH, the folder trust step and the Hermes pane record. Default to the real adapters. */
+export const _deps = { newWindow: (opts) => tmux.newWindow(opts), HeadlessClaude: claude.HeadlessClaude, HeadlessHermes: hermes.HeadlessHermes, startCodexThread: (opts) => codex.startThread(opts), codexModelEfforts: () => codex.modelEfforts(), agentPath: () => loginShellPath(), trustFolder: (engine, dir, opts) => trustFolder(engine, dir, opts), rememberHermesPane: (title, window) => hermes.rememberPane(title, window, { home: hermes.rootHome() }) };
+
+/** The engines a launch starts; anything else is a Claude launch, as it always was. */
+const ENGINES = new Set(['claude', 'codex', 'hermes']);
 
 /**
  * A tmux window cannot be watched for exit from here, so a tmux launch counts
@@ -182,10 +198,15 @@ async function failover(entry, detail) {
 }
 
 /**
- * @param {object} req {engine:'claude'|'codex', mode:'tmux'|'headless', profile, model, effort, cwd, prompt, tmuxSession, name, resume, credential:'auto'|<id>|'none', trust}
+ * @param {object} req {engine:'claude'|'codex'|'hermes', mode:'tmux'|'headless', profile, model, effort, cwd, prompt, tmuxSession, name, resume, credential:'auto'|<id>|'none', trust}
  *
  * effort (core/effort.js) is the reasoning effort of this one session: claude `--effort <level>`, codex
- * `-c model_reasoning_effort="<level>"` (a headless Codex thread gets the same key in thread/start config).
+ * `-c model_reasoning_effort="<level>"` (a headless Codex thread gets the same key in thread/start config), hermes
+ * `--reasoning <level>`.
+ *
+ * A Hermes tmux launch names its new session with a unique title (the window name and a short tail, `-c <title>
+ * --create-if-missing`) and remembers that title's window, so the session's strip opens its pane; the result and
+ * event carry the title. A headless Hermes session runs each turn as one `hermes chat --oneshot` (core/hermes.js).
  * It is checked before anything else happens, so an invalid value starts, picks and records nothing; omitted,
  * the launch is exactly what it was before efforts existed (same argv, env, event and result).
  *
@@ -194,7 +215,7 @@ async function failover(entry, detail) {
  * dialog. trust: false leaves the config alone. Runs where the launch runs, so a remote launch writes that host's file.
  */
 export async function launch(req, { actor = 'drover' } = {}) {
-  const engine = req.engine === 'codex' ? 'codex' : 'claude';
+  const engine = ENGINES.has(req.engine) ? req.engine : 'claude';
   const mode = req.mode === 'headless' ? 'headless' : 'tmux';
   const effort = checkEffort(engine, req.effort);
   const model = req.model || undefined;
@@ -213,7 +234,9 @@ export async function launch(req, { actor = 'drover' } = {}) {
   // The PATH of a login shell, computed fresh for each launch (about 0.25 s), not the daemon's own: see
   // loginShellPath. Spread before the profile env, so a profile that names a PATH keeps it. A headless Codex
   // thread runs in the shared app-server (core/codex.js) and keeps that process's PATH, so it skips this.
-  const agentPath = mode === 'tmux' || engine === 'claude' ? await _deps.agentPath() : undefined;
+  const agentPath = mode === 'tmux' || engine !== 'codex' ? await _deps.agentPath() : undefined;
+  // A Hermes launch with no hermes to run would open a window that only says "command not found", or a headless session whose every turn fails.
+  if (engine === 'hermes' && !hermes.findBin(profile.env.PATH ?? agentPath)) throw new Error(`hermes is not on this host's PATH (${hermes.hermesBin()}): install Hermes Agent there, or set DROVER_HERMES_BIN to it; nothing was started`);
   const base = { type: 'launch', engine, mode, profile: profile.id, model: model ?? null, ...withEffort, cwd, prompt: req.prompt ? String(req.prompt).slice(0, 2000) : null, credential: cred?.id ?? null };
 
   if (mode === 'tmux') {
@@ -224,9 +247,12 @@ export async function launch(req, { actor = 'drover' } = {}) {
     // shell in between (test/launch-effort.test.js sends hostile values through a real tmux server), so PATH
     // is the one newWindow sets on the tmux client from env.PATH. The effort is a value from the allowlist in
     // core/effort.js, never text from the request.
+    const title = engine === 'hermes' && !req.resume ? hermes.launchTitle(name) : null;
     const argv = engine === 'claude'
       ? claude.interactiveArgv(profile, { model, effort, resume: req.resume, prompt: req.prompt })
-      : codex.interactiveArgv(profile, { model, effort, prompt: req.prompt, resume: req.resume });
+      : engine === 'hermes'
+        ? hermes.interactiveArgv(profile, { model, effort, cwd, prompt: req.prompt, resume: req.resume, title })
+        : codex.interactiveArgv(profile, { model, effort, prompt: req.prompt, resume: req.resume });
     // Credential and profile env go through tmux -e flags (never an `env K=V` argv prefix, which
     // would leave the token readable in #{pane_start_command}); the event stores only the bare argv.
     const childEnv = { ...(engine === 'claude' ? UNATTENDED_CLAUDE_ENV : {}), PATH: agentPath, ...Object.fromEntries(Object.entries(profile.env).map(([k, v]) => [k, expandHome(v)])), ...credEnv };
@@ -235,8 +261,11 @@ export async function launch(req, { actor = 'drover' } = {}) {
     const withTrust = trust ? { trust } : {};
     const { target } = await _deps.newWindow({ session, name, cwd, argv, env: childEnv });
     if (cred) await credentials.acquire(cred.id, `tmux:${target}`, { ttlMs: TMUX_ACTIVE_TTL_MS });
-    const ev = await append({ ...base, argv, ...withTrust, result: { tmux: target, name } }, { actor });
-    return { ok: true, mode, target, name, argv, ...withEffort, ...withTrust, credential: cred?.id ?? null, credentialReason, event: ev.id };
+    // Which window the titled Hermes session is in: a failure here costs only the strip's link to its pane.
+    if (title) { try { await _deps.rememberHermesPane(title, target); } catch (e) { console.error(`[launch] hermes pane for ${title}: ${e.message}`); } }
+    const withTitle = title ? { title } : {};
+    const ev = await append({ ...base, argv, ...withTrust, result: { tmux: target, name, ...withTitle } }, { actor });
+    return { ok: true, mode, target, name, argv, ...withTitle, ...withEffort, ...withTrust, credential: cred?.id ?? null, credentialReason, event: ev.id };
   }
 
   // headless
@@ -253,6 +282,18 @@ export async function launch(req, { actor = 'drover' } = {}) {
     if (req.prompt) { h.send(req.prompt); entry.status = 'busy'; }
     const ev = await append({ ...base, argv: ['claude', ...h.argv], result: { headlessId: id, sessionId: h.sessionId } }, { actor });
     return { ok: true, mode, headlessId: id, sessionId: h.sessionId, ...withEffort, credential: cred?.id ?? null, credentialReason, event: ev.id };
+  }
+  if (engine === 'hermes') {
+    const h = new _deps.HeadlessHermes({
+      cwd, profile, model, effort, resume: req.resume, env: { PATH: agentPath, ...profile.env },
+      onEvent: (d) => { entry.sessionId = entry.handle?.sessionId ?? entry.sessionId; recordHeadlessEvent(entry, d); },
+      onStatus: (st) => { entry.sessionId = entry.handle?.sessionId ?? entry.sessionId; if (entry.status !== 'stopped') entry.status = st; },
+    });
+    entry.handle = h; entry.status = 'idle';
+    if (req.resume) entry.sessionId = req.resume;
+    if (req.prompt) { recordHeadlessEvent(entry, { type: 'hermes/user', text: req.prompt }); h.send(req.prompt); }
+    const ev = await append({ ...base, argv: h.argv, result: { headlessId: id, ...(req.resume ? { sessionId: req.resume } : {}) } }, { actor });
+    return { ok: true, mode, headlessId: id, sessionId: entry.sessionId ?? null, ...withEffort, credential: null, credentialReason, event: ev.id };
   }
   // codex headless: thread on the shared app-server
   const started = await _deps.startCodexThread({ cwd, model, ...withEffort, prompt: req.prompt });
@@ -271,19 +312,45 @@ export async function launch(req, { actor = 'drover' } = {}) {
 export async function headlessSend(id, text) {
   const e = headless.get(id); if (!e) throw new Error('no such headless session');
   if (e.engine === 'claude') { e.handle.send(text); e.status = 'busy'; recordHeadlessEvent(e, { type: 'user', text }); return { ok: true }; }
+  if (e.engine === 'hermes') {
+    recordHeadlessEvent(e, { type: 'hermes/user', text });
+    // Between one-shots the conversation is the gateway's while one is up: the message goes there, where it answers a
+    // question, or queues behind a turn or an approval, as a message to any Hermes session does (and its transcript is
+    // the conversation's). With no gateway, a one-shot this entry tracks. A message acts, so it may dial a gateway a
+    // listing would leave alone (hermes.js mayPoll).
+    if (e.status === 'stopped') throw new Error('this headless Hermes session was stopped');
+    if (!e.handle.child && e.sessionId) {
+      const s = await hermes.findSession(e.sessionId);
+      if (s && await hermes.gatewayFor(s.home ?? hermes.rootHome())) return hermes.send(s, text);
+    }
+    // A Hermes turn already running: this one waits for it (HeadlessHermes), so its output still comes back here.
+    const r = e.handle.send(text); return { ok: true, ...(r.queued ? { queuedBehindTurn: true } : {}) };
+  }
   const r = await codex.sendTurn(e.threadId, text, { cwd: e.cwd }); e.status = 'busy'; recordHeadlessEvent(e, { type: 'user', text }); return r;
+}
+
+/**
+ * A headless Hermes entry with no one-shot running takes the status of its conversation (waiting, busy or idle), which
+ * the gateway serves from then on: core/api.js listSessionsLocal derives it each listing. A running one-shot's own
+ * status stands.
+ */
+export function headlessSettle(id, status) {
+  const e = headless.get(id);
+  if (e?.engine === 'hermes' && e.status !== 'stopped' && !e.handle?.child && ['waiting', 'busy', 'idle'].includes(status)) e.status = status;
 }
 
 export function headlessStop(id) {
   const e = headless.get(id); if (!e) throw new Error('no such headless session');
-  if (e.engine === 'claude') e.handle.stop(); else { e.unsub?.(); codex.interruptTurn(e.threadId).catch(() => {}); }
+  // A Hermes turn belongs to the gateway, which runs it on with its client gone: stop it there too.
+  if (e.engine === 'hermes' && e.sessionId) hermes.findSession(e.sessionId).then((s) => (s?.live ? hermes.interrupt(s) : null)).catch(() => {});
+  if (e.engine === 'claude' || e.engine === 'hermes') e.handle.stop(); else { e.unsub?.(); codex.interruptTurn(e.threadId).catch(() => {}); }
   e.status = 'stopped';
   if (e.credential) credentials.release(e.credential, e.id);
   return { ok: true };
 }
 
 export function headlessList() {
-  return [...headless.values()].map((e) => ({ id: e.id, engine: e.engine, name: e.name, cwd: e.cwd, profile: e.profile, model: e.model, ...(e.effort ? { effort: e.effort } : {}), status: e.status, exitCode: e.exitCode ?? null, startedAt: e.startedAt, sessionId: e.sessionId ?? null, threadId: e.threadId ?? null, eventCount: e.events.length, credential: e.credential ?? null, failovers: e.failovers ?? 0 }));
+  return [...headless.values()].map((e) => ({ id: e.id, engine: e.engine, name: e.name, cwd: e.cwd, profile: e.profile, model: e.model, ...(e.effort ? { effort: e.effort } : {}), status: e.status, ...(e.engine === 'hermes' ? { running: Boolean(e.handle?.child) } : {}), exitCode: e.exitCode ?? null, startedAt: e.startedAt, sessionId: e.sessionId ?? null, threadId: e.threadId ?? null, eventCount: e.events.length, credential: e.credential ?? null, failovers: e.failovers ?? 0 }));
 }
 
 export function headlessGet(id) {

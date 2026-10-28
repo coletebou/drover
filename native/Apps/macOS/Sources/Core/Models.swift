@@ -58,7 +58,7 @@ struct SessionItem: Identifiable, Hashable, Sendable {
     var name: String
     /// Fleet host alias as the daemon reports it (local host included).
     var host: String
-    /// claude, codex, headless, openclaw, or whatever the server sends.
+    /// claude, codex, hermes, headless, openclaw, grok, or whatever the server sends.
     var engine: String
     /// Raw server status (busy, idle, blocked, ...).
     var status: String

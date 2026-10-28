@@ -56,6 +56,8 @@ export function snapshotOf(summary) {
       id: String(id), engine: s.engine ?? s.kind ?? null, name: s.name ?? s.preview ?? null, status: s.status ?? null,
       live: s.live !== false && s.status !== 'dead', dead: s.status === 'dead', tmux: s.tmux ?? null, cwd: s.cwd ?? null,
       statusUpdatedAt: s.statusUpdatedAt ?? s.updatedAt ?? null, statusAt: s.statusUpdatedAt ?? null, exitCode: s.exitCode ?? null, transcript: s.transcript ?? null, headless: s.kind === 'headless',
+      // A prompt the session reports itself (a Hermes approval or question its gateway holds), with what answering it needs.
+      ...(s.dialog && s.hash ? { dialog: s.dialog, hash: String(s.hash), keys: Array.isArray(s.keys) ? s.keys : null, promptKind: s.prompt?.kind ?? null, answer: s.answer ?? null } : {}),
     });
   }
   const windows = new Map();
@@ -101,6 +103,18 @@ export function diffSnapshots(prev, next, { host }) {
       const ask = classifyAsk({ screenState: 'dialog', dialog: w.dialog });
       out.push({ category: 'needs-you', kind: 'dialog', host, sessionId: w.sessionId, target, name, engine: w.engine, title: `${name} ${ASK_LABELS.decision}`, body: dialogBody(w.dialog, w.tail), key: `${host}|${target}|dialog|${w.hash ?? ''}`, ask, meta: { hash: w.hash, options: w.dialog?.options ?? [] } });
     }
+  }
+  // A prompt a session reports itself, once per prompt (its hash is the prompt id). Its alert names no pane: the prompt
+  // is not drawn in one, so an answer goes to the session (sessions.answer), never to a pane read first.
+  for (const [sid, s] of next.sessions) {
+    if (!s.live || !s.hash || !s.dialog) continue;
+    dialogSessions.add(sid);
+    if (prev.sessions.get(sid)?.hash === s.hash) continue;
+    const name = s.name ?? sid.slice(0, 8);
+    const question = s.promptKind === 'clarify';
+    const ask = question ? classifyAsk({ pendingAsk: s.dialog }) : classifyAsk({ screenState: 'dialog', dialog: s.dialog });
+    out.push({ category: 'needs-you', kind: question ? 'question' : 'dialog', host, sessionId: sid, target: null, name, engine: s.engine, title: `${name} ${ask.label}`, body: dialogBody(s.dialog, []), key: `${host}|${sid}|prompt|${s.hash}`, ask,
+      meta: { hash: s.hash, options: s.dialog.options ?? [], ...(s.keys ? { keys: s.keys } : {}), ...(s.answer === 'reply' ? { answer: 'reply' } : {}), reported: true } });
   }
   // Sessions: busy -> idle, -> asking, -> dead / exited.
   for (const [sid, s] of next.sessions) {

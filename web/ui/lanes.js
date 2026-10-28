@@ -19,8 +19,11 @@ function askOfNotify(n) {
  * the wait lane until its next status, not only while the alert it raised is fresh.
  */
 function reportedAsk(s) {
-  if (s.engine !== 'grok' || s.status !== 'waiting') return null;
-  return { kind: 'decision', label: s.state === 'blocked' ? 'is blocked' : 'needs you', text: s.summary ?? '', options: [] };
+  if (s.status !== 'waiting') return null;
+  if (s.engine === 'grok') return { kind: 'decision', label: s.state === 'blocked' ? 'is blocked' : 'needs you', text: s.summary ?? '', options: [] };
+  // A Hermes session waiting on a prompt Drover does not answer (a secret, sudo or vault prompt): it is answered at its terminal.
+  if (s.engine === 'hermes' && !s.dialog) return { kind: 'decision', label: 'needs you', text: 'waiting on a prompt in its terminal', options: [] };
+  return null;
 }
 
 /** The tail of an agent with no pane (a Grok bot): why it went stale, else the summary it last reported. */
@@ -38,7 +41,10 @@ export function stripsFor(hostSummary, notifyMap = {}, now = Date.now(), finishe
   for (const s of sessions) {
     if (!s.live) continue;
     const w = byWin.get(s.sessionId ?? s.id) ?? (s.tmux ? windows.find((x) => isWindow(x, tmuxWindowTarget(s.tmux))) : null);
-    const screen = w?.screen?.state;
+    // A prompt the session reports itself (a Hermes approval or question its gateway holds, core/hermes.js) is what it
+    // waits on, whatever a pane shows; one answered with keys counts as a dialog on screen, one answered in text as a question.
+    const own = s.dialog && s.hash && (s.dialog.question || s.dialog.options?.length) ? s : null;
+    const screen = own ? (own.answer === 'reply' ? undefined : 'dialog') : w?.screen?.state;
     const n = notifyMap[s.sessionId ?? s.id];
     // An ask stands until the session moves on: a status change after it (it got its
     // answer and worked) clears it, unless the screen still shows the dialog.
@@ -46,17 +52,19 @@ export function stripsFor(hostSummary, notifyMap = {}, now = Date.now(), finishe
     const movedOn = n && toMs(s.statusUpdatedAt) > Date.parse(n.ts) + 2000 && screen !== 'dialog';
     const asked = n && now - Date.parse(n.ts) < NOTIFY_FRESH_MS && s.status !== 'busy' && !movedOn;
     // The ask: the screen wins (a live dialog), then a hook or agent ask with real context, then what a bot reports.
-    const ask = screen === 'dialog' || w?.held ? classifyAsk({ screenState: screen, dialog: w?.dialog, held: w?.held, heldFrom: w?.heldFrom }) : asked ? askOfNotify(n) : reportedAsk(s);
+    const ask = own ? (own.prompt?.kind === 'clarify' ? classifyAsk({ pendingAsk: own.dialog }) : classifyAsk({ screenState: 'dialog', dialog: own.dialog }))
+      : screen === 'dialog' || w?.held ? classifyAsk({ screenState: screen, dialog: w?.dialog, held: w?.held, heldFrom: w?.heldFrom }) : asked ? askOfNotify(n) : reportedAsk(s);
     const waits = ask && ask.kind !== 'finished';
     const lane = waits ? 'wait' : (s.status === 'busy' || screen === 'busy') ? 'work' : s.engine === 'codex' && /active|running/i.test(s.status) ? 'work' : 'idle';
     const fin = lane === 'idle' ? finishedMap[s.sessionId ?? s.id] : null;
     const finished = fin && now - Date.parse(fin.ts) < 2 * 3600_000 ? { text: fin.ask?.text ?? fin.body ?? '', ts: fin.ts } : null;
     out.push({
       key: `${host}|${s.id}`, host, lane, engine: s.engine ?? s.kind, name: s.name ?? s.preview ?? String(s.id).slice(0, 8), id: s.id, sessionId: s.sessionId ?? s.id, status: s.status, screen, entrypoint: s.entrypoint ?? null,
-      tmux: w?.target ?? tmuxWindowTarget(s.tmux), windowName: w?.name, held: Boolean(w?.held), heldFrom: w?.heldFrom ?? null, dialog: w?.dialog ?? null, hash: w?.hash ?? null,
+      tmux: w?.target ?? tmuxWindowTarget(s.tmux), windowName: w?.name, held: Boolean(!own && w?.held), heldFrom: own ? null : w?.heldFrom ?? null, dialog: own?.dialog ?? w?.dialog ?? null, hash: own?.hash ?? w?.hash ?? null,
+      ...(own ? { reported: true, ...(Array.isArray(own.keys) ? { keys: own.keys } : {}), ...(own.answer === 'reply' ? { answer: 'reply' } : {}) } : {}),
       ask: waits ? ask : null, finished,
       tail: waits ? [ask.text, ...(w?.tail ?? []).slice(-1)].filter(Boolean) : finished?.text ? [finished.text] : (w?.tail ?? reportedTail(s)), question: waits ? ask.text : null,
-      since: asked && !w?.held && screen !== 'dialog' ? Date.parse(n.ts) : (s.statusUpdatedAt ?? s.updatedAt ?? s.startedAt ?? w?.activityTs), cwd: s.cwd ?? w?.cwd, kind: 'session', asked: Boolean(waits),
+      since: asked && !w?.held && screen !== 'dialog' && !own ? Date.parse(n.ts) : (s.statusUpdatedAt ?? s.updatedAt ?? s.startedAt ?? w?.activityTs), cwd: s.cwd ?? w?.cwd, kind: 'session', asked: Boolean(waits),
     });
     if (w) seen.add(w.target);
   }

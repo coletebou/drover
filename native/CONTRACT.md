@@ -21,7 +21,7 @@ speak the same HTTP+SSE API that the Drover browser UI uses. Server code lives i
 | op | use |
 |---|---|
 | `fleet.summary` | per-host counts, waiting/working/idle |
-| `sessions.list` `{host?}` | sessions (id, engine claude/codex/headless/openclaw/grok, name, status, cwd, tmux) |
+| `sessions.list` `{host?}` | sessions (id, engine claude/codex/hermes/headless/openclaw/grok, name, status, cwd, tmux) |
 | `sessions.transcript` `{id, since?, limit?}` | chat turns, `offset` for incremental reads |
 | `sessions.message` `{id, text, actor}` | send a message into a session (`actor`: see "The owner" below) |
 | `tmux.capture` `{target, lines?}` / `tmux.send` | peek at / type into a pane |
@@ -72,8 +72,13 @@ Details as built by core (these refine the bullets above; DroverKit models and `
   normal answer: show the reason and refresh. Never answer with `sessions.message`: that types into the inbox.
 - `native.summary` waiting items and `native.notifications` dialog items may carry `answer` (`keys`|`reply`), `dialog
   {question, options[{n,label,selected?}]}`, `hash` and `keys` (display order; y/n only where the prompt takes them).
+- `reported: true` on a strip or notification (added 2026-10-25): the dialog is one the session reports itself, not one
+  drawn in its pane: a Hermes approval or question that its gateway holds. Answer it the same way, `sessions.answer`
+  with `hash` as `expect` and one of `keys`, but never read the pane first or fall back to `tmux.answer`: the pane does
+  not show it the way a Claude dialog does. A Hermes approval numbers its choices as the Hermes TUI does (1 allow once,
+  then allow this session, always allow, deny last); Enter allows once, Escape denies.
 - `native.board {}` (main token): `{generatedAt, hosts[], strips[{key,id,name,host,engine,lane,status,screen?,tmux?,cwd?,
-  since?,headline,tail?,ask?,dialog?,hash?,keys?,answer?,held?,finished?,kind}], totals, manager{up,host,status,lastNoteAt}}`.
+  since?,headline,tail?,ask?,dialog?,hash?,keys?,answer?,held?,finished?,reported?,kind}], totals, manager{up,host,status,lastNoteAt}}`.
 - `GET /api/stream?topics=a,b`: only those events. `board` and `summary` events carry the two ops' results; `turn` also
   carries the manager (`{id:"manager", host, thread, turn}`); `manager` streams a reply (`phase` start|delta|done|error,
   `text` so far, `turnId`, `inReplyTo`).

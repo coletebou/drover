@@ -197,8 +197,8 @@ export const TABLES = [
     id: 'launch', title: 'Launch', ttl: 300_000,
     load: (app) => app.client.call('launch.profiles', {}),
     rows: (d) => [
-      ...['claude', 'codex'].flatMap((engine) => (d?.[engine]?.profiles ?? []).map((p) => ({ kind: 'profile', engine, ...p }))),
-      ...['claude', 'codex'].flatMap((engine) => (d?.[engine]?.models ?? []).map((m) => ({ kind: 'model', engine, ...m }))),
+      ...['claude', 'codex', 'hermes'].flatMap((engine) => (d?.[engine]?.profiles ?? []).map((p) => ({ kind: 'profile', engine, ...p }))),
+      ...['claude', 'codex', 'hermes'].flatMap((engine) => (d?.[engine]?.models ?? []).map((m) => ({ kind: 'model', engine, ...m }))),
       ...(d?.credentials?.pool ?? []).map((c) => ({ kind: 'credential', engine: (d.credentials.appliesTo ?? []).join(','), ...c })),
     ],
     meta: () => 'launch profiles, models and the credential pool (read-only: launch from the web UI or drover_launch)',
