@@ -54,13 +54,6 @@ export async function listWindows() {
   });
 }
 
-/** "session:@id" for a window target: the window's own id, which stays put when tmux renumbers its windows. */
-export async function windowKey(target) {
-  assertTarget(target);
-  const { stdout } = await run('tmux', ['display-message', '-p', '-t', target, '#{session_name}:#{window_id}']);
-  return stdout.trim();
-}
-
 /** Every pane's tty and its window ("session:@id"), for an agent that records the terminal it runs in (a Hermes REPL). */
 export async function paneTtys() {
   if (!(await serverUp())) return [];

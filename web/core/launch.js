@@ -61,8 +61,8 @@ export async function resolveProfile(engine, profileId) {
 
 const SAFE_NAME = (s) => String(s ?? '').replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'agent';
 
-/** Test seams: the tmux window spawner and its window id, the headless Claude and Hermes classes, the Codex thread starter, the Codex model catalog, the agent PATH, the folder trust step and the Hermes pane record. Default to the real adapters. */
-export const _deps = { newWindow: (opts) => tmux.newWindow(opts), windowKey: (target) => tmux.windowKey(target), HeadlessClaude: claude.HeadlessClaude, HeadlessHermes: hermes.HeadlessHermes, startCodexThread: (opts) => codex.startThread(opts), codexModelEfforts: () => codex.modelEfforts(), agentPath: () => loginShellPath(), trustFolder: (engine, dir, opts) => trustFolder(engine, dir, opts), rememberHermesPane: (title, window) => hermes.rememberPane(title, window, { home: hermes.rootHome() }) };
+/** Test seams: the tmux window spawner, the headless Claude and Hermes classes, the Codex thread starter, the Codex model catalog, the agent PATH, the folder trust step and the Hermes pane record. Default to the real adapters. */
+export const _deps = { newWindow: (opts) => tmux.newWindow(opts), HeadlessClaude: claude.HeadlessClaude, HeadlessHermes: hermes.HeadlessHermes, startCodexThread: (opts) => codex.startThread(opts), codexModelEfforts: () => codex.modelEfforts(), agentPath: () => loginShellPath(), trustFolder: (engine, dir, opts) => trustFolder(engine, dir, opts), rememberHermesPane: (title, window) => hermes.rememberPane(title, window, { home: hermes.rootHome() }) };
 
 /** The engines a launch starts; anything else is a Claude launch, as it always was. */
 const ENGINES = new Set(['claude', 'codex', 'hermes']);
@@ -262,7 +262,7 @@ export async function launch(req, { actor = 'drover' } = {}) {
     const { target } = await _deps.newWindow({ session, name, cwd, argv, env: childEnv });
     if (cred) await credentials.acquire(cred.id, `tmux:${target}`, { ttlMs: TMUX_ACTIVE_TTL_MS });
     // Which window the titled Hermes session is in: a failure here costs only the strip's link to its pane.
-    if (title) { try { await _deps.rememberHermesPane(title, await _deps.windowKey(target)); } catch (e) { console.error(`[launch] hermes pane for ${title}: ${e.message}`); } }
+    if (title) { try { await _deps.rememberHermesPane(title, target); } catch (e) { console.error(`[launch] hermes pane for ${title}: ${e.message}`); } }
     const withTitle = title ? { title } : {};
     const ev = await append({ ...base, argv, ...withTrust, result: { tmux: target, name, ...withTitle } }, { actor });
     return { ok: true, mode, target, name, argv, ...withTitle, ...withEffort, ...withTrust, credential: cred?.id ?? null, credentialReason, event: ev.id };

@@ -536,8 +536,8 @@ describe('launch.start engine hermes', () => {
   afterEach(async () => { await gw?.close(); gw = null; reset(); });
   before(() => {
     process.env.DROVER_HERMES_BIN = FAKE_BIN;
-    launchMod._deps.newWindow = async (o) => { windows.push(o); return { target: `${o.session}:5` }; };
-    launchMod._deps.windowKey = async (t) => t.replace(/:5$/, ':@55');
+    // newWindow answers the window's own id (session:@id), which stays put when tmux renumbers windows.
+    launchMod._deps.newWindow = async (o) => { windows.push(o); return { target: `${o.session}:@55` }; };
     launchMod._deps.agentPath = async () => process.env.PATH;
     launchMod._deps.trustFolder = async () => null;
     rmSync(RUN_LOG, { force: true });
