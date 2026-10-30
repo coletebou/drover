@@ -136,9 +136,16 @@ To start one: copy `profiles/default.json` to `<overlay>/profiles/<name>.json`, 
 port, `OTEL_ENDPOINT`, where each secret comes from, the egress allowlist), and add `workspace/<name>/USER.md`
 with what the manager should know about you and your projects.
 
-Primary model (revised 2026-10-11): GPT-6.1 Sol UltraFast at max thinking through the proxy alias
-`gpt-6.1-sol-ultrafast-br` (an alias the loopback CLIProxyAPI config must define); GPT-6 Astra stays as
-the first fallback (Mantle standard tier) and as an on-demand UltraFast `/model` row.
+Primary model (revised 2026-10-30): GPT-6.1 Sol **Standard** at max thinking on Mantle directly
+(`amazon-bedrock-mantle/openai.gpt-6.1-sol`). UltraFast was ~6× Standard and was driving ~$1.4–1.8K/day;
+the cliproxy UltraFast alias `gpt-6.1-sol-ultrafast-br` stays as an on-demand `/model` row only. GPT-6
+Astra remains the first fallback (Mantle standard) and an on-demand UltraFast `/model` row.
+
+Context budget (2026-10-30): the Sol Standard row sets `contextWindow: 128000` so OpenClaw's
+auto-compaction (default ~20k reserve) fires near ~108k tokens instead of waiting for the 272k Mantle
+cap. `contextPruning.mode: cache-ttl` (30m, hardClear on) trims old tool results; compaction also has
+`midTurnPrecheck`, `maxActiveTranscriptBytes: 2mb`, and an earlier memory flush (`softThresholdTokens:
+20000`, `forceFlushTranscriptBytes: 1mb`). Compaction / flush / heartbeat / dreaming stay on Luna.
 
 Efforts (2026-10-21): chats run at `thinkingDefault: max`, the sweep on Luna at the role's
 `heartbeatThinking` (`high`), the `fleet-digest` on GPT-6 Astra (Mantle standard tier) at `max`, and
@@ -240,12 +247,13 @@ USD per 1M tokens, which is what OpenClaw's calculator expects (`dist/usage-cost
 | `amazon-bedrock-mantle/openai.gpt-6-luna` | 0.11 | 0.55 | 0.011 | 0.1375 | 0.22 / 0.825 / 0.022 / 0.275 | B1 |
 | `amazon-bedrock-mantle/openai.gpt-6-astra` (Standard) | 11.00 | 55.00 | 1.10 | 13.75 (30m) | 22 / 82.50 / 2.20 / 27.50 | B2, D |
 | `cliproxy/gpt-6-astra-ultrafast-br` (Astra, UltraFast) | 66.00 | 330.00 | 6.60 | 82.50 (30m) | 132 / 495 / 13.20 / 165 | B2 |
-| `cliproxy/gpt-6.1-sol-ultrafast-br` (6.1 Sol, UltraFast) | 13.20 | 66.00 | 0.66 | 16.50 (30m) | 26.40 / 99 / 1.32 / 33 | B3 (unchanged; the old row already matched) |
+| `amazon-bedrock-mantle/openai.gpt-6.1-sol` (6.1 Sol, Standard; primary) | 2.20 | 11.00 | 0.11 | 2.75 (30m) | 4.40 / 16.50 / 0.22 / 5.50 | B3 ÷ 6 (UltraFast is 6× Standard) |
+| `cliproxy/gpt-6.1-sol-ultrafast-br` (6.1 Sol, UltraFast; on-demand `/model`) | 13.20 | 66.00 | 0.66 | 16.50 (30m) | 26.40 / 99 / 1.32 / 33 | B3 |
 
 Long-context rates go in `cost.tieredPricing` with `range: [0, 272001]` and `[272001]`: AWS
 applies them to the whole request when input exceeds 272,000 tokens, and OpenClaw picks the tier
-by prompt tokens (input + cacheRead + cacheWrite). Only the Astra rows (contextWindow 278528) can
-reach it today.
+by prompt tokens (input + cacheRead + cacheWrite). Astra UltraFast/standard rows (contextWindow 278528) can reach it; the Sol Standard primary
+rows `contextWindow: 128000` so OpenClaw compacts earlier and should not hit the long-context tier.
 
 Sources (fetched 2026-10-13):
 - **A**: AWS Bedrock pricing, https://aws.amazon.com/bedrock/pricing/ , Anthropic, table "Geo and
