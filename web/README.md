@@ -377,8 +377,10 @@ drover op launch.start '{"host":"auto","engine":"claude","prompt":"hi"}'   # lau
   `codex-session` 2, `heavy-build` 6 and 20 GB free disk, `macos-only` only on macOS) must leave the host's
   `reserveMemGB`; load must stay under `maxLoadPerCore` and `maxLoad`; macOS memory pressure under `maxPressure`
   (`normal`; `macos-only` may go at `warn`, never at `critical`), Linux stalls under `maxPsiSome60`; swap under
-  `maxSwapPct`/`maxSwapGB`, swapping under `maxSwapIoPerSec`; free disk on `diskPath` over `minFreeDiskGB`. Among the
-  eligible, the most memory and CPU headroom times `weight` wins (a production box gets a weight under 1), with the
+  `maxSwapPct`/`maxSwapGB`, pages swapped out under `maxSwapIoPerSec` (pages in plus out count against that cap only
+  while memory is short, the same rule as the monitor, so a host paging back in is not refused); free disk on
+  `diskPath` over `minFreeDiskGB`. Among the eligible, the most memory and CPU headroom times `weight` wins
+  (a production box gets a weight under 1), with the
   caller's own machine winning a near tie. The answer names the host (`local`, or the ssh alias), the reason, and
   every candidate with why it was passed over. Outside the daemon the daemon answers, through its warm ssh peers.
 - `launch.start` with `host: "auto"` (`drover_launch` too) places, then launches there; nothing starts when no host is

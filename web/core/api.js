@@ -744,7 +744,7 @@ async function placeHere({ class: className = 'claude-session', exclude = [], pr
   const judged = await Promise.all(targets.filter((t) => !excluded.includes(t)).map(async (t) => {
     const { vitals: v, error } = await vitalsForPlacement(t);
     const route = t.local ? 'local' : t.route;
-    return { name: route, display: t.display, ...placement.judge({ vitals: v, policy: t.entry?.placement ?? {}, cls, className, error, pendingMemGB: reservedGB(route) }) };
+    return { name: route, display: t.display, ...placement.judge({ vitals: v, policy: t.entry?.placement ?? {}, thresholds: placement.thresholdsFor(cat, t.entry), cls, className, error, pendingMemGB: reservedGB(route) }) };
   }));
   // The caller's own machine wins a near tie unless another is preferred: moving work costs something.
   const pref = !given(prefer) || targets.find((t) => namesOf(t).includes(String(prefer).toLowerCase()))?.local ? 'local' : String(prefer);
