@@ -5,6 +5,7 @@ import { assertKnownHost, sshArgv, LOCAL } from './hosts.js';
 import * as plugins from './plugins.js';
 import { envvar } from './envvars.js';
 import { UPDATE_HINT } from './util.js';
+import { redactEnvText } from './redact.js';
 
 // DROVER_REMOTE_BIN pins the remote binary. By default run ~/.local/bin/drover,
 // falling back to ~/.local/bin/apxw on a box that has not picked up the rename
@@ -16,8 +17,18 @@ export const REMOTE_RPC = REMOTE_BIN
   : 'D="$HOME/.local/bin/drover"; [ -x "$D" ] || D="$HOME/.local/bin/apxw"; exec "$D" rpc';
 export const _deps = { spawn, now: () => Date.now() };
 
-const RETIRE_KILL_MS = 150_000;   // longer than the longest op timeout (launch and the docker verbs: 120 s, api.js hostTimeoutMs)
+const RETIRE_KILL_MS = 150_000;   // at least this, past the longest default op timeout (launch and the docker verbs: 120 s, api.js hostTimeoutMs)
 const IDLE_MS = 10 * 60_000;
+
+/**
+ * How long a retired child gets before it is killed: past the deadline of everything it still owes (an hour-long files.wait
+ * included), and never less than RETIRE_KILL_MS. Its calls have timed out by then, so a child still alive is hung.
+ */
+export function retireKillMs(pending, now) {
+  let ms = RETIRE_KILL_MS;
+  for (const p of pending.values()) if (p.deadline) ms = Math.max(ms, p.deadline - now + 30_000);
+  return ms;
+}
 
 /** A retired child gets its EOF once it owes nothing, so it exits after its last reply has arrived here. */
 function endIfDrained(c) { if (c.droverRetired && c.droverPending.size === 0) { try { c.stdin.end(); } catch { /* closed */ } } }
@@ -46,11 +57,17 @@ class RemotePeer {
         const line = child.droverBuf.slice(0, i); child.droverBuf = child.droverBuf.slice(i + 1);
         if (!line.trim()) continue;
         let msg; try { msg = JSON.parse(line); } catch { continue; }
+        // That host's checkout has moved past the code this child loaded (bin/drover rpc): new calls get a fresh child
+        // with that code, and this one finishes what it was asked.
+        if (msg.stale && this.child === child) this.retire();
         const p = child.droverPending.get(msg.id); if (!p) continue;
-        msg.ok ? p.resolve(msg.result) : p.reject(Object.assign(new Error(msg.error ?? 'remote error'), { remote: true, host: this.host }));
+        // Redacted here too, not only where the error was made: a host on an older build sends its command errors
+        // with the environment values in them (core/proc.js ProcError).
+        msg.ok ? p.resolve(msg.result) : p.reject(Object.assign(new Error(redactEnvText(msg.error ?? 'remote error')), { remote: true, host: this.host }));
       }
     });
-    const note = (t) => { child.droverStderr = (child.droverStderr + t).slice(-4000); };
+    // Its last 4000 characters; once cut, its first line is incomplete (see the relay below).
+    const note = (t) => { const all = child.droverStderr + t; if (all.length > 4000) child.droverStderrCut = true; child.droverStderr = all.slice(-4000); };
     // A remote that dies between our write and its exit makes stdin emit EPIPE;
     // without a listener that is an uncaught 'error' and takes the daemon down.
     child.stdin.on?.('error', (e) => note(`\nstdin: ${e.code ?? e.message}`));
@@ -59,8 +76,13 @@ class RemotePeer {
     child.on('close', (code) => {
       clearTimeout(child.droverKillTimer);
       this.retired.delete(child);
-      const last = child.droverStderr.trim().split('\n').filter(Boolean).at(-1);
-      const why = last || (code === 0 ? `remote drover produced no reply (is Drover installed and current on that host? to update it: ${UPDATE_HINT})` : code === 255 ? 'ssh could not connect' : 'no stderr');
+      // Redacted whole, then cut to its last line: an assignment on an earlier line says what to scrub from that one.
+      // Once the kept part was cut, its first line is incomplete and is not relayed at all: what began it (a name, the
+      // scheme of a "Bearer <token>") can be gone, and nothing then says that what follows is a secret.
+      const redacted = redactEnvText(child.droverStderr);
+      const whole = child.droverStderrCut ? redacted.slice(redacted.indexOf('\n') + 1 || redacted.length) : redacted;
+      const last = whole.trim().split('\n').filter(Boolean).at(-1);
+      const why = last || (child.droverStderrCut ? 'its stderr ended in a line too long to relay' : code === 0 ? `remote drover produced no reply (is Drover installed and current on that host? to update it: ${UPDATE_HINT})` : code === 255 ? 'ssh could not connect' : 'no stderr');
       const err = new Error(`ssh ${this.host} drover rpc exited ${code}: ${why}`);
       for (const [, p] of child.droverPending) p.reject(err);
       child.droverPending.clear();
@@ -78,7 +100,7 @@ class RemotePeer {
       let timer = null;
       const settle = (fn) => (v) => { clearTimeout(timer); pend.delete(id); fn(v); endIfDrained(child); };
       timer = setTimeout(() => settle(reject)(new Error(`${this.host}: ${op} timed out`)), timeoutMs);
-      pend.set(id, { resolve: settle(resolve), reject: settle(reject) });
+      pend.set(id, { resolve: settle(resolve), reject: settle(reject), deadline: _deps.now() + timeoutMs });
     });
     if (!child.stdin || child.stdin.writable === false) { pend.get(id)?.reject(new Error(`ssh ${this.host} drover rpc is not running`)); return p; }
     child.stdin.write(JSON.stringify({ id, op, args }) + '\n', (err) => { if (err) pend.get(id)?.reject(new Error(`ssh ${this.host}: write failed (${err.code ?? err.message})`)); });
@@ -88,9 +110,9 @@ class RemotePeer {
    * Take the current child out of service without cancelling anything: new calls start a fresh child,
    * while this one answers the calls already sent to it (some may be mutating and already applied).
    * Its stdin is ended only once it owes nothing (endIfDrained): the child being retired is always an
-   * older build (that is why it answered "unknown op"), and `drover rpc` before 2026-10-15 exits on EOF
-   * without flushing stdout, cutting short any large reply still on its way. A child that hangs is
-   * killed after RETIRE_KILL_MS, failing whatever it still owes.
+   * older build (that is why it answered "unknown op", or it said its host's checkout has moved: stale), and
+   * `drover rpc` before 2026-10-15 exits on EOF without flushing stdout, cutting short any large reply still on its
+   * way. A child that hangs is killed once what it owes is past its deadlines (retireKillMs), failing it.
    */
   retire() {
     const c = this.child;
@@ -99,7 +121,7 @@ class RemotePeer {
     this.retired.add(c);
     c.droverRetired = true;
     endIfDrained(c);
-    c.droverKillTimer = setTimeout(() => { try { c.kill('SIGTERM'); } catch { /* gone */ } }, RETIRE_KILL_MS);
+    c.droverKillTimer = setTimeout(() => { try { c.kill('SIGTERM'); } catch { /* gone */ } }, retireKillMs(c.droverPending, _deps.now()));
     c.droverKillTimer.unref?.();
   }
   /**

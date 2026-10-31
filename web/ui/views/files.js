@@ -4,7 +4,7 @@
 // ~/code/*/CLAUDE.md and AGENTS.md). Saves are conflict-checked against the
 // sha256 the file was loaded with. "Save a copy" and "Open from disk" use the
 // File System Access API on this computer.
-import { h, clear, btn, empty, loading, fmtTime, debounce, plural } from '../dom.js';
+import { h, clear, btn, empty, loading, fmtTime, debounce, plural, tildePath } from '../dom.js';
 import { saveText, openTextFile, copyButton } from '../clip.js';
 import { fmtBytes } from '../drawer.js';
 
@@ -89,11 +89,12 @@ export default {
       try {
         const r = await call('files.read', { path: p });
         current = r; ta.value = r.text; ta.disabled = false;
-        pathEl.textContent = r.path.replace(/^\/(Users|home)\/[^/]+/, '~');
-        clear(fileMeta); fileMeta.append(`${fmtBytes(r.bytes)}, changed ${fmtTime(r.mtime)}${r.symlink ? `, link to ${r.real.replace(/^\/(Users|home)\/[^/]+/, '~')}` : ''}  `, copyButton(r.path, 'Copy path'));
-        localStorage.setItem(LAST_KEY, JSON.stringify({ host: host(), path: pathEl.textContent }));
+        pathEl.textContent = tildePath(r.path);
+        clear(fileMeta); fileMeta.append(`${fmtBytes(r.bytes)}, changed ${fmtTime(r.mtime)}${r.symlink ? `, link to ${tildePath(r.real)}` : ''}  `, copyButton(r.path, 'Copy path'));
+        // The real path, never the label: ~ in the label is the front daemon's home, and the file may be on another host.
+        localStorage.setItem(LAST_KEY, JSON.stringify({ host: host(), path: r.path }));
         markDirty(); paintSide();
-        ctx.nav('files', pathEl.textContent);
+        ctx.nav('files', r.path);
       } catch { if (current) ta.disabled = false; }
     }
     async function save() {
@@ -121,7 +122,7 @@ export default {
     window.addEventListener('beforeunload', guard);
     return {
       destroy() { alive = false; window.removeEventListener('beforeunload', guard); },
-      params(p) { if (p?.[0] && p[0] !== pathEl.textContent) openFile(p[0]); },
+      params(p) { if (p?.[0] && p[0] !== current?.path && p[0] !== pathEl.textContent) openFile(p[0]); },
       search(v) { search.value = v; find(v); },
     };
   },

@@ -1,6 +1,7 @@
 // Tmux windows on the selected host, grouped by session, with the agent and
 // screen state of each. The drawer shows the pane and takes input.
-import { h, clear, engine, dot, ago, empty, loading, matchQ, plural, btn, field } from '../dom.js';
+import { h, clear, engine, dot, ago, empty, loading, matchQ, plural, btn, field, tildePath } from '../dom.js';
+import { isWindow } from '../transcript.js';
 
 export default {
   id: 'tmux', label: 'Tmux', key: 't', topics: ['snapshot'],   // the local windows, live (app.js asks the stream for them)
@@ -27,11 +28,11 @@ export default {
         for (const w of wins) {
           const st = w.screen?.state ?? (w.agent?.status);
           const open = () => { selected = w.target; render(); ctx.open({ kind: 'window', id: w.target, host: ctx.host(), name: w.agent?.name ?? w.name, engine: w.agent?.engine, sessionId: w.agent?.sessionId, tmux: w.target }); };
-          g.append(h('div', { class: 'row', tabindex: 0, 'aria-selected': selected === w.target ? 'true' : 'false', onclick: open, onkeydown: (e) => { if (e.key === 'Enter') open(); } },
+          g.append(h('div', { class: 'row', tabindex: 0, 'aria-selected': isWindow(w, selected) ? 'true' : 'false', onclick: open, onkeydown: (e) => { if (e.key === 'Enter') open(); } },
             w.agent ? engine(w.agent.engine) : h('span', { class: 'engine shell' }, w.cmd.slice(0, 4)),
             h('div', { class: 'main-col' },
               h('div', { class: 'l1' }, h('span', { class: 'target' }, w.target), h('span', { class: 'trunc' }, w.name), w.agent?.name && w.agent.name !== w.name ? h('span', { class: 'muted small trunc' }, w.agent.name) : null),
-              h('div', { class: 'l2' }, [w.panes > 1 ? plural(w.panes, 'pane') : null, w.cwd?.replace(/^\/(Users|home)\/[^/]+/, '~'), w.tail?.at(-1)].filter(Boolean).join('   '))),
+              h('div', { class: 'l2' }, [w.panes > 1 ? plural(w.panes, 'pane') : null, w.cwd ? tildePath(w.cwd) : null, w.tail?.at(-1)].filter(Boolean).join('   '))),
             h('span', { class: 'mark' }, st ? dot(st, { pulse: st === 'busy' }) : null, st ?? '', w.activityTs ? h('span', { class: 'muted small' }, ' ', ago(w.activityTs)) : null)));
         }
         wrap.append(g);

@@ -8,6 +8,7 @@ import * as codex from './codex.js';
 import * as hosts from './hosts.js';
 import * as events from './events.js';
 import * as memory from './memory.js';
+import * as lineage from './lineage.js';
 import * as launchMod from './launch.js';
 import { effortGiven, effortLevels } from './effort.js';
 import * as terminals from './terminals.js';
@@ -28,11 +29,13 @@ import { ops as uploadOps } from './uploads.js';
 import { ops as fileOps } from './files.js';
 import { ops as fileWaitOps, waitLimits } from './filewait.js';
 import { filterSessions, filtersGiven } from './session-filter.js';
+import * as version from './version.js';
 import { ops as searchOps } from './search/service.js';
 import * as docker from './docker.js';
 import * as vitals from './vitals.js';
 import * as placement from './placement.js';
 import { mergeHosts } from './search/query.js';
+import * as remoteSearch from './search/remote.js';
 import { OWNER } from './owner.js';
 import { UPDATE_HINT } from './util.js';
 import { classifyAsk, ASK_LABELS } from '../ui/notify-policy.js';
@@ -139,6 +142,29 @@ async function sessionById(id) {
   return null;
 }
 
+/**
+ * Where a message to a Claude session that is not live goes instead: its handoff chain's live successor
+ * (core/lineage.js), plus state, why the session itself cannot take it. null when that does not apply: the session
+ * runs, or is not a Claude session. findSession returns a running session ahead of any other that matches, so a
+ * target it returns that does not run means none that answers to id does. Only a full session id narrows the chains
+ * to that session's own; a name or prefix is looked up across every chain, beside every session listed under it, so
+ * one that names several sessions is not narrowed to whichever the lookup found first.
+ */
+async function handoffSuccessor(id, s) {
+  if (s ? s.engine !== 'claude' || s.headless || claude.running(s) : grok.isGrokTarget(id) || openclaw.isManagerId(id)) return null;
+  const state = !s ? 'session not found' : !s.socket ? 'no messaging socket' : 'process not alive';
+  const exact = s?.sessionId === id;
+  let r;
+  try {
+    const answering = s && !exact ? (await claude.listSessions()).filter((x) => x.sessionId === id || x.name === id || x.sessionId.startsWith(id)).map((x) => ({ id: x.sessionId, name: x.name ?? null })) : [];
+    r = await lineage.successor(id, { sessionId: exact ? id : null, answering, registry: await claude.listRegistry() });
+  } catch (e) { return { to: null, note: `the handoff chains could not be read, so nothing was redirected (${e.message})`, candidates: [], state }; }
+  if (!r.to && !r.note) return null;
+  return { ...r, state };
+}
+/** An error message with what the target's handoff chain holds, when it is in one. */
+const withNote = (message, handoff) => (handoff?.note ? `${message}; ${handoff.note}` : message);
+
 // A tmux target that names a window or pane itself: "work:3", "work:@12", "%7".
 const WINDOW_TARGET = /^(?:[A-Za-z0-9_.-]+:@?\d+|%\d+)$/;
 const windowOf = (t) => String(t).replace(/\.%\d+$/, '');
@@ -171,6 +197,7 @@ export const local = {
   // ---- host facts
   async 'host.facts'() { return hosts.localFacts(); },
   async 'host.identity'() { const f = await hosts.localFacts(); return { host: f.host, identity: f.identity, node: f.node }; },
+  async 'host.version'({ commit } = {}) { return version.hostVersion({ commit }); },
   async 'host.vitals'({ fresh = false } = {}) { return localVitals({ fresh: fresh === true || fresh === 'true' }); },
 
   // ---- tmux
@@ -291,9 +318,21 @@ export const local = {
     return r ? { id: s.id ?? s.sessionId ?? s.threadId, name: s.name ?? null, engine: s.engine, text: r.text.slice(-4000), line: claude.lastLine(r.text), ts: r.ts ?? null, ask, ...(r.untrusted === true ? { source: r.source ?? null, untrusted: true } : {}) } : { id: s.id ?? s.sessionId ?? s.threadId, name: s.name ?? null, engine: s.engine, text: null, line: null, ask };
   },
   async 'sessions.message'({ id, text, actor = OWNER, wait, thread }) {
-    const s = await sessionById(str(id, 'id'));
-    if (!s) throw new Error('session not found');
+    let s = await sessionById(str(id, 'id'));
+    // A Claude session that handed off is gone or dead; its handoff chain says which live session carries on.
+    const handoff = await handoffSuccessor(id, s);
+    if (!s && !handoff?.to) throw Object.assign(new Error(withNote('session not found', handoff)), handoff ? { candidates: handoff.candidates } : {});
     str(text, 'text');
+    let resolved = null;
+    if (handoff?.to) {
+      const from = handoff.from;
+      resolved = {
+        resolvedFrom: { given: id, id: from.sessionId, name: from.name, gen: from.gen, state: handoff.state },
+        resolvedTo: { id: handoff.to.id, name: handoff.to.name, gen: handoff.to.gen, chain: handoff.chain },
+        resolvedWhy: `${from.name ?? id} is not live (${handoff.state}); it is ${handoff.why}`,
+      };
+      s = { engine: 'claude', ...handoff.to.session };
+    }
     // The manager records its own message and reply (core/openclaw.js message): the message at once, the reply
     // as it lands, so wait: false can return before the manager answers and every transcript shows both.
     if (s.engine === 'openclaw') {
@@ -306,12 +345,12 @@ export const local = {
       else if (s.engine === grok.ENGINE) delivery = await grok.send(s.id, text, { actor });
       else if (s.engine === 'claude') delivery = await claude.sendToSession(s, text, { fromName: `drover (${actor})` });
       else delivery = await codex.sendTurn(s.threadId, text, { cwd: s.cwd });
-    } catch (e) { delivery = { ok: false, error: e.message }; }
+    } catch (e) { delivery = { ok: false, error: resolved ? `${e.message} (sent on: ${resolved.resolvedWhy})` : withNote(e.message, handoff) }; }
     const to = { kind: s.engine, host: hosts.localShortName(), id: s.id ?? s.sessionId ?? s.threadId, name: s.name ?? null };
     // A Grok bot answers later, through the bot gateway, quoting ref (its inbox reads this event).
-    const ev = await events.append({ type: 'message', to, text, ...(delivery.ref ? { ref: delivery.ref } : {}), delivery }, { actor });
-    if (!delivery.ok) throw Object.assign(new Error(delivery.error ?? 'delivery failed'), { event: ev.id });
-    return { ...delivery, event: ev.id, session: { id: s.id ?? s.sessionId ?? s.threadId, name: s.name, status: s.status } };
+    const ev = await events.append({ type: 'message', to, text, ...(delivery.ref ? { ref: delivery.ref } : {}), delivery, ...resolved }, { actor });
+    if (!delivery.ok) throw Object.assign(new Error(delivery.error ?? 'delivery failed'), { event: ev.id }, handoff && !handoff.to ? { candidates: handoff.candidates } : {});
+    return { ...delivery, event: ev.id, session: { id: s.id ?? s.sessionId ?? s.threadId, name: s.name, status: s.status }, ...resolved };
   },
 
   // ---- launch
@@ -414,7 +453,7 @@ function headlessTurns(evs = []) {
 }
 
 /** Ops that must never be forwarded (they are about the front itself). */
-const FRONT_ONLY = new Set(['host.list', 'host.probe', 'fleet.summary', 'fleet.vitals', 'fleet.place', 'native.summary', 'native.board', 'native.notifications', 'search.fleet', 'search.grepFleet', 'docker.fleet']);
+const FRONT_ONLY = new Set(['host.list', 'host.probe', 'fleet.summary', 'fleet.vitals', 'fleet.place', 'fleet.versions', 'native.summary', 'native.board', 'native.notifications', 'search.fleet', 'search.grepFleet', 'docker.fleet']);
 
 // Per-host board data goes through the shared cache (stale-while-revalidate,
 // persisted) so the board renders at once and a down host still shows its last
@@ -440,6 +479,25 @@ async function hostSummary(host, { maxAgeMs, fresh = false }) {
   };
   const r = await cache.get(key, loader, { ttl: maxAgeMs, maxStale: 24 * 3600_000, fresh });
   return { ...r.value, cache: r.meta };
+}
+
+/**
+ * fleet.versions in this process: the hosts are search.fleet's (the ones named, or local plus every fleet host that
+ * answered the last probe), and each remote row is answered by this process's ssh peer there, so its contains covers
+ * the ops this process sends that host too. With commit and no hosts named, everywhere is true only when every fleet
+ * host answered and contains it; coverage names the hosts that could not be asked. A named subset gets no everywhere
+ * (it would read as the fleet's): its rows say it.
+ */
+async function fleetVersionsHere({ hosts: names, commit: wanted } = {}) {
+  const commit = version.commitArg(wanted);
+  const { targets, known } = await fleetTargets(names);
+  const t0 = Date.now();
+  const perHost = (await askHosts(targets, 'host.version', commit ? { commit } : {}, (r) => r)).map(({ results: _r, ...p }) =>
+    (!p.ok && /unknown op host\.version/.test(p.error ?? '') ? { ...p, error: `${p.host} runs Drover code from before host.version: update Drover there (${UPDATE_HINT})` } : p));
+  const coverage = fleetCoverage({ known, targets, perHost, probes: lastProbe, chosen: Boolean(names?.length), vectors: false });
+  const verdict = !commit ? {} : names?.length ? { commit }
+    : { commit, everywhere: perHost.every((p) => p.ok && p.contains === true) && !coverage.notCovered.length };
+  return { ts: new Date().toISOString(), ms: Date.now() - t0, ...verdict, hosts: perHost, coverage };
 }
 
 export const front = {
@@ -477,16 +535,17 @@ export const front = {
    * search.semantic on several hosts in parallel, merged by score with identical
    * chunks folded together. Hosts default to local plus every fleet host that
    * answered the last probe (as fleet.summary does), so a dead box costs nothing.
+   * A plugin's remote source (the brain) is asked here, once, beside the fan-out,
+   * and fused in by rank (core/search/remote.js); the hosts are told not to.
    */
-  async 'search.fleet'({ hosts: names, host: _host, query, limit = 20, ...rest } = {}) {
+  async 'search.fleet'({ hosts: names, host: named, query, limit = 20, ...rest } = {}) {
     str(query, 'query', { max: 2000 });
-    const { targets, known } = await fleetTargets(names);
     const lim = Math.max(1, Math.min(100, Number(limit) || 20));
     const t0 = Date.now();
-    const perHost = await askHosts(targets, 'search.semantic', { ...rest, query, limit: lim },
-      (r, { route }) => ({ results: (r.results ?? []).map((x) => ({ ...x, route })), vector: r.vector ?? null, index: r.index ?? null, notes: r.notes ?? [], searchMs: r.ms ?? null }));
-    const coverage = fleetCoverage({ known, targets, perHost, probes: lastProbe, chosen: Boolean(names?.length), vectors: rest.mode !== 'keyword' });
-    return { query, ms: Date.now() - t0, results: mergeHosts(perHost, { limit: lim }), perHost: perHost.map(({ results, ...h }) => ({ ...h, hits: results.length })), coverage };
+    const leg = remoteSearch.begin({ ...rest, query, limit: lim }, { hosts: names, host: named });
+    const [fleet, rem] = await Promise.all([leg.local ? searchHosts(names, leg.localArgs) : noHosts(names), leg.done]);
+    const results = remoteSearch.withRemote(mergeHosts(fleet.perHost, { limit: lim }), rem.lists, lim);
+    return { query, ms: Date.now() - t0, results, perHost: fleet.perHost.map(({ results: r, ...h }) => ({ ...h, hits: r.length })), coverage: fleet.coverage, ...(rem.remote ? { remote: rem.remote } : {}) };
   },
   /** search.grep on several hosts in parallel (same host choice as search.fleet), newest hit first. */
   async 'search.grepFleet'({ hosts: names, host: _host, pattern, limit = 50, ...rest } = {}) {
@@ -537,6 +596,25 @@ export const front = {
       } catch (e) { return vitalsRow(t, null, { ok: false, ms: Date.now() - t1, error: String(e.message).slice(0, 300) }); }
     }));
     return { ts: new Date().toISOString(), ms: Date.now() - t0, identity: me.identity, catalog: cat.found ? cat.file : null, ...(cat.errors.length ? { catalogErrors: cat.errors } : {}), hosts: rows };
+  },
+  /**
+   * host.version on the fleet's hosts in parallel (fleetVersionsHere), so "is this fix live everywhere?" is one call.
+   * Outside the daemon the daemon answers: its ssh peers carry the board's and the sessions' ops and can predate a
+   * pull, while a peer this process opened now would always be current. When this machine's daemon runs but does not
+   * answer (busy, or from before this op), the answer made here says so in note and its everywhere is null: those
+   * peers were not asked. Never cached: the answer changes when a host pulls or restarts.
+   */
+  async 'fleet.versions'(args = {}) {
+    version.commitArg(args.commit);
+    const ep = await daemonEndpoint();
+    if (ep) {
+      try { return await callDaemon(ep, 'fleet.versions', args, { timeoutMs: 60_000 }); }
+      catch (e) { if (!(e.unreachable || (e.fromDaemon && /unknown op/i.test(e.message)))) throw e; }
+    }
+    const r = await fleetVersionsHere(args);
+    const d = await version.daemonInfo();
+    if (!d?.running || d.pid === process.pid) return r;
+    return { ...r, ...('everywhere' in r ? { everywhere: null } : {}), note: `answered outside this machine's daemon (pid ${d.pid}), which did not answer: its ssh peers, which carry the board's and the sessions' ops, were not asked` };
   },
   /**
    * Where the next workload of a class should run: among this identity's catalog hosts with a placement policy, the
@@ -741,6 +819,19 @@ async function fleetTargets(names) {
   return { targets: [hosts.LOCAL, ...others.filter((n) => lastProbe.get(n)?.up)], known };
 }
 
+/** search.fleet's index searches: search.semantic on the fleet's hosts (args say remote: false), { perHost, coverage }. */
+async function searchHosts(names, args) {
+  const { targets, known } = await fleetTargets(names);
+  const perHost = await askHosts(targets, 'search.semantic', args,
+    (r, { route }) => ({ results: (r.results ?? []).map((x) => ({ ...x, route })), vector: r.vector ?? null, index: r.index ?? null, notes: r.notes ?? [], searchMs: r.ms ?? null }));
+  return { perHost, coverage: fleetCoverage({ known, targets, perHost, probes: lastProbe, chosen: Boolean(names?.length), vectors: args.mode !== 'keyword' }) };
+}
+/** A search for remote kinds only (kinds: ["brain"]) asks no host; hosts it names must still be known. */
+async function noHosts(names) {
+  for (const t of names ?? []) await hosts.assertKnownHost(t);
+  return { perHost: [], coverage: { searched: [], notCovered: [], partial: [] } };
+}
+
 /**
  * One op on every target host in parallel, this one included. A host answers { host, ok, ms, ...shape(r, where) },
  * or { host, ok: false, ms, error, results: [] } when it failed; where.host is the name its hits are shown under (this
@@ -810,11 +901,41 @@ export function hostTimeoutMs(op, args = {}) {
   return HOST_TIMEOUT_MS[op] ?? (op.startsWith('launch') ? 120_000 : 60_000);
 }
 
+/**
+ * search.semantic as the front answers it: a plugin's remote source (the brain) is asked here, once, beside the index
+ * search on the host named (this one by default), and its hits fused in by rank (core/search/remote.js). The index
+ * search goes out with remote: false and without callerCwd, so the host, or this host's daemon behind the search
+ * service, does not ask the source again; a call for remote kinds only searches no index.
+ */
+async function semanticFront(host, args) {
+  const t0 = Date.now();
+  str(args.query, 'query', { max: 2000 });
+  const leg = remoteSearch.begin(args, { host });
+  const indexSearch = (a) => (!host || host === hosts.LOCAL ? dispatchLocal('search.semantic', a) : callOn(host, 'search.semantic', a, dispatchLocal, { timeoutMs: hostTimeoutMs('search.semantic', a) }));
+  const noIndex = async () => {
+    if (host) await hosts.assertKnownHost(host);
+    return { host: hosts.localShortName(), query: args.query, mode: ['keyword', 'semantic'].includes(args.mode) ? args.mode : 'hybrid', vector: null, results: [], sessions: [], notes: [] };
+  };
+  const [r, rem] = await Promise.all([leg.local ? indexSearch(leg.localArgs) : noIndex(), leg.done]);
+  if (!rem.remote) return r;
+  const limit = Math.max(1, Math.min(100, Number(args.limit) || 20));
+  return { ...r, ...(leg.local ? {} : { ms: Date.now() - t0 }), results: remoteSearch.withRemote(r.results ?? [], rem.lists, limit), remote: rem.remote };
+}
+
 /** Dispatch with host routing: {host:'box-a'} forwards to that box's drover rpc. */
 export async function dispatch(op, args = {}) {
   const { host, ...rest } = args ?? {};
   // host "auto": the fleet's placement picks the machine (core/placement.js), then the launch goes there.
   if (op === 'launch.start' && host === 'auto') return launchPlaced(rest);
+  // A search's remote sources are asked here, at the front, only when the call says remote: true (core/search/remote.js);
+  // any other search, a host's over rpc or an older client's, searches the index alone. callerCwd, which only the
+  // front's work guard reads, never goes on to another host. search.fleet runs here whatever host it names, but its
+  // guard still reads that host.
+  if (op === 'search.semantic') {
+    if (remoteSearch.frontCall(rest)) return semanticFront(host, rest);
+    delete rest.callerCwd;
+  }
+  if (op === 'search.fleet' && host !== undefined) rest.host = host;
   // A docker op this table does not have (down, rm, kill, ...) is refused here, never forwarded for another host to refuse.
   if (typeof op === 'string' && op.startsWith('docker.') && !local[op] && !front[op]) return dispatchLocal(op, rest);
   if (FRONT_ONLY.has(op) || !host || host === hosts.LOCAL) return dispatchLocal(op, rest);

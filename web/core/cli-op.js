@@ -6,9 +6,13 @@ import { dispatchRecorded, isWrite } from './api.js';
 import { daemonEndpoint, callDaemon } from './daemon-client.js';
 
 export const _deps = { daemonEndpoint, callDaemon, dispatchRecorded };
+// A search runs its remote sources (the brain) here, at the front (remote: true unless the args say otherwise), behind a
+// work guard that also reads the checkout the command runs in (core/search/remote.js), whatever callerCwd the args name.
+const CALLER_CWD = new Set(['search.semantic', 'search.fleet']);
 
 /** Run one op for the CLI; its result, as dispatch returns it. */
 export async function cliOp(op, args = {}) {
+  if (CALLER_CWD.has(op)) args = { remote: true, ...args, callerCwd: process.cwd() };
   const ep = isWrite(op) ? await _deps.daemonEndpoint() : null;
   if (!ep) return _deps.dispatchRecorded(op, args, { actor: 'cli' });
   // A daemon call that fails is not retried here: the write may already have run there.

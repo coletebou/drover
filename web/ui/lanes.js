@@ -2,7 +2,7 @@
 // every live agent on a host becomes a strip in "wait" (a dialog is open, a peer
 // message is held, or the agent asked through the Notification hook), "work"
 // (busy) or "idle".
-import { tmuxWindowTarget } from './transcript.js';
+import { tmuxWindowTarget, isWindow } from './transcript.js';
 import { classifyAsk, ASK_LABELS } from './notify-policy.js';
 
 export const NOTIFY_FRESH_MS = 20 * 60_000;
@@ -37,7 +37,7 @@ export function stripsFor(hostSummary, notifyMap = {}, now = Date.now(), finishe
   const seen = new Set();
   for (const s of sessions) {
     if (!s.live) continue;
-    const w = byWin.get(s.sessionId ?? s.id) ?? (s.tmux ? windows.find((x) => x.target === tmuxWindowTarget(s.tmux) || `${x.session}:${x.windowId}` === tmuxWindowTarget(s.tmux)) : null);
+    const w = byWin.get(s.sessionId ?? s.id) ?? (s.tmux ? windows.find((x) => isWindow(x, tmuxWindowTarget(s.tmux))) : null);
     const screen = w?.screen?.state;
     const n = notifyMap[s.sessionId ?? s.id];
     // An ask stands until the session moves on: a status change after it (it got its

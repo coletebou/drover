@@ -2,6 +2,7 @@
 // selection in view, and padding a block of rows to a height. Rows are screen.js rows. Pure.
 import { strWidth, truncate, fit, oneLine, padStart } from './width.js';
 import { rowWidth } from './screen.js';
+import { homeList, tildeWith } from '../ui/paths.js';
 
 /** A rule across the width with an optional label: "── label ─────". */
 export function rule(width, label = '', style = 'dim', right = '') {
@@ -75,5 +76,8 @@ export function cut(segs, w) {
 
 /** A number right-aligned in n columns, blank for null. */
 export const num = (v, n) => padStart(v == null ? '' : String(v), n);
-/** A home path shortened to ~. */
-export const tilde = (p) => String(p ?? '').replace(/^\/(?:Users|home)\/[^/]+/, '~');
+// Home paths shortened to ~: under the front daemon's own home (host.list names it, app.js sets it), or any /Users/<name> or
+// /home/<name>.
+let homes = [];
+export function setHomes(list) { homes = homeList(list); }
+export const tilde = (p) => tildeWith(homes, p);

@@ -25,9 +25,9 @@ and in the MCP server's instructions, and a plugin's own skill, when it has one,
 | Sessions on one host | `drover_sessions` (`host`) | Claude registry + Codex threads + headless agents; ids feed the tools below. A busy host's whole list runs to hundreds of KB (Codex first prompts): ask for what you need with `cwd` (that folder or inside it), `name`, `engine`, `live`, `limit` (most recent first) and `compact: true`; they run on that host, and `matched` is the count before `limit`. Codex thread lists come from that host's one daemon reader and can be up to 10 minutes old while a refresh runs |
 | Wait until workers' files change (status files, a result appearing) | `drover op files.wait` under background Bash (see "Waiting on workers") | one command that exits when something under the path is added, removed or modified; never a `sleep; ssh cat` loop. `drover_files_wait` over MCP waits at most 110 s |
 | Read a session | `drover_session_transcript` | `since` is a byte offset; incremental |
-| Find what a session said or ran, on every host | `drover_search_fleet` | words + meaning over conversation, commands (keyword-only), documents (Codex memories, dotfiles specs) and reflections; read `coverage.notCovered` before trusting an empty answer |
+| Find what a session said or ran, on every host | `drover_search_fleet` | words + meaning over conversation, commands (keyword-only), documents (Codex memories, dotfiles specs) and reflections, plus Badland brain entries where a plugin serves them (see "Search and the brain"); read `coverage.notCovered` before trusting an empty answer |
 | Find tool output, or history no index holds | `drover_search_grepFleet` | ripgrep over the raw transcripts on every host; `roles: ["tool_result"]` for what a command printed |
-| Talk to a live session | `drover_send` | lands in its queue like typed input; `queuedBehindTurn` when busy. Say who you are in the text |
+| Talk to a live session | `drover_send` | lands in its queue like typed input; `queuedBehindTurn` when busy. Say who you are in the text. A Claude session that handed off and is gone still works as a target: the message goes to its handoff chain's newest live generation (`resolvedFrom`, `resolvedTo`, `resolvedWhy` say so); a live target is never redirected, and when the chain has no live successor, or the name is in several chains, the error lists the later generations to pick from |
 | Ask one of the owner's Grok bots | `drover_send` with id `grok:<name>` (`grok:*` for all) | on the host that runs the bot gateway (`drover_bots_status`). Its Routine webhook runs the bot, else the message waits in its inbox; the answer comes later as a `chat` event (read it with `drover_session_transcript`). Bots show in `drover_sessions` with their last reported state |
 | Read / type into a pane | `drover_capture`, `drover_tmux_send`, `drover_tmux_keys` | `drover_tmux_send` refuses when a dialog is on screen; capture, read, then `force` only if right |
 | Start an agent | `drover_launch` | `mode: tmux` (interactive window) or `headless` (held by the daemon; chat with `drover_send`); `credential: auto` spreads Claude sessions across the credential pool's tokens (`drover_credentials_status`); `effort` starts it at that reasoning effort for that session only (claude low, medium, high, xhigh, max; codex adds ultra, and a named Codex `model` must list the level in `codex debug models`), so never type `/effort` or `/model` into a Claude session you drive (they overwrite the global default); `cwd` decides which project skills, hooks, CLAUDE.md and memory the agent loads, so start project work in that project's checkout or a fresh worktree of it, never a parent folder such as `~/code`; a tmux launch first records `cwd` as trusted in that host's ~/.claude.json or ~/.codex/config.toml, as accepting the agent's "trust this folder" dialog would, so a fresh worktree starts at its prompt (`trust` in the result says what was done; `trust: false` skips it) |
@@ -41,6 +41,17 @@ and in the MCP server's instructions, and a plugin's own skill, when it has one,
 Set `host` to a fleet alias (an ssh-config alias, such as `box-a` or `devbox`) to
 act there; omit for the machine the daemon runs on. Hosts and reachability:
 `drover_fleet`.
+
+## Search and the brain
+
+Where a plugin serves it, `drover_search_fleet` and `drover_search_semantic` also return Badland brain entries (kind
+`brain`, `host: "brain"`, with `slug` for `drover_brain_get`): the process that answers asks the brain once per query,
+beside the index (only for calls that say `remote: true`, which these tools, `drover search`, `drover op` and the UI
+add; a host reached over rpc never asks), and fuses the two lists by rank (`score` is the fused score, `sourceScore` the hit's own).
+`kinds: ["brain"]` asks only the brain; kinds without it skip it. `remote.brain` says whether it was searched, or why
+not: nothing is sent when the machine's identity is work or the query, project, host or your session's checkout looks
+like work (`work identity`, `work context`), with `DROVER_SEARCH_BRAIN=off` (`disabled`), and a timeout or an error
+leaves the index's answer as it was.
 
 ## Waiting on workers
 
@@ -79,3 +90,4 @@ with `sleep N; ssh host cat ...`: every tick wakes the model and a change betwee
 - Renamed from apx-web on 2026-10-15: `apxw` still works (deprecation line on stderr) until 2026-11-15, as do `APXW_*` variables; the MCP server was `apx` with `apx_*` tools.
 - Down? `drover status` then `launchctl kickstart -k gui/$(id -u)/dev.drover.daemon` (Mac) or `systemctl --user restart drover` (Linux).
 - New Drover code? Restart the daemon on each host that runs one, with the same commands. Run `drover_headless list` first, because headless agents stop with the daemon (they are resumable). Sessions need no restart: their `drover_*` tools dispatch to the daemon.
+- Is it live? `drover status` names the commit the daemon loaded, and says so when the checkout has moved past it (restart to load it). `drover_fleet_versions` asks every host at once: with `commit` and no `hosts`, `everywhere: true` means every fleet host answered and runs code containing that commit, its daemon and this machine's ssh peer to it (`answeredBy`; a peer from before its host's pull shows `current: false` until it is replaced: within a minute or so its replies say `stale` and this machine retires it for a fresh one). `coverage` names the hosts it could not ask. `drover_host_version` asks one host.

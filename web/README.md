@@ -1,9 +1,10 @@
 # Drover
 
 Browser control plane for the agent fleet: see every tmux window, Claude Code
-session and Codex thread on every machine, chat with any of them, launch new
-agents (in tmux or headless) under any profile, and keep one tracked file as
-the record of features, notes, messages and launches. A built-in MCP server
+session, Codex thread and Grok bot on every machine, and the OpenClaw fleet
+manager, chat with any of them, launch new agents (in tmux or headless) under
+any profile, and keep one tracked file as the record of features, notes,
+messages and launches. A built-in MCP server
 gives Claude Code and Codex the same powers. Integrations that only one fleet needs live in plugins (see Plugins).
 
 Zero npm dependencies. Node 24 (already on every box via node-tools).
@@ -13,7 +14,8 @@ Zero npm dependencies. Node 24 (already on every box via node-tools).
 ```
 drover serve                   # foreground daemon, http://127.0.0.1:7337
 drover open                    # print the URL with the token (and open a browser)
-drover status
+drover status                  # is the daemon up, which commit did it load, does it need a restart to load the checkout?
+drover op fleet.versions '{"commit":"1a2b3c4"}'   # what each host runs; everywhere: true when the whole fleet has 1a2b3c4
 drover clients                 # apps that authenticated to this daemon in the last day
 drover op sessions.list        # any op from the CLI, JSON out
 drover op sessions.list '{"host":"box-a","cwd":"~/code/webapp","engine":"claude","live":true,"compact":true,"limit":10}'
@@ -129,6 +131,41 @@ Drover was called apx-web (CLI `apxw`) until 2026-10-15. Until 2026-11-15:
 - While a call is in flight, `drover rpc` writes a blank line every 30 s (`DROVER_RPC_BEAT_MS`); callers skip blank
   lines. It keeps an hour-long `files.wait` from looking idle, and when the write fails (the caller's ssh session is
   gone) the waits it left end at once instead of polling for nobody. Everything else in flight still runs to its end.
+
+## Handoff successors
+
+A long-running Claude Code session can hand its work to a fresh one, which then hands off again: generation 3 of a
+chain continues generation 2 under a new session id and a new name, and peers still hold the old ones.
+`sessions.message` (`drover_send`) follows the chain when the session it is given is not live (not found, no
+messaging socket, or its process ended), so a message to an earlier generation reaches the one that carries the work
+now. It reads the handoff tool's own record of the chain (`core/lineage.js`), never a name:
+
+```
+<markers>/<session id>.json      {"gen": 3, "chain": "<name>", "dir": "<chain dir>"}, one per session in a chain
+<chain dir>/chain.json           {"name": "<name>", ...}
+<chain dir>/gen-NN/session.json  {"session_id", "name", "ssh_alias", "started_at", "first_response_at", ...}
+```
+
+`<markers>` is `DROVER_HANDOFF_CHAINS`, else `HANDOFF_CHAIN_STATE_DIR`, else `~/.claude/state/handoff-chain`. A
+full session id is matched to that session's own chain. A name, or an id prefix of 8 hex digits or more, is looked up
+in every chain, as the name a generation's record keeps or as the name an ended session is listed under now (a
+session renamed after its handoff: its own marker finds its chain). It must name generations of one chain and no other
+session Drover lists under it; a shorter prefix is never followed.
+
+| The target | What happens |
+|---|---|
+| live (its process runs) | delivered to it, as before, even when a newer generation is live too |
+| a name the chain record keeps for a generation that was renamed and still runs | fails as before, naming that session's id to send to; never sent on to its successor |
+| not live, in no chain | fails as before (`session not found`, `no messaging socket`, `not alive`) |
+| not live, in one chain whose newest started generation after it is live here | delivered there, through any number of handoffs; `resolvedFrom`, `resolvedTo` and `resolvedWhy` in the result and in the `message` event, whose `to` is the session that got it |
+| not live, its chain's newest generation after it ended, has no messaging socket, or was started on another host | fails as before, and the error lists those generations (`candidates` on the error in process): an `elsewhere` one names the host to resend with |
+| not live, and the newest generation of its chain | fails as before, saying nothing continues it |
+| a name or id prefix found in more than one chain, or that also names a session in no chain | fails as before and lists each chain's later generations: nothing is sent, even when only one chain has a live successor |
+| a marker or chain record that cannot be read (anything but absent: no permission, not JSON), or a generation directory whose record names no session | fails as before, saying so: a chain that could not be read might have named the target too |
+
+A later generation whose launch never started (no `started_at`, never seen here) is passed over. A generation that
+handed off but is still open (its window is kept while its jobs finish) is not a successor while a newer one is live.
+A successor on another host is reported, not reached: Drover asks only this host's registry.
 
 ## Launch effort
 
@@ -376,6 +413,25 @@ naming the hosts it could not see), `search.grep` / `search.grepFleet` (ripgrep 
 `DROVER_SEARCH_DAYS=N` limits it; `DROVER_SEARCH_KINDS=claude,subagent` indexes only those kinds (an archive
 host); `DROVER_SEARCH_DOCS` replaces the document patterns (`|`-separated, `off` for none).
 
+Where a plugin serves it (`search.remote` in `core/plugins.js`), search kind `brain` adds the Badland brain's
+entries, fetched at query time and never indexed (`core/search/remote.js`). Only a front asks it, and only for a
+call that says `remote: true`: the MCP server, `drover search`, `drover op` and the web UI add it, so a search a host
+gets over rpc, or one from a client older than the work guard, searches the index alone. The front is the process
+that answers the search; it asks once per query, beside its own index search or the fleet fan-out, within
+`DROVER_SEARCH_REMOTE_TIMEOUT_MS` (default 5000), and the index searches it sends on say `remote: false`. The two rank with different embeddings whose scores
+do not compare, so the lists are fused by rank: a hit at 0-based position p of its own list scores 1/(61+p),
+which becomes its `score` (`sourceScore` keeps its own). A brain hit has `host: "brain"`, `slug`, `namespace`,
+`tier`, `author` and `role` (its brain kind); `remote.brain` is `{ included: true, hits, ms }` or `{ included: false,
+reason }`, and a slow or failing brain leaves the index's answer as it was. `kinds: ["brain"]` searches no index;
+kinds without `brain` skip it. Work never reaches the brain: nothing is sent from a machine whose dotfiles identity is
+work (`DF_IDENTITY` in the environment or `~/.df-profile`), or for a query, `project`, `repoIdentity`, host named or
+caller's working directory (`callerCwd`, set by the MCP server and the CLI and dropped before any host sees the
+search) that matches `DROVER_WORK_CONTEXT`. That is the operator's pattern for what is work: a regular expression,
+matched case-insensitively and written without slashes, set like any other setting in a `~/.config/drover/*.env`
+file. It fails closed: while it is unset or does not compile, a front asks no remote source at all (`remote.brain`
+says why), and `DROVER_WORK_CONTEXT=none` is the explicit way to say that nothing is work. `DROVER_SEARCH_BRAIN=off`
+turns the brain leg off on a host.
+
 Reflections come from the reflections CLI (`reflections export`), not a file: each pass reads what
 changed in the last day, and once per UTC day everything, so derived `stale` statuses refresh. One
 chunk per item (title, body, tags and its `#id`, so two items with the same words stay two hits);
@@ -397,7 +453,8 @@ runs ops (`serve`, `rpc`, `op`, `mcp`, `search`, `grep`, `stacks`, `tui`) loads 
 - What a plugin can add (every field optional; the full list and shapes are in `core/plugins.js`): ops and front-only
   ops with their MCP descriptions and schemas (so they become `drover_*` tools), cache and invalidation rules, truth-file
   event types with validators, lines for the MCP server's instructions, a host provider (hosts such as `space:<name>`
-  that are reached some other way than ssh: listing, rpc argv, exec, docker stacks), the `preserved` search kind, daemon
+  that are reached some other way than ssh: listing, rpc argv, exec, docker stacks), the `preserved` search kind and
+  remote search sources asked at query time (the `brain` kind), daemon
   start and stop hooks, web UI views and `drover tui` tables.
 - A plugin imports Drover's own modules as `drover/core/<module>.js`; that specifier resolves to the checkout that is
   running, so the plugin and the core share one copy of every module, wherever the plugin's repository lives.
@@ -433,6 +490,7 @@ value already in the environment wins. The settings a fleet usually sets:
 | `DROVER_DOCKER_LABEL_PREFIX`, `DROVER_DOCKER_KINDS`, `DROVER_DOCKER_BASE` | see Docker stacks | how stacks are labelled, grouped and compared |
 | `DROVER_DOTFILES` | `~/.dotfiles` | the repository that holds the truth file (`claude/drover-events.jsonl`) and the fleet host list |
 | `DROVER_UPDATE_HINT` | "pull its Drover checkout and restart its daemon" | what an error tells you to do about a host on older code |
+| `DROVER_HANDOFF_CHAINS` | `HANDOFF_CHAIN_STATE_DIR`, else `~/.claude/state/handoff-chain` | where the handoff chains' session markers are (Handoff successors) |
 
 ## Docker stacks
 
@@ -759,7 +817,15 @@ tmux server of pretend Claude sessions (`test/fake-agent.js`: a permission dialo
 keeps calling tools, an idle one that answers inbox messages), synthetic transcripts, an empty truth file, no fleet
 hosts and a fake manager gateway that streams (`test/fake-gateway.js`; a message starting "slow " streams for about
 8 s, "fail " fails, "echo " echoes). Tokens are copied from the real state dir, so a paired client works against it.
-A dialog comes back about 12 s after it is answered. Nothing in it can reach a real session, pane or host.
+A dialog comes back about 12 s after it is answered. Nothing in it can reach a real session, pane or host: its
+codex, docker and ssh are stand-ins (`test/showcase/fake-*.js`), every tmux server it starts or stops is named by
+socket, and it stops unless the daemon sees only its own hosts, no plugin and only its own tmux session.
+
+`--showcase` builds the showcase world instead (`test/showcase/world.js`): three hosts (studio runs the daemon, devbox
+answers through the stand-in ssh, spare is down) under a HOME of its own, Claude Code sessions on both, Codex threads,
+two Grok bots, the manager, docker compose stacks with git checkouts behind them, and a truth file with features,
+notes, launches and messages. `. <dir>/env.sh` points a shell's `drover` and `drover tui` at it. The README's pictures
+are taken there: `node test/showcase/shoot.mjs` (the web UI, the TUI and the CLI; `../docs/screenshots/README.md`).
 
 ## Pairing devices
 
@@ -782,7 +848,7 @@ ops, so no MCP tool and no ssh rpc can approve a pairing.
 ```
 bin/drover      CLI: serve (alias up) | open | status | clients | widget-token | pair | bots | rpc | mcp | op | ops | search | stacks | embed | import-survey | import-legacy
 bin/drover-embed-setup  builds llama-server (pinned) and installs EmbeddingGemma 2 for search
-core/           api.js (op table) and adapters: tmux, claude, codex, hosts, events, memory (incl. the reflections CLI), launch, effort, trust (launch trust), remote, terminals, filewait (files.wait), session-filter (sessions.list filters); plugins (the plugin loader), owner (DROVER_OWNER), env (settings and secrets files)
+core/           api.js (op table) and adapters: tmux, claude, codex, hosts, events, memory (incl. the reflections CLI), launch, effort, trust (launch trust), remote, terminals, filewait (files.wait), session-filter (sessions.list filters), lineage (handoff successors); plugins (the plugin loader), owner (DROVER_OWNER), env (settings and secrets files)
 core/search/    the search index: extract, chunk, store (node:sqlite), indexer, embed (llama-server), query
 core/bots/      Grok bots: oauth (the gateway's OAuth server), tools (the bot tools), tenant-tools and access (native tenants), policy (what leaves for bots: cleaned, secrets redacted), grok (bots as sessions, Routines)
 core/docker.js  docker stacks and the docker.* verbs (core/docker-format.js: drover stacks text; ui/stacks-text.js: summaries both use)

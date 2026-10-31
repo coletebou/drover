@@ -177,7 +177,9 @@ describe('real tmux: listWindows, listPanes and listSessions keep every field', 
     assert.ok(allSleep(), 'every pane runs sleep within 5 s');
   });
   after(async () => {
-    if (env) tmuxCmd(['kill-server']);   // env exists only once it points at the private server
+    // The kill names the private server's socket: with TMUX_TMPDIR alone, a missing folder would send it to the
+    // user's default server.
+    if (env) tmuxCmd(['-S', path.join(tdir, `tmux-${process.getuid()}`, 'default'), 'kill-server']);   // env exists only once it points at the private server
     for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
     if (tdir) await rm(tdir, { recursive: true, force: true });
   });
