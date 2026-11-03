@@ -10,7 +10,7 @@ import { envvar } from './envvars.js';
 import { toolSummary, resultEntry, codexOutputFailed } from './toolcalls.js';
 
 export const CODEX_HOME = process.env.CODEX_HOME ?? path.join(process.env.HOME, '.codex');
-const SESSIONS_DIR = path.join(CODEX_HOME, 'sessions');
+export const SESSIONS_DIR = path.join(CODEX_HOME, 'sessions');
 
 /**
  * Minimal JSON-RPC 2.0 client over a stdio `codex app-server` we own.
