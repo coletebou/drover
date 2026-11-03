@@ -464,6 +464,9 @@ async function hostSummary(host, { maxAgeMs, fresh = false }) {
   const loader = async () => {
     const t0 = Date.now();
     try {
+      // A provider's host with no rpc channel (a max-beta Space) is read by the provider itself, one command per call.
+      const viaProvider = host ? await plugins.hostProvider(host)?.summary?.(host) : null;
+      if (viaProvider) return { host: name, ok: true, ms: Date.now() - t0, sessions: slimSessions(viaProvider.sessions ?? []), codexError: viaProvider.codexError ?? null, windows: viaProvider.windows ?? [], notify: viaProvider.notify ?? null, ...(viaProvider.note ? { note: viaProvider.note } : {}), ts: new Date().toISOString() };
       const [sess, wins, recent] = await Promise.all([
         callOn(host, 'sessions.list', { includeRecent: false, compact: true }, dispatchLocal, { timeoutMs: 25_000 }),
         callOn(host, 'tmux.windows', { classify: true }, dispatchLocal, { timeoutMs: 25_000 }),
@@ -500,6 +503,35 @@ async function fleetVersionsHere({ hosts: names, commit: wanted } = {}) {
   return { ts: new Date().toISOString(), ms: Date.now() - t0, ...verdict, hosts: perHost, coverage };
 }
 
+/**
+ * The hosts the plugins' host providers contribute to a fleet view when no host is named (core/plugins.js hosts.defaultTargets):
+ * from each provider's cached state, so it never waits on a probe. Every provider is bounded, and a failure is a note, not an error.
+ * { hosts, notes: [{ host?, reason }] }.
+ */
+const PROVIDER_TARGETS_MS = 4_000;
+export const _budgets = { providerTargetsMs: PROVIDER_TARGETS_MS, providerHostMs: 12_000 };
+export async function providerTargets() {
+  const out = { hosts: [], notes: [] };
+  await Promise.all(plugins.hostProviders().filter((p) => typeof p.defaultTargets === 'function').map(async (p) => {
+    let timer;
+    try {
+      const r = await Promise.race([Promise.resolve(p.defaultTargets()), new Promise((_, rej) => { timer = setTimeout(() => rej(new Error(`no answer within ${_budgets.providerTargetsMs / 1000} s`)), _budgets.providerTargetsMs); })]);
+      out.hosts.push(...(r?.hosts ?? []));
+      out.notes.push(...(r?.notes ?? []));
+    } catch (e) { out.notes.push({ reason: `host provider failed: ${String(e.message ?? e).slice(0, 200)}` }); }
+    finally { clearTimeout(timer); }
+  }));
+  return out;
+}
+
+/** A provider's host (a Space) is asked without a probe, but is not waited for past this: the rest of the board must not slow down for it. */
+function withBudget(host, p) {
+  const ms = _budgets.providerHostMs;
+  let timer;
+  const late = new Promise((resolve) => { timer = setTimeout(() => resolve({ host, ok: false, ms, error: `no answer within ${ms / 1000} s; still reading it in the background, ask again shortly`, sessions: [], windows: [], timedOut: true, ts: new Date().toISOString() }), ms); });
+  return Promise.race([p, late]).finally(() => clearTimeout(timer));
+}
+
 export const front = {
   async 'host.list'({ includeSsh = false } = {}) {
     const base = await hosts.knownHosts({ includeSsh: includeSsh === true || includeSsh === 'true' });
@@ -524,12 +556,21 @@ export const front = {
   async 'fleet.summary'({ hosts: names, maxAgeMs = 15_000, includeUnprobed = false, fresh = false } = {}) {
     const known = await hosts.knownHosts();
     let targets;
+    let provided = { hosts: [], notes: [] };
     if (names?.length) { for (const t of names) await hosts.assertKnownHost(t); targets = names; }
     else {
       targets = [hosts.LOCAL, ...known.filter((h) => h.name !== hosts.LOCAL && (includeUnprobed || lastProbe.get(h.name)?.up)).map((h) => h.name)];
+      // Running Spaces (and any other provider's hosts) join without a probe: their cached list says what runs.
+      provided = await providerTargets();
+      targets.push(...provided.hosts.filter((h) => !targets.includes(h)));
     }
-    const results = await Promise.all(targets.map((h) => hostSummary(h === hosts.LOCAL ? '' : h, { maxAgeMs, fresh: fresh === true || fresh === 'true' }).then((r) => ({ ...r, host: h }))));
-    return { ts: new Date().toISOString(), hosts: results };
+    const results = await Promise.all(targets.map((h) => {
+      const one = hostSummary(h === hosts.LOCAL ? '' : h, { maxAgeMs, fresh: fresh === true || fresh === 'true' }).then((r) => ({ ...r, host: h }));
+      return hosts.isProvidedHost(h) ? withBudget(h, one).then((r) => ({ ...r, probe: 'skipped (provided host)' })) : one;
+    }));
+    // What this board could not see: a host that failed, and what the providers say about their own lists.
+    const coverage = { searched: results.filter((r) => r.ok).map((r) => r.host), notCovered: results.filter((r) => !r.ok).map((r) => ({ host: r.host, reason: String(r.error ?? 'failed').slice(0, 200) })), partial: provided.notes.map((n) => ({ host: n.host ?? null, reason: n.reason })) };
+    return { ts: new Date().toISOString(), hosts: results, coverage };
   },
   /**
    * search.semantic on several hosts in parallel, merged by score with identical
@@ -567,13 +608,14 @@ export const front = {
    * containers on 2026-10-20), more than an agent can read; docker.stacks on one host gives it.
    */
   async 'docker.fleet'({ hosts: names, project, git, fresh = false, services = false } = {}) {
-    const { targets, known } = await fleetTargets(names);
+    const { targets, known, notes } = await fleetTargets(names, { providers: true });
     const t0 = Date.now();
     const args = { ...(project ? { project } : {}), ...(git === false || git === 'false' ? { git: false } : {}) };
     const full = services === true || services === 'true';
     const perHost = (await Promise.all(targets.map((h) => hostStacks(h, args, { fresh: fresh === true || fresh === 'true' }))))
       .map((p) => (full || !p.stacks ? p : { ...p, stacks: p.stacks.map(({ services: svcs, oneoff, ...st }) => ({ ...st, serviceCount: svcs?.length ?? 0, oneoffCount: oneoff?.length ?? 0 })) }));
     const coverage = fleetCoverage({ known, targets, perHost, probes: lastProbe, chosen: Boolean(names?.length), vectors: false });
+    for (const n of notes) coverage.partial.push({ host: n.host ?? null, reason: n.reason });
     for (const p of perHost) if (p.ok && p.cache?.error) coverage.partial.push({ host: p.host, reason: `showing its answer from ${Math.round((p.cache.age ?? 0) / 60_000)} min ago; refreshing failed: ${String(p.cache.error).slice(0, 160)}` });
     const totals = {};
     for (const p of perHost) for (const [k, v] of Object.entries(p.totals ?? {})) totals[k] = (totals[k] ?? 0) + v;
@@ -810,13 +852,17 @@ async function hostStacks(h, args, { fresh }) {
  * The hosts a fleet-wide search asks: the ones named, or local plus every fleet host that answered the last probe.
  * Never probed on this machine (and no persisted probe): probe once now rather than silently searching only here.
  */
-async function fleetTargets(names) {
+async function fleetTargets(names, { providers = false } = {}) {
   const known = await hosts.knownHosts();
-  if (names?.length) { for (const t of names) await hosts.assertKnownHost(t); return { targets: names, known }; }
+  if (names?.length) { for (const t of names) await hosts.assertKnownHost(t); return { targets: names, known, notes: [] }; }
   await probeRestored;
   const others = known.filter((h) => h.name !== hosts.LOCAL).map((h) => h.name);
   if (!lastProbe.size) rememberProbe(await hosts.probeAll(others).catch(() => []));
-  return { targets: [hosts.LOCAL, ...others.filter((n) => lastProbe.get(n)?.up)], known };
+  const targets = [hosts.LOCAL, ...others.filter((n) => lastProbe.get(n)?.up)];
+  // Only the views whose per-host answer works on a Space ask for them (docker.fleet: the provider reads docker there).
+  const provided = providers ? await providerTargets() : { hosts: [], notes: [] };
+  targets.push(...provided.hosts.filter((h) => !targets.includes(h)));
+  return { targets, known, notes: provided.notes };
 }
 
 /** search.fleet's index searches: search.semantic on the fleet's hosts (args say remote: false), { perHost, coverage }. */
@@ -943,6 +989,8 @@ export async function dispatch(op, args = {}) {
   // A manager on another host answers inside the call (its drover rpc is not the daemon, so wait: false waits there):
   // give it the manager's own 15-minute budget, not the minute every other forwarded op gets.
   if (op === 'sessions.message' && openclaw.isManagerId(rest.id)) return callOn(host, op, rest, dispatchLocal, { timeoutMs: 905_000 });
+  // A provider's host (a Space) is checked first: a missing tmux, Drover or agent CLI there is told, not left as a spawn failure.
+  if (op === 'launch.start') await plugins.hostProvider(host)?.preflightLaunch?.(host, rest);
   if (op === 'launch.start' && effortGiven(rest.effort)) await requireLaunchEfforts(host);
   if (op === 'files.wait') return callOn(host, op, rest, dispatchLocal, { timeoutMs: hostTimeoutMs(op, rest) }).catch((e) => {
     throw /unknown op files\.wait/.test(e?.message ?? '') ? new Error(`${host} runs Drover code from before files.wait: update Drover there (${UPDATE_HINT})`) : e;

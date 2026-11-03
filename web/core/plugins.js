@@ -98,7 +98,11 @@ export function summary() {
 /**
  * The host provider that owns a host name (a name that is not an ssh alias, such as space:<name>), or null. A provider
  * is { match(name), known(name) -> Promise<boolean>, unknownError(name) -> string, entries() -> Promise<host entries>,
- * rpcArgv(name) -> Promise<{ argv }>, exec(name, argv, opts) -> Promise<run result>, dockerStacks(name, args) }.
+ * rpcArgv(name) -> Promise<{ argv }>, exec(name, argv, opts) -> Promise<run result>, dockerStacks(name, args) }, and optionally
+ * defaultTargets() -> Promise<{ hosts: [names], notes: [{ reason }], cacheAgeMs }> (the hosts a fleet view asks when no host is named,
+ * from the provider's cached state and never a long wait: notes say what the view could not see), summary(name) -> Promise<
+ * { sessions, windows, notify, note? } | null> (a board read for a host with no rpc channel; null means use the rpc) and
+ * preflightLaunch(name, args) -> Promise<void> (throws, with what to fix, when a launch there cannot work).
  */
 export function hostProvider(name) {
   for (const p of state.plugins) if (p.hosts && typeof p.hosts.match === 'function' && p.hosts.match(String(name ?? ''))) return p.hosts;
