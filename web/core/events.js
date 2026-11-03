@@ -205,7 +205,17 @@ async function fullRead(file, fh, size) {
   };
 }
 
-export async function readAll(file = EVENTS_PATH) {
+// One read of a file at a time in this process: two overlapping incremental reads
+// would both parse the same appended bytes and both advance the offset past them.
+const readQueue = new Map(); // file -> the read in progress
+export function readAll(file = EVENTS_PATH) {
+  const run = (readQueue.get(file) ?? Promise.resolve()).catch(() => {}).then(() => readAllOnce(file));
+  readQueue.set(file, run);
+  run.catch(() => {}).finally(() => { if (readQueue.get(file) === run) readQueue.delete(file); });
+  return run;
+}
+
+async function readAllOnce(file) {
   await maybeSyncLegacy(file);
   let fh;
   try { fh = await open(file, 'r'); } catch (e) { if (e.code === 'ENOENT') { readCache.delete(file); return []; } throw e; }

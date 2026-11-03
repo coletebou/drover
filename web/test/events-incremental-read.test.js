@@ -166,3 +166,14 @@ test('a same-length edit at the start of a large file forces a full parse', asyn
   assert.equal(got[0].id, 'BBBB');
   assert.deepEqual(got, await fresh(file));
 });
+
+test('concurrent reads after an append neither double nor skip events', async () => {
+  const file = await setup();
+  await writeFile(file, line('a', '2026-01-01T00:00:01Z'));
+  await readAll(file);
+  await appendFile(file, line('b', '2026-01-01T00:00:02Z') + line('c', '2026-01-01T00:00:03Z'));
+  const results = await Promise.all([readAll(file), readAll(file), readAll(file)]);
+  for (const r of results) assert.deepEqual(ids(r), ['a', 'b', 'c']);
+  await appendFile(file, line('d', '2026-01-01T00:00:04Z') + line('e', '2026-01-01T00:00:05Z'));
+  assert.deepEqual(ids(await readAll(file)), ['a', 'b', 'c', 'd', 'e']);
+});
