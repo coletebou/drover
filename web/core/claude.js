@@ -18,7 +18,7 @@ import { toolSummary, toolDescription, resultEntry } from './toolcalls.js';
 
 export const CLAUDE_HOME = process.env.CLAUDE_CONFIG_DIR ?? path.join(process.env.HOME, '.claude');
 const SESSIONS_DIR = path.join(CLAUDE_HOME, 'sessions');
-const PROJECTS_DIR = path.join(CLAUDE_HOME, 'projects');
+export const PROJECTS_DIR = path.join(CLAUDE_HOME, 'projects');
 
 export function projectSlug(cwd) {
   return cwd.replace(/[\\/:]/g, '-');
@@ -453,8 +453,8 @@ export class HeadlessClaude {
   stop() { try { this.child.stdin.end(); } catch { /* already closed */ } setTimeout(() => this.child.kill('SIGTERM'), 2000).unref(); }
 }
 
-/** Recent transcript files across all projects (for the Sessions view when a session is not live). */
-export async function recentTranscripts({ days = 4, limit = 300 } = {}) {
+/** Recent transcript files across all projects (for the Sessions view when a session is not live; minBytes leaves out the near-empty ones). */
+export async function recentTranscripts({ days = 4, limit = 300, minBytes = 2000 } = {}) {
   if (!existsSync(PROJECTS_DIR)) return [];
   const cutoff = Date.now() - days * 86400_000;
   const out = [];
@@ -465,12 +465,22 @@ export async function recentTranscripts({ days = 4, limit = 300 } = {}) {
       if (!n.endsWith('.jsonl')) continue;
       const f = path.join(dir, n);
       let s; try { s = await stat(f); } catch { continue; }
-      if (s.mtimeMs < cutoff || s.size < 2000) continue;
+      if (s.mtimeMs < cutoff || s.size < minBytes) continue;
       out.push({ kind: 'claude', sessionId: n.slice(0, -6), slug, transcript: f, mtime: s.mtime.toISOString(), bytes: s.size });
     }
   }
   out.sort((a, b) => (a.mtime < b.mtime ? 1 : -1));
   return out.slice(0, limit);
+}
+
+/** The transcript file of a session id in any project, at any size and age (recentTranscripts leaves small and old ones out). */
+export async function transcriptById(sessionId) {
+  if (!/^[0-9a-f-]{36}$/i.test(String(sessionId ?? ''))) return null;
+  for (const slug of await readdir(PROJECTS_DIR).catch(() => [])) {
+    const f = path.join(PROJECTS_DIR, slug, `${sessionId}.jsonl`);
+    if (existsSync(f)) return f;
+  }
+  return null;
 }
 
 /** First user prompt + last assistant text of a transcript, cheaply. */

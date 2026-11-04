@@ -502,6 +502,33 @@ value already in the environment wins. The settings a fleet usually sets:
 | `DROVER_UPDATE_HINT` | "pull its Drover checkout and restart its daemon" | what an error tells you to do about a host on older code |
 | `DROVER_HANDOFF_CHAINS` | `HANDOFF_CHAIN_STATE_DIR`, else `~/.claude/state/handoff-chain` | where the handoff chains' session markers are (Handoff successors) |
 
+
+## Transcripts in every view
+
+`sessions.transcript` takes a `format`. `turns` (the default) is the compact view the web, iOS, Mac and Chrome
+clients poll. The other four read a whole transcript from its start, page by page (`offset` back as `since`
+while `more`), for Claude Code (interactive, `--bg`, `-p`, headless, subagents, reflection and dotsync runs),
+Codex (interactive and `exec`) and OpenClaw (the manager's chats, heartbeats and cron runs, from its SQLite store):
+
+| format | holds | 6.3 MB Claude session |
+|---|---|---|
+| `messages` | what was said: typed user text, messages from other sessions (`from`), assistant text, compaction summaries | 30 KB |
+| `calls` | messages plus every tool call with its whole input, no outputs (`callStyle: brief`: one line per call) | 356 KB (brief 120 KB) |
+| `full` | calls plus every tool output, nothing cut | 807 KB |
+| `raw` | the source records as they are (JSONL; OpenClaw events decompressed) | 6.3 MB |
+
+The parsers live in `core/transcript-export.js`: one entry shape (`role` user, assistant, summary, tool or result)
+for every engine. `transcripts.list` finds every transcript on a host with what made it; `as: text` renders
+entries as Markdown. An id can be a session id or name, a subagent id (`a0179…`, `agent-a0179…`,
+`<parent>/<agent>`), a Codex thread, a headless id, `manager` with `thread`, `openclaw:<session id or key>`, or a
+`.jsonl` path under the host's Claude projects or Codex sessions dir (nothing outside them, symlinks resolved).
+
+```
+drover transcripts                                   # newest 50 on this machine (--engine, --kind, --days, --parent, --host)
+drover transcript <id> [--format messages|calls|full|raw|turns] [--brief] [--host H] [--json] [--out FILE]
+drover transcript ~/.claude/projects/<slug>/<id>.jsonl --format calls --brief   # a file: read here, no daemon
+```
+
 ## Docker stacks
 
 Every compose stack on every machine, on demand: each service healthy, up (running with no healthcheck), unhealthy,
