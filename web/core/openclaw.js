@@ -21,7 +21,7 @@ export const ID = 'manager';
 const ALIASES = new Set([ID, 'openclaw', `openclaw:${ID}`]);
 const port = () => Number(process.env.OPENCLAW_GATEWAY_PORT ?? install.gatewayPort());
 const base = () => process.env.OPENCLAW_GATEWAY_URL ?? `http://127.0.0.1:${port()}`;
-const stateDir = () => install.layout().state;
+export const stateDir = () => install.layout().state;
 
 /** The manager is configured on this host when its state dir holds an openclaw.json. */
 export function configured() { return existsSync(path.join(stateDir(), 'openclaw.json')); }

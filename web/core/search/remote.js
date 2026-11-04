@@ -11,9 +11,11 @@
 //
 // The work guard runs first, so a query never leaves the machine when this machine's dotfiles identity is work
 // (DF_IDENTITY in the environment or ~/.df-profile), when the query, the project or checkout it is scoped to, a host it
-// names or the caller's working directory (callerCwd, set by the MCP server and the CLI) looks like work
-// (WORK_CONTEXT, the pattern scripts/brain-sync in the dotfiles keeps work out of the brain with), or when
-// DROVER_SEARCH_<KIND>=off (DROVER_SEARCH_BRAIN=off for the brain). Tests: test/search-remote.test.js.
+// names or the caller's working directory (callerCwd, set by the MCP server and the CLI) looks like work, or when
+// DROVER_SEARCH_<KIND>=off (DROVER_SEARCH_BRAIN=off for the brain). What looks like work is the operator's to say:
+// DROVER_WORK_CONTEXT, a regular expression matched case-insensitively, set like any other setting (a
+// ~/.config/drover/*.env file). It fails closed: while it is unset or does not compile, no remote source is asked at
+// all, and only DROVER_WORK_CONTEXT=none says that nothing looks like work. Tests: test/search-remote.test.js.
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
@@ -24,8 +26,8 @@ import { REMOTE_KINDS, snippet } from './query.js';
 /** Injection points: tests give their own environment, home directory and clock. */
 export const _deps = { env: process.env, home: () => process.env.HOME || homedir(), now: () => Date.now() };
 
-/** What looks like work (employer, ACME) content, as the dotfiles' scripts/brain-sync matches it. */
-export const WORK_CONTEXT = /\b(acme|ini-?tech|initech|onedrive-ini-tech|acme-dev\w*|privcloud|us-priv|acme-beta|wk\d{6}\w*|dev ?pods?|nexus)\b/i;
+/** DROVER_WORK_CONTEXT=none: the operator's explicit word that nothing looks like work. */
+export const NO_WORK_CONTEXT = 'none';
 /** The fields of a search call the work guard reads, in the order it reports them. */
 const CONTEXT_FIELDS = ['query', 'project', 'repoIdentity', 'callerCwd', 'host', 'hosts'];
 /** Filters only the index's own records can meet (a checkout's chunks, a session's, a reflection's status): no remote source is asked. */
@@ -46,9 +48,31 @@ export function workIdentity(env = _deps.env, home = _deps.home()) {
   try { return /DF_IDENTITY=["']?work\b/i.test(readFileSync(path.join(home, '.df-profile'), 'utf8')); } catch { return false; }
 }
 
-/** The first field of a search call that looks like work (CONTEXT_FIELDS), or null. */
-export function workContext(fields = {}) {
-  for (const k of CONTEXT_FIELDS) for (const v of [fields[k]].flat()) if (typeof v === 'string' && WORK_CONTEXT.test(v)) return k;
+let compiled = null;   // the last DROVER_WORK_CONTEXT read and what it made: { source, re, error }
+/**
+ * What looks like work, as the operator says it: DROVER_WORK_CONTEXT, the source of a regular expression matched
+ * case-insensitively. { re } (null for none), or { error } while it is unset or does not compile, and then no remote
+ * source is asked (fail closed). The reason never repeats the pattern, which names the operator's work.
+ */
+export function workPattern(env = _deps.env) {
+  const source = envvar('WORK_CONTEXT', env);
+  if (compiled && compiled.source === source) return compiled;   // not compiled?.source: unset at the first read is undefined too
+  const src = String(source ?? '').trim();
+  if (!src) compiled = { source, re: null, error: 'DROVER_WORK_CONTEXT is not set' };
+  else if (src.toLowerCase() === NO_WORK_CONTEXT) compiled = { source, re: null, error: null };
+  // A JavaScript literal (/.../i) would match its own slashes and so never match: refused, not taken as it reads.
+  else if (/^\/.+\/[a-z]*$/s.test(src)) compiled = { source, re: null, error: 'DROVER_WORK_CONTEXT must be the pattern alone, without /.../' };
+  else {
+    try { compiled = { source, re: new RegExp(src, 'i'), error: null }; }
+    catch { compiled = { source, re: null, error: 'DROVER_WORK_CONTEXT does not compile' }; }
+  }
+  return compiled;
+}
+
+/** The first field of a search call that looks like work (CONTEXT_FIELDS) under re (the operator's pattern), or null. */
+export function workContext(fields = {}, re = workPattern().re) {
+  if (!re) return null;
+  for (const k of CONTEXT_FIELDS) for (const v of [fields[k]].flat()) if (typeof v === 'string' && re.test(v)) return k;
   return null;
 }
 
@@ -68,7 +92,9 @@ export const frontCall = (args = {}) => args.remote === true || args.remote === 
 export function blocked(kind, args = {}, where = {}) {
   if (!remoteEnabled(kind)) return { reason: 'disabled' };
   if (workIdentity()) return { reason: 'work identity' };
-  const field = workContext({ ...args, ...where });
+  const { re, error } = workPattern();
+  if (error) return { reason: error };
+  const field = workContext({ ...args, ...where }, re);
   if (field) return { reason: 'work context', field };
   const scope = LOCAL_ONLY.find((k) => given(args[k]));
   return scope ? { reason: `scoped by ${scope}` } : null;

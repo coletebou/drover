@@ -48,6 +48,9 @@ const brainHits = () => [
   { title: 'Older note', snippet: 'from last year', ts: ts(400), slug: 'older-note-2', namespace: 'shared', tier: 'curated', author: 'agent@pc', role: 'memory', score: 0.61 },
 ];
 
+// What looks like work in these tests (DROVER_WORK_CONTEXT), made-up names only: an operator sets their own.
+const WORK = String.raw`\b(acme|ini-?tech|initech|onedrive-ini-tech|acme-dev\w*|privcloud|us-priv|acme-beta|wk\d{6}\w*|dev ?pods?|nexus)\b`;
+
 let indexCalls = [], brainCalls = [], rpcCalls = [];
 let brainImpl = async () => ({ hits: brainHits() });
 const realIndex = api.local['search.semantic'];
@@ -84,7 +87,7 @@ before(() => {
 beforeEach(() => {
   indexCalls = []; brainCalls = []; rpcCalls = [];
   brainImpl = async () => ({ hits: brainHits() });
-  rs._deps.env = {};                // no DF_IDENTITY, no DROVER_SEARCH_* settings
+  rs._deps.env = { DROVER_WORK_CONTEXT: WORK };   // no DF_IDENTITY, no DROVER_SEARCH_* settings
   rs._deps.home = () => HOME;       // no ~/.df-profile unless a test writes one
 });
 afterEach(() => remote.stopAll());
@@ -159,7 +162,7 @@ describe('search.semantic with the brain', () => {
     assert.deepEqual(brainCalls[0].kinds, ['brain', 'reflection'], 'the source sees the kinds asked for');
   });
   test('a brain that times out leaves the index\'s answer as it was', async () => {
-    rs._deps.env = { DROVER_SEARCH_REMOTE_TIMEOUT_MS: '40' };
+    rs._deps.env = { DROVER_WORK_CONTEXT: WORK, DROVER_SEARCH_REMOTE_TIMEOUT_MS: '40' };
     brainImpl = () => new Promise(() => {});   // never answers
     const t0 = Date.now();
     const r = await api.dispatch('search.semantic', { remote: true, query: 'q' });
@@ -222,7 +225,7 @@ describe('search.semantic with the brain', () => {
 // ---------------------------------------------------------------- the work guard
 describe('the work guard keeps the query from the brain', () => {
   const blockedBy = async (args, env = {}) => {
-    rs._deps.env = env;
+    rs._deps.env = { DROVER_WORK_CONTEXT: WORK, ...env };
     const r = await api.dispatch('search.semantic', { remote: true, query: 'how does the search index work', ...args });
     assert.equal(brainCalls.length, 0, `the brain was asked for ${JSON.stringify(args)}`);
     assert.equal(r.remote.brain.included, false);
@@ -266,9 +269,42 @@ describe('the work guard keeps the query from the brain', () => {
     assert.deepEqual(await blockedBy({ session: 'abc123' }), { included: false, reason: 'scoped by session' });
     assert.deepEqual(await blockedBy({ status: 'open' }), { included: false, reason: 'scoped by status' });
   });
-  test('the pattern is the dotfiles\' brain-sync one', () => {
-    for (const s of ['acme', 'ini-tech', 'IniTech', 'onedrive-ini-tech', 'acme-dev', 'acme-devbox', 'privcloud', 'us-priv', 'acme-beta', 'wk102101', 'dev pods', 'devpod', 'Nexus']) assert.match(s, rs.WORK_CONTEXT, s);
-    for (const s of ['drover search index', 'acmes', 'badland brain', 'nexuses', '/Users/c/code/Badland']) assert.doesNotMatch(s, rs.WORK_CONTEXT, s);
+  test('the operator\'s pattern decides what is work, case-insensitively, as it is written', () => {
+    const { re, error } = rs.workPattern({ DROVER_WORK_CONTEXT: WORK });
+    assert.equal(error, null);
+    for (const s of ['acme', 'ini-tech', 'IniTech', 'onedrive-ini-tech', 'acme-dev', 'acme-devbox', 'privcloud', 'us-priv', 'acme-beta', 'wk102101', 'dev pods', 'devpod', 'Nexus']) assert.equal(rs.workContext({ query: s }, re), 'query', s);
+    for (const s of ['drover search index', 'acmes', 'badland brain', 'nexuses', '/Users/c/code/Badland']) assert.equal(rs.workContext({ query: s }, re), null, s);
+    // Read at every call: a changed setting holds at once, no restart.
+    assert.equal(rs.workContext({ query: 'globex' }, rs.workPattern({ DROVER_WORK_CONTEXT: 'globex' }).re), 'query');
+    assert.equal(rs.workPattern({ APXW_WORK_CONTEXT: 'globex' }).re.source, 'globex', 'the old APXW_ spelling, until the shim goes');
+  });
+  test('a process whose very first read finds it unset fails closed too (a fresh module, nothing cached)', async () => {
+    const fresh = await import(`../core/search/remote.js?first-read-${Date.now()}`);
+    assert.deepEqual(fresh.workPattern({}), { source: undefined, re: null, error: 'DROVER_WORK_CONTEXT is not set' });
+    fresh._deps.env = {}; fresh._deps.home = () => HOME;
+    assert.deepEqual(fresh.blocked('brain', { query: 'q' }), { reason: 'DROVER_WORK_CONTEXT is not set' });
+  });
+  test('it fails closed: unset, empty or a pattern that does not compile asks no remote source, and says what to fix', async () => {
+    for (const v of [undefined, '', '   ']) assert.deepEqual(await blockedBy({}, { DROVER_WORK_CONTEXT: v }), { included: false, reason: 'DROVER_WORK_CONTEXT is not set' }, JSON.stringify(v));
+    const bad = await blockedBy({}, { DROVER_WORK_CONTEXT: String.raw`\b(acme|initech` });
+    assert.deepEqual(bad, { included: false, reason: 'DROVER_WORK_CONTEXT does not compile' });
+    assert.doesNotMatch(bad.reason, /acme|initech/, 'the reason never repeats the pattern');
+    // Written as a JavaScript literal it would match its own slashes and nothing else: refused rather than taken so.
+    assert.deepEqual(await blockedBy({}, { DROVER_WORK_CONTEXT: String.raw`/\b(acme)\b/i` }), { included: false, reason: 'DROVER_WORK_CONTEXT must be the pattern alone, without /.../' });
+    // The settings that say no remote search anyway still come first, and say so.
+    assert.deepEqual(await blockedBy({}, { DROVER_WORK_CONTEXT: undefined, DROVER_SEARCH_BRAIN: 'off' }), { included: false, reason: 'disabled' });
+    assert.deepEqual(await blockedBy({}, { DROVER_WORK_CONTEXT: undefined, DF_IDENTITY: 'work' }), { included: false, reason: 'work identity' });
+    assert.equal(remoteLine({ brain: { included: false, reason: 'DROVER_WORK_CONTEXT is not set' } }), 'brain: not searched (DROVER_WORK_CONTEXT is not set)');
+  });
+  test('DROVER_WORK_CONTEXT=none is the explicit opt-out: nothing is work, and the brain is asked', async () => {
+    for (const v of ['none', 'NONE', ' none ']) {
+      rs._deps.env = { DROVER_WORK_CONTEXT: v };
+      const r = await api.dispatch('search.semantic', { remote: true, query: 'ACME broker auth flow', callerCwd: '/Users/c/code/acme' });
+      assert.equal(r.remote.brain.included, true, v);
+      assert.equal(brainCalls.length, 1, v);
+      brainCalls = [];
+    }
+    assert.deepEqual(rs.workPattern({ DROVER_WORK_CONTEXT: 'none' }), { source: 'none', re: null, error: null });
   });
 });
 

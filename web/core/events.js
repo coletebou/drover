@@ -1,6 +1,6 @@
 // The single source of truth: ~/.dotfiles/claude/drover-events.jsonl, append-only.
 // State is a fold over the events. Nothing here rewrites a line.
-import { appendFile, copyFile, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { appendFile, copyFile, mkdir, open, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { constants, existsSync } from 'node:fs';
 import { hostname } from 'node:os';
 import path from 'node:path';
@@ -166,21 +166,100 @@ export async function append(ev, { actor = 'drover', file = EVENTS_PATH } = {}) 
   return stored;
 }
 
-export async function readAll(file = EVENTS_PATH) {
-  await maybeSyncLegacy(file);
-  if (!existsSync(file)) return [];
-  const text = await readFile(file, 'utf8');
-  const out = [];
-  const seen = new Set();
+// readAll keeps what it parsed, per file, and next time parses only the bytes appended
+// since. Every state, tail, notify, settings, bot and manager read went through a full
+// parse of the truth file (62k lines, 55 MB on 2026-11-03), behind a 5 s cache.
+// The file only grows by appends, except when git rewrites it (dotsync's union merge
+// puts another host's lines in the middle, a checkout or reset replaces it). So the
+// cache is used only when the file is the same inode, no shorter, and the bytes at
+// both ends of the part already read are unchanged; anything else is a full parse.
+const CHECK_BYTES = 4096;
+const readCache = new Map(); // file -> { dev, ino, offset, head, tail, events, seen, lastTs }
+
+function parseLines(text, events, seen) {
   for (const line of text.split('\n')) {
     if (!line.trim()) continue;
     let e; try { e = JSON.parse(line); } catch { continue; } // a torn line from a concurrent append; skip
     // Two processes importing the same legacy lines at once, or a union merge, can repeat a line.
     if (e?.id) { if (seen.has(e.id)) continue; seen.add(e.id); }
-    out.push(e);
+    events.push(e);
   }
-  out.sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
-  return out;
+}
+
+const byTs = (a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0);
+
+async function readRange(fh, start, length) {
+  const buf = Buffer.alloc(length);
+  let got = 0;
+  while (got < length) {
+    const { bytesRead } = await fh.read(buf, got, length - got, start + got);
+    if (!bytesRead) break;
+    got += bytesRead;
+  }
+  return got === length ? buf : buf.subarray(0, got);
+}
+
+async function fullRead(file, fh, size) {
+  const buf = await readRange(fh, 0, size);
+  const events = [];
+  const seen = new Set();
+  parseLines(buf.toString('utf8'), events, seen);
+  events.sort(byTs);
+  // Resume after the last complete line. A final line still being written is parsed
+  // again next time (its id is in seen if it already parsed, so it is not doubled).
+  const offset = buf.lastIndexOf(0x0a) + 1;
+  return {
+    offset,
+    head: Buffer.from(buf.subarray(0, Math.min(CHECK_BYTES, offset))),
+    tail: Buffer.from(buf.subarray(Math.max(0, offset - CHECK_BYTES), offset)),
+    events, seen,
+    lastTs: events.at(-1)?.ts ?? '',
+  };
+}
+
+// One read of a file at a time in this process: two overlapping incremental reads
+// would both parse the same appended bytes and both advance the offset past them.
+const readQueue = new Map(); // file -> the read in progress
+export function readAll(file = EVENTS_PATH) {
+  const run = (readQueue.get(file) ?? Promise.resolve()).catch(() => {}).then(() => readAllOnce(file));
+  readQueue.set(file, run);
+  run.catch(() => {}).finally(() => { if (readQueue.get(file) === run) readQueue.delete(file); });
+  return run;
+}
+
+async function readAllOnce(file) {
+  await maybeSyncLegacy(file);
+  let fh;
+  try { fh = await open(file, 'r'); } catch (e) { if (e.code === 'ENOENT') { readCache.delete(file); return []; } throw e; }
+  try {
+    const st = await fh.stat();
+    let c = readCache.get(file);
+    const usable = c && c.dev === st.dev && c.ino === st.ino && st.size >= c.offset
+      && (await readRange(fh, 0, c.head.length)).equals(c.head)
+      && (await readRange(fh, c.offset - c.tail.length, c.tail.length)).equals(c.tail);
+    if (!usable) {
+      c = { dev: st.dev, ino: st.ino, ...(await fullRead(file, fh, st.size)) };
+      readCache.set(file, c);
+    } else if (st.size > c.offset) {
+      const buf = await readRange(fh, c.offset, st.size - c.offset);
+      const end = buf.lastIndexOf(0x0a) + 1;
+      if (end > 0) {
+        const added = [];
+        parseLines(buf.subarray(0, end).toString('utf8'), added, c.seen);
+        if (added.length) {
+          c.events.push(...added);
+          // Appends are almost always newer; a host with a skewed clock is not.
+          if (added.some((e) => e.ts < c.lastTs) || added.some((e, i) => i && e.ts < added[i - 1].ts)) c.events.sort(byTs);
+          c.lastTs = c.events.at(-1)?.ts ?? '';
+        }
+        c.offset += end;
+        c.tail = Buffer.from((await readRange(fh, Math.max(0, c.offset - CHECK_BYTES), Math.min(CHECK_BYTES, c.offset))));
+        if (c.head.length < CHECK_BYTES) c.head = await readRange(fh, 0, Math.min(CHECK_BYTES, c.offset));
+      }
+      // Bytes after the last newline are a line still being written: read next time.
+    }
+    return c.events.slice();
+  } finally { await fh.close(); }
 }
 
 /** Tail: events after a given id/ts. */

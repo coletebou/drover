@@ -2,6 +2,9 @@
 // server all call dispatch(op, args). Ops that take `host` are forwarded to
 // that host's `drover rpc` by callOn(); everything here runs on the local box.
 import { hostname } from 'node:os';
+import { existsSync } from 'node:fs';
+import { realpath } from 'node:fs/promises';
+import path from 'node:path';
 import * as tmux from './tmux.js';
 import * as claude from './claude.js';
 import * as codex from './codex.js';
@@ -20,6 +23,7 @@ import * as plugins from './plugins.js';
 import * as survey from './survey.js';
 import { ops as credentialOps } from './credpool.js';
 import * as openclaw from './openclaw.js';
+import * as tx from './transcript-export.js';
 import * as grok from './bots/grok.js';
 import * as approvals from './bots/approvals.js';
 import * as botAuth from './bots/oauth.js';
@@ -141,6 +145,124 @@ async function sessionById(id) {
   const roll = (await codex.recentRollouts({ days: 365, limit: 5000 })).find((x) => x.threadId === id);
   if (roll) return { engine: 'codex', ...roll, live: false };
   return null;
+}
+
+// ---- transcripts in every view (core/transcript-export.js)
+
+// A manager conversation is the OpenClaw sessions of its gateway users: drover:<actor> for main, drover:<actor>:<thread>
+// otherwise (openclaw.gatewayUser), one per actor that wrote in it.
+const MANAGER_KEY = /^agent:[^:]+:openai-user:drover:[^:]+(?::(.+))?$/;
+
+/**
+ * Where a transcript lives, from anything that names one: a Claude session id or name, a subagent id (a0179…,
+ * agent-a0179… or <parent session>/<agent id>), a Codex thread, a headless id, "manager" (with thread),
+ * openclaw:<session id or key>, or the path of a transcript file under this host's Claude projects or Codex sessions.
+ * { engine, kind, id, path } for a file, { engine: 'openclaw', kind, id, store, sessionIds } for OpenClaw; null if none.
+ */
+async function transcriptSource(id, { thread } = {}) {
+  const ref = str(id, 'id');
+  if (ref.startsWith('/') || ref.startsWith('~')) return transcriptFile(ref);
+  if (ref.startsWith('openclaw:')) {
+    const want = ref.slice('openclaw:'.length);
+    for (const st of await tx.openclawStores(openclaw.stateDir())) {
+      let ids = await tx.openclawSessionIds(st.file, { sessionId: want });
+      if (!ids.length) ids = await tx.openclawSessionIds(st.file, { key: want });
+      if (ids.length) return { engine: 'openclaw', kind: 'openclaw', id: ref, agent: st.agent, store: st.file, sessionIds: ids };
+    }
+    return null;
+  }
+  // "agent-…" and "<session>/<agent>" can only be subagents; a bare hex id is tried as a session first.
+  if (/^agent-|\//.test(ref)) return tx.findSubagent(claude.PROJECTS_DIR, ref);
+  const s = await sessionById(ref);
+  if (s?.engine === 'openclaw') {
+    const th = openclaw.threadOf(thread);
+    for (const st of await tx.openclawStores(openclaw.stateDir())) {
+      const wins = (await tx.openclawWindows(st.file, { agent: st.agent })).filter((w) => { const m = w.key?.match(MANAGER_KEY); return m && (m[1] ?? 'main') === th; });
+      if (wins.length) return { engine: 'openclaw', kind: 'manager', id: 'manager', thread: th, agent: st.agent, store: st.file, sessionIds: wins.reverse().map((w) => w.sessionId) };
+    }
+    return { engine: 'openclaw', kind: 'manager', id: 'manager', thread: th, store: null, sessionIds: [] };
+  }
+  if (s?.engine === grok.ENGINE) throw new Error('a Grok bot keeps no transcript file: read it with format turns');
+  if (s?.headless) {
+    if (s.engine === 'claude' && s.sessionId && s.cwd) return { engine: 'claude', kind: 'headless', id: s.id, sessionId: s.sessionId, path: claude.transcriptPath(s.cwd, s.sessionId) };
+    if (s.engine === 'codex' && s.threadId) return { engine: 'codex', kind: 'headless', id: s.id, threadId: s.threadId, path: await rolloutFile(s.threadId) };
+    return { engine: s.engine, kind: 'headless', id: s.id, path: null };
+  }
+  if (s?.engine === 'claude') return { engine: 'claude', kind: 'session', id: s.sessionId ?? ref, path: s.transcript ?? null };
+  if (s?.engine === 'codex') return { engine: 'codex', kind: 'thread', id: s.threadId ?? ref, path: s.file ?? (await rolloutFile(s.threadId)) };
+  const file = await claude.transcriptById(ref);
+  if (file) return { engine: 'claude', kind: 'session', id: ref, path: file };
+  return tx.findSubagent(claude.PROJECTS_DIR, ref);
+}
+
+const rolloutFile = async (threadId) => (await codex.recentRollouts({ days: 365, limit: 5000 })).find((x) => x.threadId === threadId)?.file ?? null;
+
+/** A transcript named by its path: a .jsonl under this host's Claude projects or Codex sessions dir (after symlinks), nothing else. */
+async function transcriptFile(ref) {
+  const home = process.env.HOME ?? '';
+  const want = path.resolve(ref.replace(/^~(?=\/|$)/, home));
+  if (!want.endsWith('.jsonl')) throw new Error('a transcript path must name a .jsonl file');
+  let real; try { real = await realpath(want); } catch { return null; }
+  const roots = [];
+  for (const r of [claude.PROJECTS_DIR, codex.SESSIONS_DIR]) { try { roots.push(await realpath(r)); } catch { /* not on this host */ } }
+  if (!roots.some((r) => real.startsWith(r + path.sep))) throw new Error('a transcript path must be under this host\'s Claude projects or Codex sessions dir');
+  const engine = await tx.sniffEngine(real);
+  const sub = real.match(/\/([0-9a-f-]{36})\/subagents\/agent-([0-9a-f]+)\.jsonl$/);
+  if (sub) return { engine, kind: 'subagent', id: sub[2], parent: sub[1], path: real };
+  const name = path.basename(real, '.jsonl');
+  return engine === 'codex' ? { engine, kind: 'thread', id: name.match(/([0-9a-f]{8}-[0-9a-f-]{27,})$/)?.[1] ?? name, path: real } : { engine, kind: 'session', id: name, path: real };
+}
+
+const AS = ['entries', 'text'];
+
+/** sessions.transcript for formats messages, calls, full and raw. */
+async function exportTranscript({ id, since = 0, limit, thread, format, callStyle = 'input', maxBytes, as = 'entries' }) {
+  tx.checkFormat(format);
+  if (!tx.CALL_STYLES.includes(callStyle)) throw new Error(`callStyle must be one of ${tx.CALL_STYLES.join(', ')}`);
+  if (!AS.includes(as)) throw new Error(`as must be one of ${AS.join(', ')}`);
+  const src = await transcriptSource(id, { thread });
+  if (!src) throw new Error('session not found');
+  const { store, sessionIds, path: file, ...about } = src;
+  const base = { ...about, format, ...(file ? { path: file } : {}) };
+  const opts = { format, since, limit: Number(limit) > 0 ? Number(limit) : Infinity, maxBytes: Number(maxBytes) > 0 ? Number(maxBytes) : tx.PAGE_BYTES, callStyle };
+  let r;
+  if (src.engine === 'openclaw') {
+    if (!store || !sessionIds.length) return { ...base, ...(format === 'raw' ? { jsonl: '', records: 0 } : { entries: [] }), offset: 0, more: false, events: 0 };
+    r = await tx.readOpenclaw(store, sessionIds, opts);
+  } else {
+    if (!file || !existsSync(file)) throw new Error(`no transcript file for this session${file ? ` (${file})` : ''}`);
+    r = format === 'raw' ? await tx.readRaw(file, opts) : await tx.readEntries(file, src.engine, { ...opts, sidechain: src.kind === 'subagent' });
+  }
+  if (as === 'text' && r.entries) { const { entries, ...rest } = r; return { ...base, ...rest, count: entries.length, text: tx.renderText(entries) }; }
+  return { ...base, ...r };
+}
+
+/** Every transcript on this host, newest first, with what made it (see transcripts.list in ops-meta.js). */
+async function listTranscripts({ engine, kind, days = 4, limit = 50, parent } = {}) {
+  const d = Number(days) > 0 ? Number(days) : 4, n = Number(limit) > 0 ? Number(limit) : 50;
+  const cutoff = Date.now() - d * 86400_000;
+  const want = (e) => !engine || e === engine;
+  const out = [];
+  if (want('claude')) {
+    if (!parent) for (const t of await claude.recentTranscripts({ days: d, limit: 5000, minBytes: 0 })) out.push({ engine: 'claude', kind: 'session', id: t.sessionId, path: t.transcript, mtime: t.mtime, bytes: t.bytes, head: 'claude' });
+    out.push(...(await tx.listSubagents(claude.PROJECTS_DIR, { days: d, parent: parent ?? null })));
+  }
+  if (!parent) {
+    if (want('codex')) for (const r of await codex.recentRollouts({ days: d, limit: 5000 })) out.push({ engine: 'codex', kind: 'thread', id: r.threadId, path: r.file, mtime: r.mtime, bytes: r.bytes, head: 'codex' });
+    if (want('openclaw')) for (const st of await tx.openclawStores(openclaw.stateDir())) for (const w of await tx.openclawWindows(st.file, { agent: st.agent })) if (w.mtime && Date.parse(w.mtime) >= cutoff) { const { store, ...rest } = w; out.push(rest); }
+    for (const h of launchMod.headlessList()) if (want(h.engine)) out.push({ engine: h.engine, kind: 'headless', id: h.id, name: h.name ?? null, status: h.status, sessionId: h.sessionId ?? null, threadId: h.threadId ?? null, cwd: h.cwd ?? null, mtime: h.startedAt ? new Date(h.startedAt).toISOString() : null });
+  }
+  out.sort((a, b) => ((a.mtime ?? '') < (b.mtime ?? '') ? 1 : -1));
+  // What each Claude or Codex file is (headless run, reflection, codex exec...) comes from its head: read for every
+  // candidate when kind filters on it, else only for the page.
+  const withHead = async (e) => {
+    if (!e.head) return e;
+    const { head, ...rest } = e;
+    try { return { ...rest, ...(head === 'claude' ? await tx.claudeHead(e.path) : await tx.codexHead(e.path)) }; } catch { return rest; }
+  };
+  const total = out.length;
+  const page = kind ? (await Promise.all(out.map(withHead))).filter((e) => e.kind === kind).slice(0, n) : await Promise.all(out.slice(0, n).map(withHead));
+  return { host: hostname(), days: d, matched: kind ? undefined : total, transcripts: page };
 }
 
 /**
@@ -295,9 +417,18 @@ export const local = {
     return { ...r, ...filterSessions(sessions, args) };
   },
   async 'sessions.get'({ id }) { return sessionById(str(id, 'id')); },
-  async 'sessions.transcript'({ id, since = 0, limit = 200, thread, seenBy }) {
+  async 'sessions.transcript'({ id, since = 0, limit, thread, seenBy, format = 'turns', callStyle, maxBytes, as }) {
+    if (tx.checkFormat(format) !== 'turns') return exportTranscript({ id, since, limit, thread, format, callStyle, maxBytes, as });
+    limit = Number(limit) > 0 ? Number(limit) : 200;
     const s = await sessionById(str(id, 'id'));
-    if (!s) throw new Error('session not found');
+    if (!s) {
+      // Not a session: maybe a subagent, an openclaw: id or a transcript path, read through its file.
+      const src = await transcriptSource(id, { thread });
+      if (src?.engine === 'claude' && src.path) return { engine: 'claude', kind: src.kind, ...(await claude.readTranscript(src.path, { since, limit })) };
+      if (src?.engine === 'codex' && src.path) return { engine: 'codex', kind: src.kind, ...(await codex.readRollout(src.path, { limit })), offset: 0 };
+      if (src?.engine === 'openclaw') throw new Error('an OpenClaw session reads with format messages, calls, full or raw');
+      throw new Error('session not found');
+    }
     if (s.headless) return { engine: s.engine, headless: true, turns: headlessTurns(s.events), offset: s.events.length };
     if (s.engine === 'openclaw') return openclaw.transcript({ since, limit, thread });
     // seenBy: the reader is shown this page, so the bot's replies to them up to its last one are read (core/bots/grok.js
@@ -319,6 +450,7 @@ export const local = {
     }
     return { engine: 'codex', turns: [], offset: 0 };
   },
+  async 'transcripts.list'(args = {}) { return listTranscripts(args); },
   /** The last thing a session said (final assistant text and its last line), cheap: reads the transcript tail. */
   async 'sessions.lastReply'({ id, seenBy }) {
     const s = await sessionById(str(id, 'id'));

@@ -38,7 +38,7 @@
         "models": [
           {
             "id": "gpt-6.1-sol-ultrafast-br",
-            "name": "GPT-6.1 Sol UltraFast (openai.gpt-6.1-sol on Bedrock Mantle us-east-1, service_tier ultrafast, via loopback CLIProxyAPI; primary)",
+            "name": "GPT-6.1 Sol UltraFast (openai.gpt-6.1-sol on Bedrock Mantle us-east-1, service_tier ultrafast, via loopback CLIProxyAPI; on-demand /model only)",
             "reasoning": true,
             "input": ["text", "image"],
             "cost": {
@@ -88,6 +88,28 @@
         "auth": "api-key",
         "apiKey": "${AWS_BEARER_TOKEN_BEDROCK}",
         "models": [
+          {
+            "id": "openai.gpt-6.1-sol",
+            "name": "GPT-6.1 Sol Standard (Bedrock Mantle us-east-1; primary. contextWindow 128k is an OpenClaw compaction budget so auto-compact fires near ~108k; Mantle still accepts up to 272k)",
+            "reasoning": true,
+            "input": ["text", "image"],
+            "cost": {
+              "input": 2.2, "output": 11, "cacheRead": 0.11, "cacheWrite": 2.75,
+              "tieredPricing": [
+                { "input": 2.2, "output": 11, "cacheRead": 0.11, "cacheWrite": 2.75, "range": [0, 272001] },
+                { "input": 4.4, "output": 16.5, "cacheRead": 0.22, "cacheWrite": 5.5, "range": [272001] }
+              ]
+            },
+            "contextWindow": 128000,
+            "maxTokens": 64000,
+            "compat": {
+              "supportsReasoningEffort": true,
+              "supportedReasoningEfforts": ["low", "medium", "high", "xhigh", "max"],
+              "supportsStore": false,
+              "supportsPromptCacheKey": false,
+              "supportsInstructions": false
+            }
+          },
           {
             "id": "openai.gpt-6-luna",
             "name": "GPT-6 Luna (Bedrock Mantle us-east-1; compaction, memory flush, heartbeat, dreaming)",
@@ -154,7 +176,7 @@
     "defaults": {
       "workspace": "~/.openclaw-manager/workspace",
       "model": {
-        "primary": "cliproxy/gpt-6.1-sol-ultrafast-br",
+        "primary": "amazon-bedrock-mantle/openai.gpt-6.1-sol",
         "fallbacks": [
           "amazon-bedrock-mantle/openai.gpt-6-astra",
           "amazon-bedrock/us.anthropic.claude-sonnet-5-5"
@@ -162,11 +184,24 @@
       },
       "thinkingDefault": "max",
       "timeoutSeconds": 900,
+      "contextPruning": {
+        "mode": "cache-ttl",
+        "ttl": "30m",
+        "hardClear": { "enabled": true }
+      },
       "compaction": {
         "mode": "safeguard",
         "model": "amazon-bedrock-mantle/openai.gpt-6-luna",
         "thinkingLevel": "low",
-        "memoryFlush": { "enabled": true, "model": "amazon-bedrock-mantle/openai.gpt-6-luna" }
+        "keepRecentTokens": 20000,
+        "midTurnPrecheck": { "enabled": true },
+        "maxActiveTranscriptBytes": "2mb",
+        "memoryFlush": {
+          "enabled": true,
+          "model": "amazon-bedrock-mantle/openai.gpt-6-luna",
+          "softThresholdTokens": 20000,
+          "forceFlushTranscriptBytes": "1mb"
+        }
       },
       "heartbeat": {
         "every": "5m",

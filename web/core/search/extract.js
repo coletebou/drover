@@ -14,7 +14,7 @@ const WRAPPED = /^\s*<(command-name|command-message|command-args|local-command-s
 const PEER_OPEN = /<cross-session-message\b[^>]*>/g;
 const PEER_CLOSE = /<\/cross-session-message>/g;
 const INTERRUPTED = /^\[Request interrupted by user[^\]]*\]$/;
-const CODEX_INJECTED = ['<environment_context>', '<user_instructions>', '# AGENTS.md', '<permissions', '<user_shell_command>', '<turn_aborted>', '<developer'];
+export const CODEX_INJECTED = ['<environment_context>', '<user_instructions>', '# AGENTS.md', '<permissions', '<user_shell_command>', '<turn_aborted>', '<developer'];
 const ANSI = /\x1b\[[0-?]*[ -\/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]/g;
 const CONTROL = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
 

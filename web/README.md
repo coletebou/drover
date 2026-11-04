@@ -99,6 +99,18 @@ Drover was called apx-web (CLI `apxw`) until 2026-10-15. Until 2026-11-15:
   `force`). Launches hand tmux an argv, never a shell string; an argument that
   ends in ";" is escaped (`core/tmux.js` tmuxArg), because tmux would otherwise
   read it as the end of the command and run the next argument as a tmux command.
+  A new window is opened at `=session:` (`core/tmux.js` `newWindow`). The `=` names that session exactly, and the
+  empty index is no window in it, so the window takes the next free index. A bare session name is a window first:
+  tmux prefix-matches it against the current session's window names, so a session `work` once hit its window
+  `work-notes` and the launch failed with "index 1 in use". Without `=`, another session can match the name too.
+  `tmux.new` and a tmux `launch.start` return the target as `session:@id` (the window id), not `session:index`.
+  With `renumber-windows` on, dropping a new session's placeholder, or any window closing later, renumbers the
+  rest, and the index the launch had can name another window or none. The id stays this window until it closes.
+  A command that exits with a code it was not expected to (`core/proc.js` `ProcError`), and a spawn failure, redacts
+  argv and stderr before the message reaches an MCP caller, a remote relay, the WAL or a log. A tmux launch passes
+  the agent's credential as `-e NAME=value`, and the message once returned that value in clear. Every `-e` value on
+  that command is replaced, not only the credential. The error keeps the first 4096 characters of stderr and the
+  message the first 500 of those, each cut on a word so a secret is not left in half.
   Window, pane and session lists split `-F` output on `<|>` (`core/tmux.js`
   `SEP`). tmux 3.4 (Ubuntu 24.04) escapes control characters in format output,
   so the old U+001F separator came back as the four characters `\037`, no line
@@ -425,8 +437,11 @@ reason }`, and a slow or failing brain leaves the index's answer as it was. `kin
 kinds without `brain` skip it. Work never reaches the brain: nothing is sent from a machine whose dotfiles identity is
 work (`DF_IDENTITY` in the environment or `~/.df-profile`), or for a query, `project`, `repoIdentity`, host named or
 caller's working directory (`callerCwd`, set by the MCP server and the CLI and dropped before any host sees the
-search) that matches the dotfiles' brain-sync pattern (acme, ini-tech, acme-dev, privcloud, acme-beta, dev pods...).
-`DROVER_SEARCH_BRAIN=off` turns the brain leg off on a host.
+search) that matches `DROVER_WORK_CONTEXT`. That is the operator's pattern for what is work: a regular expression,
+matched case-insensitively and written without slashes, set like any other setting in a `~/.config/drover/*.env`
+file. It fails closed: while it is unset or does not compile, a front asks no remote source at all (`remote.brain`
+says why), and `DROVER_WORK_CONTEXT=none` is the explicit way to say that nothing is work. `DROVER_SEARCH_BRAIN=off`
+turns the brain leg off on a host.
 
 Reflections come from the reflections CLI (`reflections export`), not a file: each pass reads what
 changed in the last day, and once per UTC day everything, so derived `stale` statuses refresh. One
@@ -487,6 +502,33 @@ value already in the environment wins. The settings a fleet usually sets:
 | `DROVER_DOTFILES` | `~/.dotfiles` | the repository that holds the truth file (`claude/drover-events.jsonl`) and the fleet host list |
 | `DROVER_UPDATE_HINT` | "pull its Drover checkout and restart its daemon" | what an error tells you to do about a host on older code |
 | `DROVER_HANDOFF_CHAINS` | `HANDOFF_CHAIN_STATE_DIR`, else `~/.claude/state/handoff-chain` | where the handoff chains' session markers are (Handoff successors) |
+
+
+## Transcripts in every view
+
+`sessions.transcript` takes a `format`. `turns` (the default) is the compact view the web, iOS, Mac and Chrome
+clients poll. The other four read a whole transcript from its start, page by page (`offset` back as `since`
+while `more`), for Claude Code (interactive, `--bg`, `-p`, headless, subagents, reflection and dotsync runs),
+Codex (interactive and `exec`) and OpenClaw (the manager's chats, heartbeats and cron runs, from its SQLite store):
+
+| format | holds | 6.3 MB Claude session |
+|---|---|---|
+| `messages` | what was said: typed user text, messages from other sessions (`from`), assistant text, compaction summaries | 30 KB |
+| `calls` | messages plus every tool call with its whole input, no outputs (`callStyle: brief`: one line per call) | 356 KB (brief 120 KB) |
+| `full` | calls plus every tool output, nothing cut | 807 KB |
+| `raw` | the source records as they are (JSONL; OpenClaw events decompressed) | 6.3 MB |
+
+The parsers live in `core/transcript-export.js`: one entry shape (`role` user, assistant, summary, tool or result)
+for every engine. `transcripts.list` finds every transcript on a host with what made it; `as: text` renders
+entries as Markdown. An id can be a session id or name, a subagent id (`a0179…`, `agent-a0179…`,
+`<parent>/<agent>`), a Codex thread, a headless id, `manager` with `thread`, `openclaw:<session id or key>`, or a
+`.jsonl` path under the host's Claude projects or Codex sessions dir (nothing outside them, symlinks resolved).
+
+```
+drover transcripts                                   # newest 50 on this machine (--engine, --kind, --days, --parent, --host)
+drover transcript <id> [--format messages|calls|full|raw|turns] [--brief] [--host H] [--json] [--out FILE]
+drover transcript ~/.claude/projects/<slug>/<id>.jsonl --format calls --brief   # a file: read here, no daemon
+```
 
 ## Docker stacks
 

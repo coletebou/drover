@@ -58,6 +58,15 @@ const help = `drover: browser control plane for the agent fleet
   drover grep <pattern> [--here | --host H] [--regex] [--case] [--limit N] [--roles tool_result,...]
               [--kinds claude,subagent,codex] [--days N] [--project P] [--json]
                                                             grep the raw transcripts on every machine (tool output included)
+  drover transcript <id | file.jsonl> [--format messages|calls|full|raw|turns] [--brief] [--host H] [--thread T]
+                    [--json] [--out FILE]
+                                                            one session's whole transcript: messages (what was said), calls (plus every tool
+                                                            call, no outputs), full (plus every output), raw (the JSONL as it is). Claude Code,
+                                                            Codex and OpenClaw; a session id or name, a subagent id, manager, openclaw:<id>,
+                                                            or a transcript file (read here, no daemon). Default format messages, as Markdown
+  drover transcripts [--engine claude|codex|openclaw] [--kind K] [--days N] [--limit N] [--parent ID] [--host H] [--json]
+                                                            every transcript on a machine: sessions, subagents, headless, reflection and dotsync
+                                                            runs, Codex exec, OpenClaw heartbeats and cron runs
   drover stacks [--here | --host H] [--project P] [--fresh] [--no-git] [--all] [--json]
                                                             docker compose stacks on every machine: health, failing services, the code each runs
                                                             (--all also lists containers outside compose; verbs: drover op docker.restart|start|exec|run)
@@ -93,8 +102,8 @@ async function main() {
   // on stderr, and the command goes on without it.
   const env = await import(path.join(ROOT, 'core', 'env.js'));
   await env.loadSettings();
-  if (['serve', 'up', 'rpc', 'mcp', 'op', 'search', 'grep', 'stacks'].includes(cmd)) await env.loadEnvFile({ file: env.secretsFile() });
-  if (['serve', 'up', 'rpc', 'op', 'search', 'grep', 'stacks'].includes(cmd)) {
+  if (['serve', 'up', 'rpc', 'mcp', 'op', 'search', 'grep', 'stacks', 'transcript', 'transcripts'].includes(cmd)) await env.loadEnvFile({ file: env.secretsFile() });
+  if (['serve', 'up', 'rpc', 'op', 'search', 'grep', 'stacks', 'transcript', 'transcripts'].includes(cmd)) {
     const { loadPlugins } = await import(path.join(ROOT, 'core', 'api.js'));
     await loadPlugins();
     const plugins = await import(path.join(ROOT, 'core', 'plugins.js'));
@@ -300,6 +309,25 @@ async function main() {
         const { formatGrep } = await import(path.join(ROOT, 'core', 'search', 'format.js'));
         process.stdout.write(formatGrep(r, { color: process.stdout.isTTY }));
       }
+      const { stopAll } = await import(path.join(ROOT, 'core', 'remote.js')); stopAll();
+      return;
+    }
+    case 'transcript': {
+      const id = argv[1] && !argv[1].startsWith('--') ? argv[1] : null;
+      if (!id) throw new Error('usage: drover transcript <id | file.jsonl> [--format messages|calls|full|raw|turns] [--brief] [--host H] [--thread T] [--json] [--out FILE]');
+      const { transcriptCli } = await import(path.join(ROOT, 'core', 'transcript-cli.js'));
+      await transcriptCli(id, { format: flag('format', 'messages'), brief: has('brief'), host: flag('host'), thread: flag('thread'), json: has('json'), out: flag('out') });
+      const { stopAll } = await import(path.join(ROOT, 'core', 'remote.js')); stopAll();
+      return;
+    }
+    case 'transcripts': {
+      const { dispatch } = await import(path.join(ROOT, 'core', 'api.js'));
+      const args = { ...(flag('host') ? { host: flag('host') } : {}), ...(flag('parent') ? { parent: flag('parent') } : {}) };
+      for (const k of ['engine', 'kind']) if (flag(k)) args[k] = flag(k);
+      for (const k of ['days', 'limit']) if (flag(k)) args[k] = Number(flag(k));
+      const r = await dispatch('transcripts.list', args);
+      if (has('json')) console.log(JSON.stringify(r, null, 2));
+      else { const { formatTranscriptList } = await import(path.join(ROOT, 'core', 'transcript-cli.js')); process.stdout.write(formatTranscriptList(r)); }
       const { stopAll } = await import(path.join(ROOT, 'core', 'remote.js')); stopAll();
       return;
     }
