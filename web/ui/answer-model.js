@@ -3,7 +3,8 @@
 // answer; a strip built here from fleet.summary (an older daemon) has dialog and hash, and the keys are derived
 // the way the daemon derives them. A press goes through sessions.answer with the screen hash the card showed;
 // a daemon from before that op gets tmux.answer on the strip's window instead. A refusal is an answer, not an
-// error: it says why, and carries the screen as it is now.
+// error: it says why, and carries the screen as it is now. A Grok bot's approval request (answer "approval") is not on
+// a screen: its card has one button per option, answered by the request's id (approvalModel, pressApproval).
 
 export const ANSWER_KEYS = ['Enter', 'Escape', 'Up', 'Down', 'Tab', 'Space', 'y', 'n', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
 const KEY_SET = new Set(ANSWER_KEYS);
@@ -27,12 +28,47 @@ export function deriveKeys({ options = [], held = false, screenText = '' } = {})
 }
 
 /**
+ * The card for a Grok bot's approval request (a strip's approval, core/native.js approvalFields), or null:
+ * { mode: 'approval', id, bot, kind, question, details, expiresAt, more, host, buttons: [{ n, label, kind: 'option' }] }.
+ */
+export function approvalModel(s) {
+  const a = s?.approval;
+  if (!a?.id || !Array.isArray(a.options) || a.options.length < 2) return null;
+  const buttons = a.options.filter((o) => Number.isInteger(Number(o?.n))).map((o) => ({ n: Number(o.n), label: String(o.label ?? ''), kind: 'option' }));
+  // complete: the strip carries the whole request (native.board does; a strip built here from a session holds it whole).
+  return { mode: 'approval', id: String(a.id), bot: s.name ?? a.bot ?? null, kind: a.kind ?? 'other', question: a.question ?? '', details: a.details ?? null, expiresAt: a.expiresAt ?? null, more: Number(s.moreApprovals) || 0, host: s.host ?? 'local', complete: a.complete !== false, buttons };
+}
+
+/**
+ * Whether a compact surface (a board strip, the waiting window, a notification) that shows only the question may
+ * answer the request in one tap: when the question is all there is to read. A request with details, or one this
+ * surface does not hold whole, is answered on the card that shows all of it (the drawer).
+ */
+export const ONE_TAP_QUESTION_MAX = 120;   // what a strip or a notification shows unclipped, as the notifier's rule
+export const oneTap = (m) => m?.mode === 'approval' && m.complete && !m.details && String(m.question ?? '').length <= ONE_TAP_QUESTION_MAX;
+
+/** How long an approval request still stands, in words ("40 min", "5 h", "2 days"), or null once it has expired. */
+export function standsFor(expiresAt, now = Date.now()) {
+  const left = Date.parse(expiresAt ?? '') - now;
+  if (!Number.isFinite(left) || left <= 0) return null;
+  return left < 90 * 60_000 ? `${Math.max(1, Math.round(left / 60_000))} min` : left < 48 * 3600_000 ? `${Math.round(left / 3600_000)} h` : `${Math.round(left / 86_400_000)} days`;
+}
+
+/** Answer the approval request a card shows with option n. answer(id, n, { host }) -> the daemon's result. */
+export async function pressApproval(answer, m, n) {
+  if (m?.mode !== 'approval' || !m.buttons.some((b) => b.n === n)) throw new Error(`not an option of that request: ${n}`);
+  return answer(m.id, n, { host: m.host });
+}
+
+/**
  * The answer card for a strip (or a screen read), or null when nothing on screen asks for a key.
  * { mode: 'keys', question, held, heldFrom, options, buttons: [{ key, label, kind, selected?, n? }], hash, id, target, host }
  * { mode: 'reply', question } when the agent asked in text (answer: "reply"): the composer answers it.
+ * { mode: 'approval', ... } for a Grok bot's approval request (approvalModel).
  */
 export function answerModel(s) {
   if (!s) return null;
+  if (s.answer === 'approval' || s.approval) return approvalModel(s);
   // The strip's tail ends with the pane's last line: the idle prompt there means the dialog it names was answered.
   if (Array.isArray(s.tail) && s.tail.length && promptAtBottom(s.tail) && s.answer !== 'reply') return null;
   const dialog = s.dialog ?? null;

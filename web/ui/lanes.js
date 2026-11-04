@@ -1,7 +1,7 @@
 // Board lanes, shared by the board, the waiting PiP window and the badge count:
 // every live agent on a host becomes a strip in "wait" (a dialog is open, a peer
-// message is held, or the agent asked through the Notification hook), "work"
-// (busy) or "idle".
+// message is held, the agent asked through the Notification hook, or a Grok bot
+// asks for approval), "work" (busy) or "idle".
 import { tmuxWindowTarget, isWindow } from './transcript.js';
 import { classifyAsk, ASK_LABELS } from './notify-policy.js';
 
@@ -23,6 +23,14 @@ function reportedAsk(s) {
   return { kind: 'decision', label: s.state === 'blocked' ? 'is blocked' : 'needs you', text: s.summary ?? '', options: [] };
 }
 
+/**
+ * A Grok bot's oldest pending approval request (core/bots/approvals.js) as the strip's ask: its question and options.
+ * It holds the strip in the wait lane until it is answered, withdrawn or expired, whatever alert came before or after.
+ */
+function approvalAsk(a) {
+  return { kind: 'decision', label: 'asks for your approval', text: a.question ?? '', options: (a.options ?? []).map((o) => ({ n: o.n, label: o.label })) };
+}
+
 /** The tail of an agent with no pane (a Grok bot): why it went stale, else the summary it last reported. */
 function reportedTail(s) {
   if (s.stale?.reason) return [`stale: ${s.stale.reason}`];
@@ -39,14 +47,19 @@ export function stripsFor(hostSummary, notifyMap = {}, now = Date.now(), finishe
     if (!s.live) continue;
     const w = byWin.get(s.sessionId ?? s.id) ?? (s.tmux ? windows.find((x) => isWindow(x, tmuxWindowTarget(s.tmux))) : null);
     const screen = w?.screen?.state;
-    const n = notifyMap[s.sessionId ?? s.id];
+    // An approval request's alert is not an ask of its own: the request is (approvals below), while it is pending.
+    const n0 = notifyMap[s.sessionId ?? s.id];
+    const n = n0?.kind === 'approval' ? null : n0;
+    const approvals = s.engine === 'grok' && Array.isArray(s.approvals) ? s.approvals : [];
+    const approval = approvals[0] ?? null;
     // An ask stands until the session moves on: a status change after it (it got its
     // answer and worked) clears it, unless the screen still shows the dialog.
     const toMs = (v) => (v == null ? 0 : typeof v === 'number' ? (v < 1e11 ? v * 1000 : v) : Date.parse(v) || 0);
     const movedOn = n && toMs(s.statusUpdatedAt) > Date.parse(n.ts) + 2000 && screen !== 'dialog';
     const asked = n && now - Date.parse(n.ts) < NOTIFY_FRESH_MS && s.status !== 'busy' && !movedOn;
-    // The ask: the screen wins (a live dialog), then a hook or agent ask with real context, then what a bot reports.
-    const ask = screen === 'dialog' || w?.held ? classifyAsk({ screenState: screen, dialog: w?.dialog, held: w?.held, heldFrom: w?.heldFrom }) : asked ? askOfNotify(n) : reportedAsk(s);
+    // The ask: the screen wins (a live dialog), then a bot's approval request, then a hook or agent ask with real
+    // context, then what a bot reports.
+    const ask = screen === 'dialog' || w?.held ? classifyAsk({ screenState: screen, dialog: w?.dialog, held: w?.held, heldFrom: w?.heldFrom }) : approval ? approvalAsk(approval) : asked ? askOfNotify(n) : reportedAsk(s);
     const waits = ask && ask.kind !== 'finished';
     const lane = waits ? 'wait' : (s.status === 'busy' || screen === 'busy') ? 'work' : s.engine === 'codex' && /active|running/i.test(s.status) ? 'work' : 'idle';
     const fin = lane === 'idle' ? finishedMap[s.sessionId ?? s.id] : null;
@@ -56,9 +69,11 @@ export function stripsFor(hostSummary, notifyMap = {}, now = Date.now(), finishe
       tmux: w?.target ?? tmuxWindowTarget(s.tmux), windowName: w?.name, held: Boolean(w?.held), heldFrom: w?.heldFrom ?? null, dialog: w?.dialog ?? null, hash: w?.hash ?? null,
       ask: waits ? ask : null, finished,
       tail: waits ? [ask.text, ...(w?.tail ?? []).slice(-1)].filter(Boolean) : finished?.text ? [finished.text] : (w?.tail ?? reportedTail(s)), question: waits ? ask.text : null,
-      since: asked && !w?.held && screen !== 'dialog' ? Date.parse(n.ts) : (s.statusUpdatedAt ?? s.updatedAt ?? s.startedAt ?? w?.activityTs), cwd: s.cwd ?? w?.cwd, kind: 'session', asked: Boolean(waits),
+      since: approval ? Date.parse(approval.createdAt) : asked && !w?.held && screen !== 'dialog' ? Date.parse(n.ts) : (s.statusUpdatedAt ?? s.updatedAt ?? s.startedAt ?? w?.activityTs), cwd: s.cwd ?? w?.cwd, kind: 'session', asked: Boolean(waits),
       // A Grok bot's replies the owner has not read (read receipts, core/bots/grok.js).
       ...(s.engine === 'grok' && Number(s.unread) > 0 ? { unread: Number(s.unread) } : {}),
+      // Answered with one tap (answer-model.js approvalModel): the oldest pending request, and how many wait behind it.
+      ...(approval ? { approval, answer: 'approval', ...(approvals.length > 1 ? { moreApprovals: approvals.length - 1 } : {}) } : {}),
     });
     if (w) seen.add(w.target);
   }

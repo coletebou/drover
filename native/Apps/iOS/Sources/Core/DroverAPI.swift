@@ -18,6 +18,12 @@ protocol DroverAPI: Sendable {
     func managerStatus(host: String?) async throws -> JSONValue
     func managerFeed(host: String?, limit: Int) async throws -> JSONValue
     func managerSweep(host: String?) async throws -> JSONValue
+    /// Answers a Grok bot's approval request with option `choice` (its `n`): `POST /api/approvals/answer`, main token.
+    /// `via` names this client (`ios`, `ios-notification`). A request no longer pending (409) is a result, not an error.
+    func answerApproval(id: String, choice: Int, via: String) async throws -> ApprovalAnswerResult
+    /// The full request (`GET /api/approvals?id=`, main token): its words whole, its status and answer. nil when this
+    /// daemon keeps no such request. What a shortened card answers from.
+    func approval(id: String) async throws -> ApprovalRequest?
     /// Live server events (SSE). The stream ends on disconnect; callers reconnect with backoff.
     func events() -> AsyncThrowingStream<ServerEvent, Error>
 }
@@ -189,6 +195,77 @@ struct HTTPDroverAPI: DroverAPI {
 
     func managerSweep(host: String?) async throws -> JSONValue {
         try await op("openclaw.sweep", Self.merge(Self.hostArgs(host), ["actor": .string(DroverIDs.actor)]))
+    }
+
+    // MARK: approvals
+
+    func answerApproval(id: String, choice: Int, via: String) async throws -> ApprovalAnswerResult {
+        guard let token = token(), !token.isEmpty else { throw DroverError.notConfigured }
+        let req = try Self.approvalAnswerRequest(baseURL: baseURL, token: token, id: id, choice: choice, via: via)
+        let data: Data
+        let response: URLResponse
+        do { (data, response) = try await session.data(for: req) }
+        catch { throw DroverError.transport(error.localizedDescription) }
+        return try Self.approvalAnswerResult(data, status: (response as? HTTPURLResponse)?.statusCode ?? 0)
+    }
+
+    func approval(id: String) async throws -> ApprovalRequest? {
+        guard let token = token(), !token.isEmpty else { throw DroverError.notConfigured }
+        let req = Self.approvalLookupRequest(baseURL: baseURL, token: token, id: id)
+        let data: Data
+        let response: URLResponse
+        do { (data, response) = try await session.data(for: req) }
+        catch { throw DroverError.transport(error.localizedDescription) }
+        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if code == 401 { throw DroverError.unauthorized }
+        if code == 403 { throw DroverError.forbidden }
+        guard (200..<300).contains(code) else {
+            if let msg = try? JSONDecoder().decode(ErrorEnvelope.self, from: data).error { throw DroverError.server(msg) }
+            throw DroverError.http(code)
+        }
+        let lookup: ApprovalLookup = try Self.decodeResult(data, op: "approvals")
+        return lookup.items.first { $0.id == id }
+    }
+
+    /// `GET /api/approvals?id=<id>` with the bearer token: one request, as its owner sees it.
+    static func approvalLookupRequest(baseURL: URL, token: String, id: String) -> URLRequest {
+        var url = baseURL.appending(path: "api/approvals")
+        url.append(queryItems: [URLQueryItem(name: "id", value: id)])
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+        req.timeoutInterval = 30
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return req
+    }
+
+    private struct ApprovalAnswerBody: Encodable { var id: String; var choice: Int; var via: String }
+
+    /// `POST /api/approvals/answer {id, choice, via}` with the bearer token. Not an op: no `/api/op/` path.
+    static func approvalAnswerRequest(baseURL: URL, token: String, id: String, choice: Int, via: String) throws -> URLRequest {
+        var req = URLRequest(url: baseURL.appending(path: "api/approvals/answer"))
+        req.httpMethod = "POST"
+        req.timeoutInterval = 30
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.httpBody = try JSONEncoder().encode(ApprovalAnswerBody(id: id, choice: choice, via: via))
+        return req
+    }
+
+    /// 200 `{ok, result}` is decided; 409 `{ok: false, error, approval}` (answered already, withdrawn, expired) is
+    /// closed; 401 and 403 (the widget token) map as for ops; 400 and 404 throw the daemon's own words.
+    static func approvalAnswerResult(_ data: Data, status code: Int) throws -> ApprovalAnswerResult {
+        if code == 401 { throw DroverError.unauthorized }
+        if code == 403 { throw DroverError.forbidden }
+        let message = (try? JSONDecoder().decode(ErrorEnvelope.self, from: data))?.error
+        if code == 409 { return .closed(message: message ?? "This request is no longer waiting for an answer.") }
+        guard (200..<300).contains(code) else {
+            if let message { throw DroverError.server(message) }
+            throw DroverError.http(code)
+        }
+        let r: ApprovalAnswerPayload = try decodeResult(data, op: "approvals.answer")
+        return .decided(label: r.decision?.label ?? "", delivery: r.delivery ?? ApprovalDelivery())
     }
 
     // MARK: SSE

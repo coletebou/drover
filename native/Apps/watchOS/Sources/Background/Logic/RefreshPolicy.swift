@@ -55,6 +55,14 @@ enum NotificationContent {
 
     static func make(for items: [WaitingItem]) -> Payload? {
         guard let first = items.first else { return nil }
+        if items.count == 1, let approval = first.approval {
+            // A Grok bot's approval request: say who asks, then its question (the bot's words).
+            let question = approval.question.isEmpty ? first.headline : approval.question
+            return Payload(identifier: "drover.waiting.\(first.key)", title: "\(first.botName ?? first.name), a Grok bot",
+                           body: truncate("\(ApprovalFormat.heading(kind: approval.kind)): \(question)"),
+                           link: DeepLink.session(id: first.id, host: first.host).url,
+                           threadIdentifier: thread)
+        }
         if items.count == 1 {
             let headline = first.headline.isEmpty ? "Waiting on you" : first.headline
             return Payload(identifier: "drover.waiting.\(first.key)", title: first.name,

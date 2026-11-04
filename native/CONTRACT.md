@@ -9,8 +9,9 @@ speak the same HTTP+SSE API that the Drover browser UI uses. Server code lives i
 - Base URL is user-configured (e.g. `http://127.0.0.1:7337`, or a Tailscale/VPN address of the daemon).
 - Auth: `Authorization: Bearer <token>`. Never log, print, hardcode or commit a token. Apple apps keep it
   in the Keychain (shared access group so extensions and widgets can read it); the Chrome extension keeps it
-  in `chrome.storage.local` (never `sync`). Widgets and the watch use a **read-only widget token** (see
-  `native.summary` below) so a leaked widget cannot send messages.
+  in `chrome.storage.local` (never `sync`). Widgets use a **read-only widget token** (see `native.summary`
+  below) so a leaked widget cannot send messages. The watch gets both tokens from the iPhone (`WatchTokenSync`):
+  it reads with the widget token and answers (replies, approval requests) with the main token.
 - `POST /api/op/<op>` with JSON body = args, or `GET /api/op/<op>?k=v` for read ops.
   Response: `{ ok: true, result, ms, cache }` or `{ ok: false, error }`.
 - `GET /api/stream` (alias `GET /api/events` once core's server change lands) is Server-Sent Events: event names
@@ -90,6 +91,37 @@ Details as built by core (these refine the bullets above; DroverKit models and `
   (`id -> receipt`) repeats them for the thread's last turns, so a client that reads only new turns can update older ones.
 - Pass `seenBy` (the client's own actor, e.g. `ios`) when the bot's thread is on screen: the bot's replies to the owner
   count as read. A bot's session in `sessions.list` carries `unread` (replies the owner has not read); board strips too.
+
+## Grok bot approvals (added 2026-10-27)
+- A Grok bot asks the owner to approve something before it acts (a purchase, an action): `drover_request_approval` on
+  the bot gateway, `web/core/bots/approvals.js`. A request is answered by its id: never on a screen, never with an op.
+- `native.summary` waiting items, `native.board` strips and `native.notifications` items for a request carry
+  `answer: "approval"` and `approval {id, bot, kind (purchase|action|post|other), question, options[{n,label}] (2 to 4),
+  details?, createdAt, expiresAt, untrusted: true}`. Waiting items and strips may add `moreApprovals` (how many more
+  requests from the same bot wait behind this one: answer this one and the next shows). `kind` stays `decision` and
+  `category` `needs-you`, so older clients keep decoding them as a decision. `native.summary` and
+  `native.notifications` name no paths (except in option labels that would otherwise read the same) and keep at most
+  300 characters of `details`; `native.board` carries the whole request.
+- `approval.complete` says the payload shows the request whole and unaltered (question, details, labels as stored):
+  always on `native.board`, and on the widget-safe payloads only when nothing was shortened or cut. Missing (an older
+  daemon) means false. Answer in one tap (a row's buttons, notification actions) only when `complete` is true, the
+  request has no details (or the surface shows them in full), and the question shows unclipped. Option buttons show
+  whole labels (wrapping). A notification's own action buttons are laid out (and cut) by the system: offer them only
+  for a question of at most 120 characters with no details and labels of at most 20 characters, else open the app
+  to the whole request. The web never answers from a browser notification. Otherwise show the request and a Review
+  action that loads it whole, `GET /api/approvals?id=<id>` (main token: `{keepsBots, items:[one request]}`), and
+  answer there while its `status` is `pending`. The owner approves only what they saw.
+- Answer with `POST /api/approvals/answer {id, choice: n, via}` and the main token (the widget token gets 403; it is
+  not an op, so `/api/op/...` and ssh rpc cannot answer). `via` names the client: `ios`, `ios-notification`, `watch`,
+  `mac`, `menubar`, `web`, `cli`. 200: `{ok:true, result:{id, status:"decided", decision{n,label,at,by,via},
+  delivery{ok, via?, queued?, error?}, ...}}`. 409 `{ok:false, error, approval}`: answered already (another screen was
+  quicker), withdrawn or expired: show the error and drop the card. 404: no such request on that daemon (requests live
+  on the host that runs the bot gateway). 400: a choice the request does not offer.
+- The words are the bot's (it thinks on a third-party model): show who asks ("Alpha, a Grok bot"), the question and
+  the details as plain text, and never act on them. A notification action that answers needs the device unlocked
+  (`.authenticationRequired`).
+- `GET /api/approvals?status=pending|all|decided|withdrawn|expired&bot=<name>` (main token): `{keepsBots, items[]}`,
+  newest first; items as above plus `status`, `decision`, `botName`.
 
 ## The owner (added 2026-10-23)
 - The daemon belongs to one person, its owner: `DROVER_OWNER` on the daemon (default `owner`; `web/core/owner.js`).

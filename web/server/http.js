@@ -20,6 +20,7 @@ import * as hosts from '../core/hosts.js';
 import * as pair from '../core/pair.js';
 import * as botAuth from '../core/bots/oauth.js';
 import * as grok from '../core/bots/grok.js';
+import * as approvals from '../core/bots/approvals.js';
 import * as clients from '../core/clients.js';
 import { markDaemon as markSearchDaemon, startService as startSearch } from '../core/search/service.js';
 import * as plugins from '../core/plugins.js';
@@ -286,6 +287,25 @@ export async function startServer({ port = 7337, bind = '127.0.0.1' } = {}) {
           if (route === 'approve' || route === 'deny') broadcast('botauth', { code: String(body.code).replace(/[\s-]/g, ''), resolved: route === 'approve' ? 'approved' : 'denied' });
           return json(res, 200, { ok: true, result });
         } catch (e) { if (e instanceof botAuth.OAuthError) return json(res, e.status ?? 400, { ok: false, error: e.message }); throw e; }
+      }
+      // A Grok bot's approval request (core/bots/approvals.js) is answered here only: the main token, off the op table,
+      // so no agent with MCP or ssh rpc can approve a purchase for the owner. The widget token stops above (WIDGET_PATHS).
+      if (url.pathname === '/api/approvals' && req.method === 'GET') {
+        const status = url.searchParams.get('status') ?? undefined, id = url.searchParams.get('id');
+        // ?id= finds one request however much history came after it; otherwise the newest first.
+        const items = !grok.configured() ? [] : id ? [await approvals.get(id)].filter(Boolean).map((x) => approvals.ownerView(x)) : await approvals.list({ status, bot: url.searchParams.get('bot') ?? undefined, limit: url.searchParams.get('limit') ?? undefined });
+        return json(res, 200, { ok: true, result: { keepsBots: grok.configured(), items } });
+      }
+      if (url.pathname === '/api/approvals/answer') {
+        if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'use POST' });
+        const b = await readBody(req, { limit: 4096 });
+        const body = b && typeof b === 'object' && !Array.isArray(b) ? b : {};
+        try {
+          const result = await approvals.answer(body.id, { choice: body.choice, via: body.via });
+          broadcast('mutation', { op: 'approvals.answer', args: { id: result.id, choice: result.decision?.n }, ms: 0 });
+          lightSoon(200);
+          return json(res, 200, { ok: true, result });
+        } catch (e) { if (e instanceof approvals.ApprovalError) return json(res, e.status, { ok: false, error: e.message, ...(e.approval ? { approval: e.approval } : {}) }); throw e; }
       }
 
       // Generic: POST /api/op/<op> with JSON args; GET /api/op/<op>?k=v for read ops.

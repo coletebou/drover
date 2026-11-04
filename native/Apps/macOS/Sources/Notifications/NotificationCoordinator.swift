@@ -135,6 +135,7 @@ final class NotificationCoordinator: NSObject, UNUserNotificationCenterDelegate 
         let c = NotificationContentBuilder.content(for: item)
         let content = UNMutableNotificationContent()
         content.title = c.title
+        if let subtitle = c.subtitle { content.subtitle = subtitle }
         content.body = c.body
         content.threadIdentifier = c.threadId
         content.categoryIdentifier = c.categoryId
@@ -155,9 +156,11 @@ final class NotificationCoordinator: NSObject, UNUserNotificationCenterDelegate 
     /// The dialog's category must exist before its notification is shown, or the banner has no actions.
     private func register(_ c: NotificationContentBuilder.Content) async {
         guard dialogCategories[c.categoryId] == nil else { return }
+        // An approval request's options answer it by id (the Mac unlocked), with Open and never Reply.
+        let required: UNNotificationActionOptions = c.answersApproval ? [.authenticationRequired] : []
         let actions: [UNNotificationAction] = c.actions.map { a in
-            UNNotificationAction(identifier: a.id, title: a.title, options: a.destructive ? [.destructive] : [])
-        } + [Self.reply, Self.open]
+            UNNotificationAction(identifier: a.id, title: a.title, options: a.destructive ? required.union(.destructive) : required)
+        } + (c.answersApproval ? [Self.open] : [Self.reply, Self.open])
         dialogCategories[c.categoryId] = UNNotificationCategory(identifier: c.categoryId, actions: actions, intentIdentifiers: [], options: [])
         dialogOrder.append(c.categoryId)
         while dialogOrder.count > 24 { dialogCategories[dialogOrder.removeFirst()] = nil }
@@ -221,6 +224,25 @@ final class NotificationCoordinator: NSObject, UNUserNotificationCenterDelegate 
         model.scheduleRefresh(after: 0.5)
     }
 
+    /// An approval action: the request answered by its id with that option (via mac); a refusal, or an answer the bot
+    /// was not reached with, says so.
+    private func approve(choice: Int, info: NotificationAction, requestId: String) async {
+        guard let model, let id = info.approvalId, !id.isEmpty else { return }
+        let result: Result<ApprovalAnswerResult, Error>
+        do { result = .success(try await model.service.answerApproval(id: id, choice: choice)) }
+        catch { result = .failure(error) }
+        if case .success(let r) = result { model.settle(id, r) }
+        let o = ApprovalFormat.outcome(result, botName: info.approvalBot)
+        PerfLog.note("notification approval \(choice): \(o.text)")
+        if o.isError {
+            let decided = if case .success(.decided) = result { true } else { false }
+            postLocal(title: decided ? "Answered, not delivered" : "Not answered", body: o.text)
+        } else {
+            UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [requestId])
+        }
+        model.scheduleRefresh(after: 0.5)
+    }
+
     // MARK: UNUserNotificationCenterDelegate
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
@@ -244,6 +266,8 @@ final class NotificationCoordinator: NSObject, UNUserNotificationCenterDelegate 
             Task { await self.reply(sessionId: sessionId, host: info.host, text: text) }
         case .answer(let key):
             Task { await self.answer(key: key, info: info, requestId: requestId) }
+        case .approve(let choice):
+            Task { await self.approve(choice: choice, info: info, requestId: requestId) }
         case .open:
             WindowRouter.shared.openSession(id: info.sessionId, host: info.host)
         case .ignore:
@@ -256,6 +280,8 @@ final class NotificationCoordinator: NSObject, UNUserNotificationCenterDelegate 
 enum NotificationResponseRoute: Equatable {
     case reply(sessionId: String, text: String)
     case answer(key: String)
+    /// An option of a Grok bot's approval request (answered by the request's id).
+    case approve(choice: Int)
     /// A tap, Open, or anything unknown: the session in the main window.
     case open
     /// Reply or answer on an alert from another server than the one connected now.
@@ -264,8 +290,10 @@ enum NotificationResponseRoute: Equatable {
 
     static func decide(action: String, info: NotificationAction, text: String?, activeServer: String?) -> NotificationResponseRoute {
         let key = NotificationContentBuilder.key(fromAction: action)
-        let acts = action == "reply" || key != nil
+        let choice = NotificationContentBuilder.approvalChoice(fromAction: action)
+        let acts = action == "reply" || key != nil || choice != nil
         if acts, let server = info.server, server != activeServer { return .refuse }
+        if let choice { return info.approvalId?.isEmpty == false ? .approve(choice: choice) : .open }
         if action == "reply" {
             guard let id = info.sessionId, let text, !text.isEmpty else { return .ignore }
             return .reply(sessionId: id, text: text)
@@ -282,9 +310,14 @@ struct NotificationAction: Sendable, Equatable {
     var target: String?
     var hash: String?
     var server: String?
+    /// The approval request an approval action answers, and its bot's name.
+    var approvalId: String?
+    var approvalBot: String?
 
-    init(sessionId: String? = nil, host: String? = nil, target: String? = nil, hash: String? = nil, server: String? = nil) {
+    init(sessionId: String? = nil, host: String? = nil, target: String? = nil, hash: String? = nil, server: String? = nil,
+         approvalId: String? = nil, approvalBot: String? = nil) {
         self.sessionId = sessionId; self.host = host; self.target = target; self.hash = hash; self.server = server
+        self.approvalId = approvalId; self.approvalBot = approvalBot
     }
 
     init(_ info: [AnyHashable: Any]) {
@@ -293,5 +326,7 @@ struct NotificationAction: Sendable, Equatable {
         target = info["target"] as? String
         hash = info["hash"] as? String
         server = info["server"] as? String
+        approvalId = info["approvalId"] as? String
+        approvalBot = info["approvalBot"] as? String
     }
 }

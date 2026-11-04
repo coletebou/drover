@@ -266,6 +266,8 @@ export function walEvent(ev) {
     case 'message': text = pick(ev.text); title = `message to ${ev.to?.name ?? ev.to?.id ?? 'a session'}${ev.to?.host ? ' on ' + ev.to.host : ''}`; sessionId = ev.to?.id ?? null; break;
     case 'chat': text = pick(ev.text); title = `chat from ${ev.from ?? 'agent'}`; sessionId = ev.to?.id ?? null; break;
     case 'handoff': text = pick(ev.text, ev.summary, ev.path); title = 'handoff'; break;
+    // A Grok bot's approval request (its words carry their untrusted mark) and the owner's answer, in the bot's thread.
+    case 'approval': text = pick(ev.question, ev.details, ev.decision?.label ? `answer: ${ev.decision.label}` : '', ev.state === 'withdrawn' ? 'withdrawn' : ''); title = `approval ${ev.state ?? ''} ${ev.aid ?? ''}`; sessionId = typeof ev.bot === 'string' ? ev.bot : null; break;
     case 'survey-item': {
       const it = ev.item ?? {};
       text = pick(it.title, it.summary, it.next_step ? `next: ${it.next_step}` : '', it.evidence, [...(it.activities ?? []), ...(it.mrs ?? [])].join(' '));

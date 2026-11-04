@@ -1,7 +1,7 @@
 // Events: the tail of the truth file (front host), newest first, as a timeline
 // grouped by day. Chips filter by type; a row expands to the raw JSON.
 import { h, clear, chip, seg, toDate, matchQ, empty, loading, debounce, btn, plural, shortPath } from '../dom.js';
-import { receiptText } from '../chat-model.js';
+import { receiptText, approvalText } from '../chat-model.js';
 
 const LOCAL = { host: 'local' };
 
@@ -14,6 +14,7 @@ export function summarizeEvent(e) {
     // An agent's own report (a Grok bot through the bot gateway): its name, state and what it says it is doing.
     case 'status': s = `${e.name ?? e.agent} ${e.state}${e.summary ? `: ${e.summary}` : ''}`; break;
     case 'receipt': s = receiptText(e); break;
+    case 'approval': s = approvalText(e); break;
     case 'pin': case 'unpin': s = String(e.target ?? ''); break;
     case 'message': case 'chat': {
       const to = e.to ?? {};

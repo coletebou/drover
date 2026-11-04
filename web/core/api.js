@@ -21,6 +21,7 @@ import * as survey from './survey.js';
 import { ops as credentialOps } from './credpool.js';
 import * as openclaw from './openclaw.js';
 import * as grok from './bots/grok.js';
+import * as approvals from './bots/approvals.js';
 import * as botAuth from './bots/oauth.js';
 import * as native from './native.js';
 import { ops as settingsOps } from './settings.js';
@@ -193,15 +194,18 @@ export function slimSessions(list = []) {
 }
 
 /**
- * Receipts were written (marked > 0): a bot's session now says less unread, so the cached session lists and boards go,
- * and in the daemon this host's board data is read again behind its cached copy (the other hosts' stay: dropping them
- * would make the next board wait on every ssh). Returns marked.
+ * A bot's session changed outside an op (a receipt was written, an approval was asked or answered): the cached session
+ * lists and boards go, and in the daemon this host's board data is read again behind its cached copy (the other hosts'
+ * stay: dropping them would make the next board wait on every ssh).
  */
+function botsChanged() {
+  cache.invalidate('sessions.', 'native.');
+  if (notifier.daemon) hostSummary('', { fresh: true }).catch(() => {});   // only the daemon keeps a board
+}
+approvals._deps.changed = botsChanged;
+/** Receipts were written (marked > 0): the bot's session now says less unread. Returns marked. */
 function afterSeen(marked) {
-  if (marked > 0) {
-    cache.invalidate('sessions.', 'native.');
-    if (notifier.daemon) hostSummary('', { fresh: true }).catch(() => {});   // only the daemon keeps a board
-  }
+  if (marked > 0) botsChanged();
   return marked;
 }
 
@@ -401,6 +405,9 @@ export const local = {
     // Receipts are Drover's own record of who read what (core/bots/grok.js writes them as the reader): an append that
     // names its own actor could otherwise claim the owner read a bot's reply.
     if (event?.type === 'receipt') throw new Error('refused: receipt events are written by Drover itself (sessions.seen, or reading the thread)');
+    // Approvals the same: a request is a bot's (drover_request_approval), a decision the owner's (a main-token route), and
+    // a message that carries one is how the decision reaches the bot. An agent's append must pass for neither.
+    if (event && typeof event === 'object' && (event.type === 'approval' || Object.hasOwn(event, 'approval'))) throw new Error('refused: approval events are written by Drover itself (a bot asks with drover_request_approval; the owner answers in Drover)');
     // Who, when and where are the op's to stamp: a body that named them could pass as another actor (the owner, a bot)
     // or sort itself before an earlier event.
     const { id: _id, ts: _ts, host: _host, actor: _actor, ...body } = event && typeof event === 'object' ? event : {};
@@ -466,9 +473,15 @@ export const local = {
     const [grants, routines, bots] = await Promise.all([botAuth.grantsList(), grok.routines(), keepsBots ? grok.listSessions({ host }) : []]);
     return {
       host, keepsBots, gateway: base ? { publicUrl: base, mcp: `${base}/mcp`, port: botAuth.gatewayPort() } : null, ...(configError ? { configError } : {}),
+      // pendingApprovals: bot connections waiting for the owner's OK (core/bots/oauth.js); a bot's approval requests are approvals.
       pendingApprovals: botAuth.pendingList().length, grants, routines,
-      bots: bots.map((b) => ({ id: b.id, name: b.name, state: b.state, summary: b.summary, task: b.task, status: b.status, lastSeenAt: b.lastSeenAt, routine: b.routine, live: b.live, ...(b.stale ? { stale: b.stale } : {}) })),
+      bots: bots.map((b) => ({ id: b.id, name: b.name, state: b.state, summary: b.summary, task: b.task, status: b.status, lastSeenAt: b.lastSeenAt, routine: b.routine, live: b.live, ...(b.stale ? { stale: b.stale } : {}), ...(b.approvals?.length ? { approvals: b.approvals.length } : {}) })),
     };
+  },
+  /** Grok bots' approval requests on the host that keeps the bots, newest first (answering is a main-token route, never an op). */
+  async 'approvals.list'({ bot, status, limit } = {}) {
+    if (!grok.configured()) return { keepsBots: false, host: hosts.localShortName(), items: [] };
+    return { keepsBots: true, host: hosts.localShortName(), items: await approvals.list({ bot, status, limit }) };
   },
 
   // ---- terminals (ttyd)

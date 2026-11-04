@@ -46,21 +46,43 @@ struct BoardWaitingRow: View {
     @ScaledMetric(relativeTo: .body) private var minHeight: CGFloat = 44
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(item.title).font(Theme.title(.headline)).foregroundStyle(Theme.textPrimary)
-            if let h = item.headline, !h.isEmpty {
-                Text(h).font(.subheadline).foregroundStyle(Theme.textPrimary).lineLimit(typeSize.isAccessibilitySize ? nil : 2)
+        if let approval = item.approval {
+            // A Grok bot's approval request: its card answers it here, one button per option (no reply: a message
+            // would go to the bot instead of answering).
+            VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(item.title).font(Theme.title(.headline)).foregroundStyle(Theme.textPrimary)
+                    badges
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(spokenHeader)
+                // One view per request: the bot's next request starts afresh, and a press on the last one's buttons ends with it.
+                ApprovalCard(approval: approval, botName: item.botName, host: item.host, more: item.moreApprovals ?? 0)
+                    .id(approval.id)
             }
-            BoardAdaptiveStack(spacing: 8) {
-                StateBadge(state: .waiting, text: BoardFormat.kindLabel(item.kind))
-                MonoText(text: item.ref.displayHost)
-                if let e = item.engine { Text(e.label).font(.caption).foregroundStyle(Theme.textSecondary) }
-                if let since = item.since?.date { Text(since.relativeLabel).font(.caption).foregroundStyle(Theme.textSecondary) }
+            .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .leading)
+            .accessibilityElement(children: .contain)
+        } else {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(item.title).font(Theme.title(.headline)).foregroundStyle(Theme.textPrimary)
+                if let h = item.headline, !h.isEmpty {
+                    Text(h).font(.subheadline).foregroundStyle(Theme.textPrimary).lineLimit(typeSize.isAccessibilitySize ? nil : 2)
+                }
+                badges
             }
+            .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .leading)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(spoken)
         }
-        .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .leading)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(spoken)
+    }
+
+    private var badges: some View {
+        BoardAdaptiveStack(spacing: 8) {
+            StateBadge(state: .waiting, text: BoardFormat.waitingLabel(item))
+            MonoText(text: item.ref.displayHost)
+            if let e = item.engine { Text(e.label).font(.caption).foregroundStyle(Theme.textSecondary) }
+            if let since = item.since?.date { Text(since.relativeLabel).font(.caption).foregroundStyle(Theme.textSecondary) }
+        }
     }
 
     private var spoken: String {
@@ -68,6 +90,12 @@ struct BoardWaitingRow: View {
         parts[1] = BoardFormat.kindLabel(item.kind).lowercased() + (item.headline.map { ": \($0)" } ?? "")
         parts.append("on \(item.ref.displayHost)")
         if let e = item.engine { parts.append(e.label) }
+        if let s = item.since?.date { parts.append(s.relativeLabel) }
+        return parts.joined(separator: ", ")
+    }
+
+    private var spokenHeader: String {
+        var parts = ["\(item.title), asks for your approval", "on \(item.ref.displayHost)"]
         if let s = item.since?.date { parts.append(s.relativeLabel) }
         return parts.joined(separator: ", ")
     }

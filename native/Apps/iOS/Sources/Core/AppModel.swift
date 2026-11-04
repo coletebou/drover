@@ -33,6 +33,15 @@ final class AppModel {
     private(set) var isRefreshing = false
     private(set) var connection: Connection = .unconfigured
     private(set) var lastRefresh: Date?
+    /// Approval requests being answered (id -> the option pressed), so their buttons wait for the daemon.
+    private(set) var answeringApprovals: [String: Int] = [:]
+    /// What the last approval answer came to, shown above the waiting list until dismissed or replaced.
+    private(set) var approvalNotice: ApprovalNotice?
+    /// An approval request to review at once (its notification was tapped): the bot's detail loads it in full.
+    var reviewApprovalID: String?
+    /// Requests answered here or closed elsewhere (id -> what the card says instead of its buttons), until the board
+    /// drops them: the daemon's board can lag an answer by seconds, and must not invite a second one meanwhile.
+    private(set) var settledApprovals: [String: String] = [:]
 
     // Configuration
     private(set) var api: any DroverAPI
@@ -157,6 +166,11 @@ final class AppModel {
             let s = try await api.summary()
             summary = s
             summaryError = nil
+            if !settledApprovals.isEmpty {
+                // Settled requests the board no longer lists are done with.
+                let listed = Set(s.waiting.compactMap { $0.approval?.id })
+                settledApprovals = settledApprovals.filter { listed.contains($0.key) }
+            }
             if !isMock { SummaryCache.store(s) }
             connection = hasMainToken ? .online : .readOnly
         } catch {
@@ -198,6 +212,42 @@ final class AppModel {
     func session(for ref: SessionRef) -> SessionInfo? {
         sessions.first { $0.id == ref.id && $0.ref.displayHost == ref.displayHost }
             ?? sessions.first { $0.id == ref.id }
+    }
+
+    /// The waiting item of a Grok bot with an approval request, when the summary lists one for `ref`.
+    func approvalItem(for ref: SessionRef) -> NativeSummary.WaitingItem? {
+        summary?.waiting.first { $0.approval != nil && $0.id == ref.id && $0.ref.displayHost == ref.displayHost }
+    }
+
+    // MARK: approvals
+
+    /// Answers a Grok bot's approval request with `option` (`via` ios), says what came of it, and refreshes the board:
+    /// the card goes, or the bot's next request takes its place. One press per request at a time.
+    func answerApproval(_ approval: ApprovalRequest, option: ApprovalRequest.Option, botName: String?) async {
+        guard answeringApprovals[approval.id] == nil else { return }
+        answeringApprovals[approval.id] = option.n
+        let result: Result<ApprovalAnswerResult, Error>
+        do { result = .success(try await api.answerApproval(id: approval.id, choice: option.n, via: DroverIDs.actor)) }
+        catch { result = .failure(error) }
+        answeringApprovals[approval.id] = nil
+        let o = ApprovalFormat.outcome(result, botName: botName)
+        showApprovalNotice(ApprovalNotice(text: o.text, isError: o.isError))
+        if case .success(let r) = result { settledApprovals[approval.id] = ApprovalFormat.settledText(r) }
+        await refreshSummary()
+    }
+
+    func dismissApprovalNotice() { approvalNotice = nil }
+
+    /// The full request behind a card whose words may be shortened (`GET /api/approvals?id=`, main token). nil: this
+    /// daemon keeps no such request any more.
+    func reviewApproval(id: String) async throws -> ApprovalRequest? { try await api.approval(id: id) }
+
+    private func showApprovalNotice(_ notice: ApprovalNotice) {
+        approvalNotice = notice
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(12))
+            if self?.approvalNotice?.id == notice.id { self?.approvalNotice = nil }
+        }
     }
 
     /// The board state of a session, from the summary when it is listed there.

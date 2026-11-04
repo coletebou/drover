@@ -213,6 +213,8 @@ select { padding-right: 24px; }
 .strip .age { grid-column: 2; grid-row: 1; font-family: var(--mono); font-size: var(--fs-0); color: var(--ink-3); white-space: nowrap; }
 .strip .tail { grid-column: 1 / -1; margin-top: 4px; font-family: var(--mono); font-size: var(--fs-0); line-height: 1.45; color: var(--ink-2); white-space: pre-wrap; word-break: break-word; max-height: 4.35em; overflow: hidden; }   /* three whole lines */
 .strip.amber .tail { color: var(--ink); }
+/* A bot's approval request: the question is what the buttons answer, so all of it shows (at most 300 characters). */
+.strip .tail.whole, .pip-item .tail.whole { max-height: none; overflow: visible; }
 .board-foot { margin-top: 20px; display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
 /* The lanes follow the width they get (the drawer and the manager dock take some), not the window's. */
 @container lanes (max-width: 860px) { .board { grid-template-columns: 1fr 1fr; } .board .lane:last-child { grid-column: 1 / -1; } .board-foot { grid-template-columns: 1fr; } }
@@ -579,6 +581,11 @@ input[type=checkbox] { accent-color: var(--ink-2); width: 16px; height: 16px; }
 .ac-reason { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: var(--fs-1); color: var(--brick); }
 .ac-note { font-size: var(--fs-1); color: var(--ink-2); }
 .answer-card.stale .ac-opts, .answer-card.stale .ac-keys { opacity: .5; }
+/* A Grok bot's approval request: its details as it wrote them (line breaks kept), its options side by side, every
+   label whole (on the strip too: a label cut short could read like another). */
+.strip-keys.approval .btn, .pip-acts .btn, .answer-card.approval .ac-opt { white-space: normal; overflow-wrap: anywhere; text-align: left; height: auto; min-height: 24px; padding-block: 3px; line-height: 1.3; }
+.answer-card.approval .ac-details { font-size: var(--fs-1); color: var(--ink-2); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 12em; overflow: auto; }
+.answer-card.approval .ac-opts { grid-template-columns: repeat(auto-fit, minmax(9ch, 1fr)); }
 .keys.dialog { padding: 2px 4px; border: 1px solid var(--amber); border-radius: var(--r); background: var(--amber-bg); }
 .keys-label { align-self: center; padding: 0 4px; font-size: var(--fs-0); font-style: italic; color: var(--amber); }
 .keys .btn.selected { border-color: var(--amber); }

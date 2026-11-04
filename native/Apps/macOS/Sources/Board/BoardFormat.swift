@@ -56,8 +56,10 @@ enum BoardFormat {
         return t
     }
 
-    /// Second line of a row: headline, else a recent "finished" note, else the wait kind, else raw status.
+    /// Second line of a row: a bot's approval question (whole: the headline may be cut), else the headline, else a
+    /// recent "finished" note, else the wait kind, else raw status.
     static func summaryLine(_ s: SessionItem) -> String {
+        if s.lane == .waiting, let q = s.approval?.question, !q.isEmpty { return q }
         if let h = s.headline, !h.isEmpty { return h }
         if let f = s.finished?.text, !f.isEmpty { return f }
         return s.waitKind?.label ?? s.status

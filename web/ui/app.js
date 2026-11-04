@@ -108,6 +108,8 @@ const ctx = {
   query: () => qInput.value,
   follow: api.follow,
   callQuiet: (op, args, opts) => api.call(op, args, opts),
+  /** Answer a Grok bot's approval request: a main-token route on the daemon that keeps the bots (ui/api.js). */
+  answerApproval: (id, n, opts = {}) => api.approvalsAnswer(id, n, { ...opts, via: 'web' }),
   /** Stale-while-revalidate: onData fires with the last payload immediately, then with the server's. */
   swr: (op, args, onData, opts) => api.swr(op, args, onData, opts).catch((e) => { if (e.status === 401) { api.setToken(''); showTokenGate('The server rejected the stored token.'); } else toast(`${op}: ${e.message}`, 'error'); throw e; }),
   swrPeek: api.swrPeek,
