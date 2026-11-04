@@ -99,6 +99,18 @@ Drover was called apx-web (CLI `apxw`) until 2026-10-15. Until 2026-11-15:
   `force`). Launches hand tmux an argv, never a shell string; an argument that
   ends in ";" is escaped (`core/tmux.js` tmuxArg), because tmux would otherwise
   read it as the end of the command and run the next argument as a tmux command.
+  A new window is opened at `=session:` (`core/tmux.js` `newWindow`). The `=` names that session exactly, and the
+  empty index is no window in it, so the window takes the next free index. A bare session name is a window first:
+  tmux prefix-matches it against the current session's window names, so a session `work` once hit its window
+  `work-notes` and the launch failed with "index 1 in use". Without `=`, another session can match the name too.
+  `tmux.new` and a tmux `launch.start` return the target as `session:@id` (the window id), not `session:index`.
+  With `renumber-windows` on, dropping a new session's placeholder, or any window closing later, renumbers the
+  rest, and the index the launch had can name another window or none. The id stays this window until it closes.
+  A command that exits with a code it was not expected to (`core/proc.js` `ProcError`), and a spawn failure, redacts
+  argv and stderr before the message reaches an MCP caller, a remote relay, the WAL or a log. A tmux launch passes
+  the agent's credential as `-e NAME=value`, and the message once returned that value in clear. Every `-e` value on
+  that command is replaced, not only the credential. The error keeps the first 4096 characters of stderr and the
+  message the first 500 of those, each cut on a word so a secret is not left in half.
   Window, pane and session lists split `-F` output on `<|>` (`core/tmux.js`
   `SEP`). tmux 3.4 (Ubuntu 24.04) escapes control characters in format output,
   so the old U+001F separator came back as the four characters `\037`, no line
