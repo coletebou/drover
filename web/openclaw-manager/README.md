@@ -148,10 +148,10 @@ cap. `contextPruning.mode: cache-ttl` (30m, hardClear on) trims old tool results
 20000`, `forceFlushTranscriptBytes: 1mb`). Compaction / flush / heartbeat / dreaming stay on Luna.
 
 Efforts (2026-10-21): chats run at `thinkingDefault: max`, the sweep on Luna at the role's
-`heartbeatThinking` (`high`), the `fleet-digest` on GPT-6 Astra (Mantle standard tier) at `max`, and
+`heartbeatThinking` (`high`), the `fleet-digest` on GPT-6.1 Sol (Mantle standard tier) at `max`, and
 compaction at `low`; `drover manager status` shows the sweep's level next to its model. A run lowers a
 level its model row does not list (`compat.supportedReasoningEfforts`) to the highest listed one below
-it, so the row caps every run on that model: the Astra row lists `max` for the digest, Luna's stops at
+it, so the row caps every run on that model: the Sol Standard row lists `max` for the digest, Luna's stops at
 `high`. Mantle itself accepts `max` for both (`/openai/v1/responses`, probed 2026-10-21).
 
 Known gaps recorded in the spec: `openai.gpt-6.1-luna` does not exist on Bedrock (uses
