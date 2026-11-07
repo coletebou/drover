@@ -909,6 +909,49 @@ describe('the asking host\'s side', () => {
       assert.equal((await askEvents('answered')).some((e) => ['tg:pipe', 'tg:spoof', 'tg:forged'].includes(e.providerMessageId)), false, 'no forged answer recorded');
     } finally { askOps._resetRpc(); delete process.env.DROVER_ASK_HUB_KEY; }
   });
+  // The real `drover rpc`, started by a parent of this name (a shell symlinked as sshd or tailscaled), with the hub's
+  // address in SSH_CONNECTION and in DROVER_ASK_HUB_ADDRS: all that round 1's gate read. It imports nothing new, so these
+  // two tests also run on a tree from before the signed relay, and fail there on their own assertions.
+  const rpcUnder = async (parentName, args, extraEnv = {}) => {
+    const { spawn } = await import('node:child_process');
+    const { symlink } = await import('node:fs/promises');
+    const parent = path.join(tmp, 'bin', parentName);
+    await mkdir(path.dirname(parent), { recursive: true });
+    await symlink('/bin/sh', parent).catch(() => {});
+    const drover = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'bin', 'drover');
+    const env = { ...process.env, SSH_CONNECTION: '10.9.8.7 40000 100.64.0.2 22', DROVER_ASK_HUB_ADDRS: '10.9.8.7', ...extraEnv };
+    return new Promise((resolve) => {
+      const c = spawn(parent, ['-c', `"${process.execPath}" "${drover}" rpc; true`], { env, stdio: ['pipe', 'pipe', 'ignore'] });
+      let out = '';
+      c.stdout.on('data', (d) => { out += d; if (out.includes('\n')) { c.stdin.end(); resolve(JSON.parse(out.split('\n')[0])); } });
+      c.on('close', () => resolve({ ok: null, error: 'drover rpc exited without an answer' }));
+      c.stdin.write(JSON.stringify({ id: 1, op: 'ask.deliver', args }) + '\n');
+    });
+  };
+  test('round 1\'s spoof: a forged relay piped into drover rpc by a parent named sshd, from the hub\'s address, is refused and records nothing', async () => {
+    const { generateKeyPairSync } = await import('node:crypto');
+    const r = await dispatch('ask.create', { question: 'Spoofed?', options: ['yes', 'no'], sessionId: SESSION, actor: 'test', channels: ['sms'] });
+    const forged = { askId: r.askId, answers: [{ q: 0, option: 0, text: '' }], source: 'owner:telegram', channel: 'telegram', providerMessageId: 'tg:sshd-spoof', sender: 'tg:1', raw: 'a', hub: 'hub' };
+    // This host trusts a hub key, as every asking host does once the hub key is set; the forger does not hold it.
+    const trusted = `ed25519:${generateKeyPairSync('ed25519').publicKey.export({ format: 'der', type: 'spki' }).toString('base64')}`;
+    const res = await rpcUnder('sshd', forged, { DROVER_ASK_HUB_KEY: trusted });
+    assert.equal(res.ok, false, `the forged relay was served: ${JSON.stringify(res)}`);
+    await settle();
+    assert.equal((await dispatch('ask.get', { askId: r.askId })).status, 'open', 'nothing planted');
+    assert.equal((await askEvents('answered')).some((e) => e.providerMessageId === 'tg:sshd-spoof'), false, 'no forged answer recorded');
+  });
+  test('the hub\'s genuine relay is served whatever ssh server started the rpc: under Tailscale SSH its parent is tailscaled', async () => {
+    // A tree without the signing module has no signature to give: its hub relayed unsigned, so that is the genuine call there.
+    const hubkey = await import('../core/ask/hubkey.js').catch(() => null);
+    const r = await dispatch('ask.create', { question: 'Over Tailscale SSH?', options: ['yes', 'no'], sessionId: SESSION, actor: 'test', channels: ['sms'] });
+    const call = { askId: r.askId, answers: [{ q: 0, option: 1, text: '' }], source: 'owner:telegram', channel: 'telegram', providerMessageId: 'tg:tailscale', sender: 'tg:1', raw: 'b', hub: 'hub' };
+    const res = await rpcUnder('tailscaled', hubkey ? { ...call, sig: await hubkey.signCall('ask.deliver', call) } : call,
+      hubkey ? { DROVER_ASK_HUB_KEY: await hubkey.publicKeyString() } : {});
+    assert.equal(res.ok, true, `the hub's relay was refused: ${JSON.stringify(res)}`);
+    await settle();
+    assert.ok((await askEvents('answered')).some((e) => e.providerMessageId === 'tg:tailscale'), 'the answer is recorded');
+    assert.equal((await dispatch('ask.get', { askId: r.askId })).status, 'answered');
+  });
   test('the hub-only ops are refused through the HTTP API and drover op, served over rpc', async () => {
     const { cliOp } = await import('../core/cli-op.js');
     await assert.rejects(cliOp('ask.deliver', {}), /refused: ask.deliver is the ask hub's own call/);
