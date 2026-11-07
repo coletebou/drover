@@ -41,6 +41,11 @@ export const _deps = {
 };
 
 const sourceFor = (channel) => `${OWNER}:${channel}`;
+// A reply with no words to read: bare media (an MMS photo, a sticker), or the text a phone sends for a reaction
+// (iMessage tapbacks reach SMS and other phones as 'Liked "..."', and as 'Reacted 👍 to "..."' since iOS 18). It is
+// recorded, never answered or acknowledged: a tap on the acknowledgement must not start a conversation.
+const REACTION = /^(?:Liked|Loved|Disliked|Laughed at|Emphasized|Questioned|Reacted .{1,12}? to|Removed an? .{1,20}? from) (?:[“"'].*[”"']|an? (?:image|attachment|video|audio message|sticker))$/su;
+export const wordless = (text) => !String(text ?? '').trim() || REACTION.test(String(text).trim());
 const sameHost = (a, b) => String(a ?? '').toLowerCase() === String(b ?? '').toLowerCase();
 /** Where an ask's answer goes: 'local' for the hub's own, else the alias the hub reached the asking host by. */
 const targetOf = (a) => { const h = a.deliverTo ?? a.origin; return !h || sameHost(h, _deps.hostName()) ? 'local' : h; };
@@ -263,7 +268,8 @@ export class Router {
     const args = { askId: a.askId, code: a.code, answers: ans.answers, source: ans.source, channel: ans.channel, providerMessageId: ans.providerMessageId, sender: ans.sender, raw: ans.raw, followUp, hub: _deps.hostName() };
     try {
       const r = await _deps.call(origin, 'ask.deliver', args, { timeoutMs: 60_000 });
-      await _deps.append({ type: 'ask', phase: 'delivered', askId: a.askId, ok: r?.ok !== false, final: r?.final === true, providerMessageId: ans.providerMessageId, to: { host: origin, sessionId: a.sessionId ?? null, resolvedTo: r?.resolvedTo ?? null }, ...(r?.ok === false ? { error: clip(r.error ?? 'refused', 300) } : {}), kind: followUp ? 'follow-up' : 'answer' });
+      // On the hub's own asks, ask.deliver here already recorded the delivery in this same truth file.
+      if (origin !== 'local') await _deps.append({ type: 'ask', phase: 'delivered', askId: a.askId, ok: r?.ok !== false, final: r?.final === true, providerMessageId: ans.providerMessageId, to: { host: origin, sessionId: a.sessionId ?? null, resolvedTo: r?.resolvedTo ?? null }, ...(r?.ok === false ? { error: clip(r.error ?? 'refused', 300) } : {}), kind: followUp ? 'follow-up' : 'answer' });
       return { ok: r?.ok !== false, final: r?.final === true, error: r?.error ?? null, result: r };
     } catch (e) {
       await _deps.append({ type: 'ask', phase: 'delivered', askId: a.askId, ok: false, final: false, providerMessageId: ans.providerMessageId, to: { host: origin, sessionId: a.sessionId ?? null }, error: clip(e.message, 300), kind: followUp ? 'follow-up' : 'answer' });
@@ -311,6 +317,10 @@ export class Router {
         await _deps.append({ type: 'ask', phase: 'inbound', channel: msg.channel, untrusted: true, sender: msg.sender, reason: msg.reason ?? 'unverified', providerMessageId: msg.providerMessageId ?? null, text: clip(oneLine(msg.text), 200) });
       }
       return { untrusted: true, reason: msg.reason };   // never an answer, never acknowledged
+    }
+    if (!msg.button && wordless(msg.text)) {
+      await _deps.append({ type: 'ask', phase: 'inbound', channel: msg.channel, untrusted: false, sender: msg.sender, reason: 'no words to read (media or a reaction)', providerMessageId: msg.providerMessageId ?? null, text: clip(oneLine(msg.text), 200) });
+      return { ignored: 'no words' };
     }
     const now = _deps.now();
     const candidates = [...st.asks.values()].filter((a) => a.code && (a.status === 'open' || (a.closedAt && now - Date.parse(a.closedAt) < RECENT_MS)));

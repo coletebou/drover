@@ -229,6 +229,22 @@ describe('answers by SMS', () => {
     assert.equal((await dispatch('ask.get', { askId: r.askId })).answer.source, 'owner:sms');
     assert.match(tw.sends.at(-1).Body, new RegExp(`^${r.code} -> a \\(yes\\): sent to asker on hub`));
   });
+  test('a reply with no words (an MMS photo, a reaction) is recorded and never answered or acknowledged', async () => {
+    const r = await ask({ question: 'Words only?', options: ['yes', 'no'], channels: ['sms'] });
+    const before = tw.sends.length;
+    for (const [i, Body] of ['', 'Liked “Drover ask ' + r.code + '”', 'Reacted 👍 to “' + r.code + ' -> a (yes)”', 'Loved an image'].entries()) {
+      await smsReply({ AccountSid: SID, From: OWNER_PHONE, To: FROM, Body, MessageSid: `MMnoise${i}`, NumMedia: Body ? '0' : '1' });
+    }
+    await settle();
+    assert.equal(tw.sends.length, before, 'no acknowledgement');
+    assert.equal((await dispatch('ask.get', { askId: r.askId })).status, 'open');
+    assert.equal((await askEvents('inbound')).filter((e) => /no words/.test(e.reason ?? '')).length, 4);
+    // A real answer after them still lands, and is recorded as delivered once.
+    await smsReply({ AccountSid: SID, From: OWNER_PHONE, To: FROM, Body: 'yes', MessageSid: 'SMwords' });
+    await settle();
+    assert.match(inbox.at(-1), new RegExp(`${r.code} → a \\(yes\\)`));
+    assert.equal((await askEvents('delivered')).filter((e) => e.providerMessageId === 'sms:SMwords').length, 1);
+  });
   test('a bad signature is refused; another phone or another account is untrusted', async () => {
     const r = await ask({ question: 'Close the shop?', options: ['yes', 'no'], channels: ['sms'] });
     assert.equal((await smsReply({ AccountSid: SID, From: OWNER_PHONE, To: FROM, Body: `${r.code} a`, MessageSid: 'SMx' }, { signer: 'not-the-token' })).status, 403);
