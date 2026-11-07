@@ -52,3 +52,30 @@ test('with nothing running under a name, the lookup still finds the entry that e
   assert.equal(claude.running(s), false);
   assert.equal(claude.running({ pid: null, alive: true }), false, 'an entry without a pid does not run, whatever it says');
 });
+
+test('a launch name that only reached the tmux window: the one running session in a window of that name', async () => {
+  const E = '55555555-0000-4000-8000-000000000005', F = '66666666-0000-4000-8000-000000000006';
+  const reg = (sessionId, name, tmux, live = true) => writeFile(path.join(REGISTRY, `${n++}.json`), JSON.stringify({ pid: live ? process.pid : DEAD_PID, sessionId, name, cwd: tmp, status: 'busy', startedAt: Date.now(), tmux }));
+  await reg(E, 'reflect-auto-implement-20261107-aa', 'handoffs:@32.%32');
+  await reg(F, 'other-1f', 'main:3.%9');
+  const windows = async () => [
+    { session: 'handoffs', windowId: '@32', index: 1, name: 'reflect-auto-implement' },
+    { session: 'main', windowId: '@40', index: 3, name: 'by-index' },
+    { session: 'main', windowId: '@41', index: 4, name: 'twice' }, { session: 'main', windowId: '@42', index: 5, name: 'twice' },
+  ];
+  assert.equal((await claude.findSession('reflect-auto-implement', { windows }))?.sessionId, E, 'a registry field with the window id');
+  assert.equal((await claude.findSession('by-index', { windows }))?.sessionId, F, 'a registry field with the window index');
+  assert.equal(await claude.findSession('no-such-window', { windows }), null);
+  assert.equal(await claude.findSession('reflect-auto-implement', { windows: async () => { throw new Error('no tmux server'); } }), null, 'no tmux: not found, no throw');
+  // The session's own name still wins over a window name, and an exact name is not shadowed by a window.
+  assert.equal((await claude.findSession('other-1f', { windows }))?.sessionId, F);
+});
+
+test('a window name shared by two running sessions finds neither: a message must not guess', () => {
+  const live = { pid: process.pid, alive: true };
+  const sessions = [{ ...live, sessionId: 'x', tmux: 'main:@41.%1' }, { ...live, sessionId: 'y', tmux: 'main:@42.%2' }, { pid: DEAD_PID, alive: false, sessionId: 'z', tmux: 'main:@43.%3' }];
+  const windows = [{ session: 'main', windowId: '@41', index: 4, name: 'twice' }, { session: 'main', windowId: '@42', index: 5, name: 'twice' }, { session: 'main', windowId: '@43', index: 6, name: 'ended' }];
+  assert.equal(claude.byWindowName(sessions, 'twice', windows), null);
+  assert.equal(claude.byWindowName(sessions, 'ended', windows), null, 'an ended session is not found by its old window');
+  assert.equal(claude.byWindowName(sessions.slice(0, 1), 'twice', windows).sessionId, 'x');
+});

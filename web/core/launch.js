@@ -225,7 +225,7 @@ export async function launch(req, { actor = 'drover' } = {}) {
     // is the one newWindow sets on the tmux client from env.PATH. The effort is a value from the allowlist in
     // core/effort.js, never text from the request.
     const argv = engine === 'claude'
-      ? claude.interactiveArgv(profile, { model, effort, resume: req.resume, prompt: req.prompt })
+      ? claude.interactiveArgv(profile, { model, effort, resume: req.resume, prompt: req.prompt, ...(req.name ? { name } : {}) })
       : codex.interactiveArgv(profile, { model, effort, prompt: req.prompt, resume: req.resume });
     // Credential and profile env go through tmux -e flags (never an `env K=V` argv prefix, which
     // would leave the token readable in #{pane_start_command}); the event stores only the bare argv.

@@ -174,7 +174,7 @@ export const TOOLS = [
       cwd: { type: 'string', description: 'Working directory for the agent (tilde allowed). Default the home directory.' },
       prompt: { type: 'string', description: 'First prompt to give the agent.' },
       tmuxSession: { type: 'string', description: 'tmux session to open the window in (created if missing). Default: the launch profiles\' tmuxSession.' },
-      name: { type: 'string', description: 'Window name (tmux mode) or label (headless mode).' },
+      name: { type: 'string', description: 'Window name (tmux mode) or label (headless mode). A tmux Claude launch also gives the session this name (claude --name), so drover_send to the name reaches it.' },
       resume: { type: 'string', description: 'Session id (Claude) or thread id (Codex) to resume instead of starting fresh.' },
       trust: { type: 'boolean', description: 'tmux mode: record cwd as trusted in the agent\'s own config first, so it starts at its prompt instead of the first-run trust dialog. Default true.' },
       host: { type: 'string', description: 'ssh alias of another fleet machine, "auto" to let the fleet\'s placement choose one, or omit for this one' },

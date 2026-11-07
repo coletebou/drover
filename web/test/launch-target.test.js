@@ -176,6 +176,7 @@ describe('real tmux, set up as the owner\'s (base-index 1, renumber-windows on)'
     assert.equal(r.credential, 'main');
     const w = await byTarget(r.target);
     assert.deepEqual([w.session, w.name], ['work', 'launched']);
+    assert.ok(r.argv.includes('--name=launched'), 'the session gets the launch name too, not just its window: a message by that name finds it');
     assert.ok(await waitFor(() => existsSync(path.join(outDir, 'cred'))), 'the agent started');
     assert.equal(await readFile(path.join(outDir, 'cred'), 'utf8'), process.env.DROVER_TEST_CRED, 'the agent got its credential through tmux -e');
     const wal = await readFile(process.env.DROVER_EVENTS, 'utf8');
