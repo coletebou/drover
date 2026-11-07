@@ -48,7 +48,7 @@ export function readMessage(m, { env = _deps.env } = {}) {
   const dm = dmHandle(m?.chat_guid);
   const fromMe = m?.is_from_me === true || m?.is_from_me === 1;
   const why = fromMe ? 'sent by this account' : !owner || sender !== owner ? 'not the owner\'s handle' : dm !== owner ? 'not the one-to-one chat with the owner' : null;
-  return { channel: NAME, verified: !why, reason: why, sender: `imsg:${sender || '?'}`, text: typeof m?.text === 'string' ? m.text : '', providerMessageId: `imsg:${m?.guid ?? m?.id ?? ''}`, replyTo: null, button: null, rowid: Number(m?.id) || null, fromMe };
+  return { channel: NAME, verified: !why, reason: why, sender: `imsg:${sender || '?'}`, text: typeof m?.text === 'string' ? m.text : '', providerMessageId: `imsg:${m?.guid ?? m?.id ?? ''}`, replyTo: m?.reply_to_guid ? `imsg:${m.reply_to_guid}` : null, button: null, rowid: Number(m?.id) || null, fromMe };
 }
 
 // ---------------------------------------------------------------- the rpc child

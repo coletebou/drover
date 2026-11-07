@@ -153,7 +153,32 @@ describe('the reply grammar', () => {
   test('a multi-question ask: 1a 2b 3 yes when it is the only open ask or replied to; with its code otherwise', () => {
     assert.deepEqual(one(parseReply('1a 2c 3 yes please', { asks: [b3] })), [['B3', [[0, 0, ''], [1, 2, ''], [2, null, 'yes please']]]]);
     assert.deepEqual(one(parseReply('1a 2c', { asks: [k7, b3], target: 'a3' })), [['B3', [[0, 0, ''], [1, 2, '']]]]);
-    assert.deepEqual(one(parseReply('B3 1b 3 later K7 a', { asks: [k7, b3] })), [['B3', [[0, 1, ''], [2, null, 'later']]], ['K7', [[0, 0, '']]]]);
+    // After the words of an answer start, a code is one of those words: a second ask needs its code first, or after an option.
+    assert.deepEqual(one(parseReply('B3 1b 3 later K7 a', { asks: [k7, b3] })), [['B3', [[0, 1, ''], [2, null, 'later K7 a']]]]);
+    assert.deepEqual(one(parseReply('B3 1b 2c K7 a', { asks: [k7, b3] })), [['B3', [[0, 1, ''], [1, 2, '']]], ['K7', [[0, 0, '']]]]);
+  });
+  test('numbers and codes inside an answer\'s words never pick another ask', () => {
+    const b2 = ask({ askId: 'a4', code: 'B2', questions: [{ question: 'Pick?', options: ['x', 'y'] }] });
+    const c3 = ask({ askId: 'a5', code: 'C3', questions: [{ question: 'Room?', options: [] }] });
+    assert.deepEqual(one(parseReply('K7 wait 2 days', { asks: [k7, b2] })), [['K7', [[0, null, 'wait 2 days']]]]);
+    assert.deepEqual(one(parseReply('M8 move it to room C3', { asks: [m8, c3] })), [['M8', [[0, null, 'move it to room C3']]]]);
+    assert.deepEqual(one(parseReply('M8 2 a week', { asks: [m8, b2] })), [['M8', [[0, null, '2 a week']]]], 'a bare code is no answer yet: 2 is its words');
+    assert.deepEqual(one(parseReply('K7 b 2a', { asks: [k7, b2] })), [['K7', [[0, 1, '']]], ['B2', [[0, 0, '']]]], 'after a chosen option, another ask');
+    assert.deepEqual(one(parseReply('M8 call it 2 a week', { asks: [m8, b2] })), [['M8', [[0, null, 'call it 2 a week']]]]);
+  });
+  test('a reference to an ask that is not open is unclear, or a late follow-up of a just-closed one; never the open ask\'s words', () => {
+    const m8closed = ask({ askId: 'a2', code: 'M8', status: 'answered', closedAt: iso(T0), questions: [{ question: 'Name?', options: ['a1', 'b1'] }] });
+    const late = parseReply('8a', { asks: [k7, m8closed] });
+    assert.deepEqual(one(late), [['M8', [[0, 0, '']]]]); assert.equal(late.answers[0].closed, true);
+    assert.deepEqual(parseReply('K9 b', { asks: [k7] }).ambiguous.why, 'no open ask is K9');
+    assert.deepEqual(parseReply('9a', { asks: [k7] }).ambiguous.why, 'no open ask is 9A');
+    assert.deepEqual(one(parseReply('3', { asks: [m8] })), [['M8', [[0, null, '3']]]], 'a bare number naming no ask is a number');
+  });
+  test('a reply bound to an ask\'s message is that ask\'s, open or closed; one bound to nothing here is unclear', () => {
+    const old = ask({ askId: 'old', code: 'D4', status: 'answered', closedAt: iso(T0 - 7_200_000) });
+    const r = parseReply('b', { asks: [k7, old], target: 'old' });
+    assert.deepEqual(one(r), [['D4', [[0, 1, '']]]]); assert.equal(r.answers[0].closed, true);
+    assert.ok(parseReply('b', { asks: [k7], target: 'gone' }).ambiguous);
   });
   test('a letter past the options is text; a second letter is text', () => {
     assert.deepEqual(one(parseReply('K7 c', { asks: [k7, m8] })), [['K7', [[0, null, 'c']]]]);

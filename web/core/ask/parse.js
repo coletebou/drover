@@ -60,62 +60,75 @@ export function parseReply(text, { asks = [], target = null } = {}) {
   const open = asks.filter((a) => a.status === 'open' && a.code);
   const byCode = new Map(asks.filter((a) => a.code).map((a) => [a.code.toUpperCase(), a]));
   const byNumber = new Map(open.map((a) => [numberOf(a.code), a]));
+  // A number an open ask does not hold may still be a just-closed ask's (a late "8a"): a follow-up there, newest first.
+  const closedByNumber = new Map();
+  for (const a of asks.filter((x) => x.code && x.status !== 'open').sort((x, y) => ((x.closedAt ?? '') < (y.closedAt ?? '') ? 1 : -1))) if (!closedByNumber.has(numberOf(a.code))) closedByNumber.set(numberOf(a.code), a);
+  // A reply tied to an ask's message (Telegram, iMessage) is that ask's, open or not: never another's.
   const targetAsk = target ? asks.find((a) => a.askId === target) ?? null : null;
+  if (target && !targetAsk) { out.ambiguous = { why: 'the message replied to belongs to no ask here', codes: open.map((a) => a.code) }; return out; }
   const implicit = targetAsk ?? (open.length === 1 ? open[0] : null);
 
   const results = new Map();   // askId -> { ask, per: Map q -> {q, option, text: []} }
   const slot = (ask, q) => {
     let r = results.get(ask.askId);
     if (!r) { r = { ask, per: new Map() }; results.set(ask.askId, r); }
-    let s = r.per.get(q);
-    if (!s) { s = { q, option: null, text: [] }; r.per.set(q, s); }
-    return s;
+    let x = r.per.get(q);
+    if (!x) { x = { q, option: null, text: [] }; r.per.set(q, x); }
+    return x;
   };
-  let cur = implicit ? { ask: implicit, q: 0, explicit: false } : null;
+  let cur = implicit ? { ask: implicit, q: 0 } : null;
+  // Where a code or a number may pick another ask: at the start, or right after a chosen option ("K7 b M8 a"). Right
+  // after a bare code only a question of that ask may follow ("B3 1b"). Once an answer's words start, codes and numbers
+  // are those words: "K7 wait 2 days" never answers ask 2, "A1 2 a week" is A1's.
+  let canSwitch = true, canSub = true;
   const loose = [];   // words before any ask is in hand, when none is implied
+  let unknown = null; // a reference to an ask that is not there ("K9 b", "8a" with no ask 8): the reply is unclear
   const pickOption = (c, letterChar) => {
     const q = c.ask.questions[c.q];
     const i = letterChar.toLowerCase().charCodeAt(0) - 97;
     if (!q?.options?.length || i < 0 || i >= q.options.length) return false;
-    const s = slot(c.ask, c.q);
-    if (s.option !== null || s.text.length) return false;
-    s.option = i;
+    const x = slot(c.ask, c.q);
+    if (x.option !== null || x.text.length) return false;
+    x.option = i;
     return true;
+  };
+  /** Take an ask (or a question of the one in hand), with a letter glued on: an option, else the start of the text. */
+  const take = (next, glued) => {
+    cur = next;
+    if (glued && pickOption(cur, glued)) { canSwitch = canSub = true; return; }
+    if (glued) { slot(cur.ask, cur.q).text.push(glued); canSwitch = canSub = false; return; }
+    slot(cur.ask, cur.q);
+    canSwitch = false; canSub = true;
   };
   for (const tok of raw.split(/\s+/)) {
     const clean = tok.replace(TRIM, '');
-    // A code: K7, K7b.
-    let m = /^([a-z])(\d{1,2})([a-z])?$/i.exec(clean);
-    if (m && CODE_RE.test(`${m[1].toUpperCase()}${m[2]}`) && byCode.has(`${m[1].toUpperCase()}${Number(m[2])}`)) {
-      cur = { ask: byCode.get(`${m[1].toUpperCase()}${Number(m[2])}`), q: 0, explicit: true };
-      if (m[3] && !pickOption(cur, m[3])) slot(cur.ask, cur.q).text.push(m[3]);
-      else if (!m[3]) slot(cur.ask, cur.q);
-      continue;
-    }
-    // A number: a sub-question of the ask in hand, else an open ask's number.
-    m = /^(\d{1,2})([a-z])?$/i.exec(clean);
-    if (m) {
-      const n = Number(m[1]);
-      const inHand = cur?.ask;
-      if (inHand && inHand.questions.length > 1 && n >= 1 && n <= inHand.questions.length) {
-        cur = { ask: inHand, q: n - 1, explicit: cur.explicit };
-        if (m[2] && !pickOption(cur, m[2])) slot(cur.ask, cur.q).text.push(m[2]);
-        else if (!m[2]) slot(cur.ask, cur.q);
-        continue;
+    if ((canSwitch || canSub) && !unknown) {
+      // A code: K7, K7b.
+      let m = /^([a-z])(\d{1,2})([a-z])?$/i.exec(clean);
+      if (canSwitch && m && CODE_RE.test(`${m[1].toUpperCase()}${Number(m[2])}`)) {
+        const a = byCode.get(`${m[1].toUpperCase()}${Number(m[2])}`);
+        if (a) { take({ ask: a, q: 0 }, m[3]); continue; }
+        unknown = clean; continue;
       }
-      if (byNumber.has(n) && (!inHand || byNumber.get(n) !== inHand || !m[2] || inHand.questions.length === 1)) {
-        cur = { ask: byNumber.get(n), q: 0, explicit: true };
-        if (m[2] && !pickOption(cur, m[2])) slot(cur.ask, cur.q).text.push(m[2]);
-        else if (!m[2]) slot(cur.ask, cur.q);
-        continue;
+      // A number: a question of a multi-question ask in hand, else an open ask's number, else a just-closed one's.
+      m = /^(\d{1,2})([a-z])?$/i.exec(clean);
+      if (m) {
+        const n = Number(m[1]);
+        const inHand = cur?.ask;
+        if (canSub && inHand && inHand.questions.length > 1 && n >= 1 && n <= inHand.questions.length) { take({ ask: inHand, q: n - 1 }, m[2]); continue; }
+        const a = canSwitch ? byNumber.get(n) ?? (m[2] ? closedByNumber.get(n) : null) : null;
+        if (a) { take({ ask: a, q: 0 }, m[2]); continue; }
+        if (canSwitch && m[2]) { unknown = clean; continue; }
+        // A bare number that names no ask is a number answering the ask in hand ("how many days?" "3").
       }
     }
     // An option letter for the question in hand.
-    if (cur && /^[a-z]$/i.test(clean) && pickOption(cur, clean)) continue;
-    // Anything else is text.
-    if (cur) slot(cur.ask, cur.q).text.push(tok);
+    if (cur && /^[a-z]$/i.test(clean) && pickOption(cur, clean)) { canSwitch = canSub = true; continue; }
+    // Anything else is the answer's words.
+    if (cur) { slot(cur.ask, cur.q).text.push(tok); canSwitch = canSub = false; }
     else loose.push(tok);
   }
+  if (unknown) { out.ambiguous = { why: `no open ask is ${unknown.toUpperCase()}`, codes: open.map((a) => a.code) }; return out; }
   if (loose.length) {
     if (!open.length) { out.unmatched = true; return out; }
     out.ambiguous = { why: `${open.length} asks are open; say which one`, codes: open.map((a) => a.code) };

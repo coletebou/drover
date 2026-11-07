@@ -339,9 +339,12 @@ export class Router {
       await this.ack(msg.channel, line, { button: msg.button });
       return { answered: [a.code] };
     }
+    // A reply to one of our messages is bound to the asks it carried, whatever their age (a reply to an acknowledgement
+    // or a notice carries none: then it is read like any other message).
     const tied = msg.replyTo ? sentWith(msg.replyTo) : null;
-    const target = tied && (tied.askIds ?? [tied.askId]).length === 1 ? (tied.askIds ?? [tied.askId])[0] : null;
-    const scope = tied && !target ? candidates.filter((a) => (tied.askIds ?? []).includes(a.askId)) : candidates;
+    const tiedAsks = (tied?.askIds ?? (tied?.askId ? [tied.askId] : [])).map((id) => st.asks.get(id)).filter(Boolean);
+    const target = tiedAsks.length === 1 ? tiedAsks[0].askId : null;
+    const scope = tiedAsks.length > 1 ? tiedAsks : target ? [...candidates.filter((a) => a.askId !== target), tiedAsks[0]] : candidates;
     const r = parseReply(msg.text, { asks: scope, target });
     if (r.command) return this.#command(r.command, msg, st);
     if (r.ambiguous) {
