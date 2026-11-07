@@ -67,7 +67,7 @@ describe('iMessage', () => {
     const send = (await lines(process.env.FAKE_IMSG_LOG)).filter((l) => l.method === 'send').at(-1);
     assert.equal(send.params.to, OWNER); assert.equal(send.params.transport, 'applescript'); assert.equal(send.params.service, 'imessage');
     assert.match(send.params.text, new RegExp(`^Drover ask ${r.code} · asker on mini\\nOrder the samples\\?\\na\\) yes {2}b\\) no`));
-    // Not the owner: this account's own message, a group chat, another sender. Then the owner, in the one-to-one chat.
+    // Not the owner's one-to-one chat: this account's own message, a group chat, another person. Then the owner.
     await incoming(msg({ is_from_me: true, sender: 'drover@example.com', text: `${r.code} a` }));
     await incoming(msg({ chat_guid: 'iMessage;+;chat99', text: `${r.code} a` }));
     await incoming(msg({ sender: '+15005550188', chat_guid: 'iMessage;-;+15005550188', text: `${r.code} a` }));
@@ -78,8 +78,9 @@ describe('iMessage', () => {
     assert.match(inbox[0], new RegExp(`\\[Owner via imessage, verified\\] ${r.code} → b \\(no\\)`));
     const got = await dispatch('ask.get', { askId: r.askId });
     assert.equal(got.answer.source, 'owner:imessage'); assert.equal(got.answer.sender, `imsg:${OWNER}`);
-    const untrusted = (await lines(process.env.DROVER_EVENTS)).filter((e) => e.type === 'ask' && e.phase === 'inbound' && e.untrusted).map((e) => e.reason);
-    assert.deepEqual(untrusted, ['not the one-to-one chat with the owner', 'not the owner\'s handle'], 'the account\'s own message is not even recorded');
+    // Other chats are the account's own business: not one of them reached the truth file, untrusted or not.
+    const inbound = (await lines(process.env.DROVER_EVENTS)).filter((e) => e.type === 'ask' && e.phase === 'inbound');
+    assert.deepEqual(inbound, []);
     // The acknowledgement goes back on iMessage.
     assert.ok(await until(async () => (await lines(process.env.FAKE_IMSG_LOG)).some((l) => l.method === 'send' && /→ b \(no\): sent to asker on mini/.test(l.params.text))));
   });
@@ -101,6 +102,20 @@ describe('iMessage', () => {
     process.env.FAKE_IMSG_ACCOUNT = '';
     assert.match((await imessage.health()).error, /signed out of iMessage/);
     delete process.env.FAKE_IMSG_ACCOUNT;
+  });
+  test('the hub checks the account before it reads or sends: the owner\'s own Apple ID keeps the channel off', async () => {
+    const { Router, _deps: rd } = await import('../core/ask/router.js');
+    const real = rd.channels;
+    let started = false;
+    rd.channels = { ...real, imessage: { ...imessage, configured: () => true, health: async () => ({ ok: false, error: 'this Mac account\'s iMessage is the owner\'s own Apple ID: a text to the owner would be a note to self' }), start: async () => { started = true; return () => {}; } } };
+    const r = new Router();
+    try {
+      r.start();
+      assert.ok(await until(async () => r.disabled.get('imessage') !== 'checking'));
+      assert.match(r.disabled.get('imessage'), /note to self/);
+      assert.equal(started, false, 'never watched');
+      assert.deepEqual(r.usable({ order: ['imessage'] }), []);
+    } finally { r.stop(); rd.channels = real; }
   });
   test('who counts as the owner, as read from a message', () => {
     assert.equal(imessage.readMessage(msg({ text: 'x' })).verified, true);

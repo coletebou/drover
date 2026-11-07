@@ -190,7 +190,7 @@ export const ops = {
     const channels = {};
     for (const [name, ad] of Object.entries(ADAPTERS)) {
       const miss = ad.missing(_deps.env);
-      channels[name] = { configured: !miss.length, ...(miss.length ? { missing: miss } : {}), inOrder: cfg.order.includes(name) };
+      channels[name] = { configured: !miss.length, ...(miss.length ? { missing: miss } : {}), inOrder: cfg.order.includes(name), ...(isHub() && router.disabled.has(name) ? { off: router.disabled.get(name) } : {}) };
       if ((probe === true || probe === 'true') && !miss.length && isHub()) channels[name].health = await ad.health({ env: _deps.env }).catch((e) => ({ ok: false, error: e.message }));
     }
     const open = [...st.asks.values()].filter((a) => a.status === 'open');

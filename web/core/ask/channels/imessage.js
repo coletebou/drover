@@ -10,6 +10,7 @@
 // with that handle (a group's guid has ;+;). The account must not be the owner's own Apple ID: a text to yourself
 // raises no alert and its replies could not be told from Drover's own (health refuses it).
 //
+// Only the one-to-one chat with the owner is read at all: other chats are never passed on or recorded.
 // Another program may drive imsg as another macOS user (each user has its own Messages database); this one reads only
 // the daemon user's. Two watchers on the same database collide, so nothing else should run imsg rpc as this user.
 import { spawn as nodeSpawn, execFile as nodeExecFile } from 'node:child_process';
@@ -116,7 +117,9 @@ export async function start(onInbound, { log = () => {}, env = _deps.env } = {})
       rpc.sinceRowid = r.rowid;
       saving = saving.then(async () => { await mkdir(path.dirname(cursorFile()), { recursive: true, mode: 0o700 }); const tmp = `${cursorFile()}.tmp`; await writeFile(tmp, `${r.rowid}\n`, { mode: 0o600 }); await rename(tmp, cursorFile()); }).catch(() => {});
     }
-    if (!r.fromMe) onInbound(r);
+    // Only the one-to-one chat with the owner is read. Every other chat is this account's own business: never passed
+    // on, never recorded (a Telegram bot's or an SMS number's strangers are recorded as untrusted; these are not).
+    if (!r.fromMe && dmHandle(m?.chat_guid) === cfg(env).to) onInbound(r);
   };
   rpc = new Rpc({ bin: cfg(env).bin, log, onMessage, sinceRowid: since });
   rpc.start();

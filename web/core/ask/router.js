@@ -59,6 +59,7 @@ export class Router {
     this.untrusted = new Map();       // channel -> [ts] of recorded untrusted inbounds (an hour)
     this.hostBackoff = new Map();     // host -> ms before which it is not pulled again
     this.running = false;
+    this.disabled = new Map();        // channel -> why the hub will not use it (a failed safety check at start)
   }
 
   /** Run fn with the router's lock held; returns its result. */
@@ -69,7 +70,7 @@ export class Router {
   }
 
   config() { return readConfig(_deps.env); }
-  usable(cfg = this.config()) { return usableChannels(cfg.order.concat(['telegram', 'imessage', 'sms'].filter((c) => !cfg.order.includes(c))), _deps.channels, _deps.env); }
+  usable(cfg = this.config()) { return usableChannels(cfg.order.concat(['telegram', 'imessage', 'sms'].filter((c) => !cfg.order.includes(c))), _deps.channels, _deps.env).filter((c) => !this.disabled.has(c)); }
   async state() { return foldAsks(await _deps.readEvents()); }
 
   // ------------------------------------------------------------ taking and texting
@@ -404,7 +405,14 @@ export class Router {
     const cfg = this.config();
     const env = _deps.env;
     if (_deps.channels.imessage?.configured(env) && cfg.order.includes('imessage')) {
-      _deps.channels.imessage.start((m) => this.inbound(m), { log: _deps.log, env }).then((stop) => this.stops.push(stop), (e) => _deps.log('imsg watch', e.message));
+      // Checked before anything is read or sent: an account that is the owner's own Apple ID, or one signed out, is
+      // not used at all (a text to yourself raises no alert, and a reply could not be told from Drover's own).
+      this.disabled.set('imessage', 'checking');
+      _deps.channels.imessage.health({ env }).then(async (h) => {
+        if (!h.ok) { this.disabled.set('imessage', h.error ?? 'unhealthy'); _deps.log('imessage off:', h.error); return; }
+        this.disabled.delete('imessage');
+        this.stops.push(await _deps.channels.imessage.start((m) => this.inbound(m), { log: _deps.log, env }));
+      }).catch((e) => { this.disabled.set('imessage', e.message); _deps.log('imessage off:', e.message); });
     }
     if (_deps.channels.telegram?.configured(env)) {
       const base = _deps.publicBase();

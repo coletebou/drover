@@ -41,7 +41,7 @@ refuses `type: ask`.
 |---|---|---|
 | Telegram (`DROVER_ASK_TELEGRAM_TOKEN`, `_CHAT` = the owner's user id) | `sendMessage` with buttons | Webhook `/hooks/telegram` on the bot gateway's public origin, believed only with the secret header given at `setWebhook` (random, 0600 in the state dir). Sender and private chat must be the owner's id. `DROVER_ASK_TELEGRAM_INBOUND=poll` long-polls for a hub with no public endpoint. |
 | SMS via Twilio (`DROVER_ASK_TWILIO_ACCOUNT_SID`, `_AUTH_TOKEN`, `DROVER_ASK_SMS_FROM` a 10DLC number, `_SMS_TO`) | Messages API, ASCII only | Webhook `/hooks/twilio/sms`, believed only with a valid `X-Twilio-Signature` for the public URL; AccountSid, To and From must be ours and the owner's. |
-| iMessage (`DROVER_ASK_IMESSAGE_TO`, `DROVER_ASK_IMSG`; a Mac) | `imsg rpc` `send`, AppleScript transport | The same child's `watch.subscribe`: not from this account, the owner's handle, the one-to-one chat. Health refuses an account that is the owner's own Apple ID (a note to self). |
+| iMessage (`DROVER_ASK_IMESSAGE_TO`, `DROVER_ASK_IMSG`; a Mac) | `imsg rpc` `send`, AppleScript transport | The same child's `watch.subscribe`, read only for the one-to-one chat with the owner's handle (every other chat is never passed on or recorded), not from this account. Checked at start: an account that is the owner's own Apple ID (a note to self) or signed out keeps the channel off. |
 
 ## Provenance rules
 

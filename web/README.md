@@ -364,8 +364,9 @@ the rest in a settings file; `drover ask status` names what is missing, `--probe
   at `<public origin>/hooks/twilio/sms` (POST); every request's `X-Twilio-Signature` is checked against that URL.
 - **iMessage** (a Mac): `DROVER_ASK_IMESSAGE_TO` (your handle) and the [imsg](https://github.com/steipete/imsg) CLI
   (`DROVER_ASK_IMSG`, default `/opt/homebrew/bin/imsg`), as the macOS user the daemon runs as. That user's Messages
-  must be signed into an Apple ID that is not yours (a text to yourself raises no alert); the daemon needs the
-  Automation permission for Messages, and nothing else may run `imsg rpc` as that user.
+  must be signed into an Apple ID that is not yours (a text to yourself raises no alert; the hub checks this at start
+  and keeps the channel off); the daemon needs the Automation permission for Messages, and nothing else may run
+  `imsg rpc` as that user. Only the one-to-one chat with your handle is read; no other chat is passed on or recorded.
 
 Policy: channels in `DROVER_ASK_CHANNELS` order (default `telegram,imessage,sms`), quiet hours `DROVER_ASK_QUIET`
 (default `22:00-08:00`, `off` for none) in `DROVER_ASK_TZ` (default `America/New_York`), at most `DROVER_ASK_RATE`
