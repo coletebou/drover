@@ -343,6 +343,43 @@ drover op files.wait '{"host":"box-a","path":"~/runs/status","glob":"WS-*.md","s
   lists every shortcut. Direct peers (Settings) let the browser call another
   daemon over a forwarded port or the tailnet instead of ssh rpc.
 
+## Asks: questions by text
+
+An agent blocked on the owner asks with `drover_ask` (or `drover ask "Ship it?" --options yes,no`) instead of waiting
+in chat. The **hub**, the daemon on the host `DROVER_ASK_HUB` names, texts the question by Telegram, iMessage or SMS
+with a code (`K7`), reads the reply, and delivers it to the asking session through `sessions.message` (a handoff
+chain's live successor included): `[Owner via telegram, verified] K7 → b (no)`. Asks made on other hosts are recorded
+there; the hub pulls them every 15 s from the fleet hosts of its own identity (`DROVER_ASK_HOSTS` to name them), so
+an asking host never needs to reach the hub. Design, events and failure modes: [docs/ask.md](../docs/ask.md).
+
+Set `DROVER_ASK_HUB` in a settings file every host reads, and each channel on the hub (secrets in `~/.env_secrets`,
+the rest in a settings file; `drover ask status` names what is missing, `--probe` asks each provider):
+
+- **Telegram**: a bot of your own from @BotFather (`DROVER_ASK_TELEGRAM_TOKEN`) and your numeric user id
+  (`DROVER_ASK_TELEGRAM_CHAT`); open the bot and press Start once. With the bot gateway on (`DROVER_BOTS_URL`) the hub
+  sets the webhook `<public origin>/hooks/telegram` itself, with a secret header; without one, or with
+  `DROVER_ASK_TELEGRAM_INBOUND=poll`, it long-polls. Options become buttons.
+- **SMS** (Twilio): `DROVER_ASK_TWILIO_ACCOUNT_SID`, `DROVER_ASK_TWILIO_AUTH_TOKEN`, `DROVER_ASK_SMS_FROM` (a number in
+  an approved US A2P 10DLC campaign), `DROVER_ASK_SMS_TO` (your phone). Point the number's incoming-message webhook
+  at `<public origin>/hooks/twilio/sms` (POST); every request's `X-Twilio-Signature` is checked against that URL.
+- **iMessage** (a Mac): `DROVER_ASK_IMESSAGE_TO` (your handle) and the [imsg](https://github.com/steipete/imsg) CLI
+  (`DROVER_ASK_IMSG`, default `/opt/homebrew/bin/imsg`), as the macOS user the daemon runs as. That user's Messages
+  must be signed into an Apple ID that is not yours (a text to yourself raises no alert); the daemon needs the
+  Automation permission for Messages, and nothing else may run `imsg rpc` as that user.
+
+Policy: channels in `DROVER_ASK_CHANNELS` order (default `telegram,imessage,sms`), quiet hours `DROVER_ASK_QUIET`
+(default `22:00-08:00`, `off` for none) in `DROVER_ASK_TZ` (default `America/New_York`), at most `DROVER_ASK_RATE`
+texts an hour (default 6); held asks go out together when they may. Urgent asks skip quiet hours, a pause and the
+rate limit, and escalate to the next channel after `DROVER_ASK_ESCALATE_MINUTES` (5). Asks expire after
+`DROVER_ASK_TTL_HOURS` (24) unless they say otherwise, with one reminder first. The owner can reply `status`,
+`pause asks 2h`, `stop` (nothing until `resume`) and `resume`.
+
+Only a reply its channel authenticated (the webhook's secret or signature, or the Messages database) and that comes
+from the owner's own id counts as an answer; anything else is recorded as an untrusted `inbound` and never delivered
+or acknowledged. `ask.get` returns the answer with its source, provider message id and sender. `events.append`
+refuses `ask` events, and the hub's own calls to the asking host (`ask.deliver`, `ask.mark`) are served only over its
+ssh rpc. Questions that look like work (`DROVER_WORK_CONTEXT`) and machines of the work identity are refused.
+
 ## Browser terminals
 
 `terminals.open` (`core/terminals.js`) starts one ttyd per tmux target on
@@ -1088,14 +1125,15 @@ ops, so no MCP tool and no ssh rpc can approve a pairing.
 ## Layout
 
 ```
-bin/drover      CLI: serve (alias up) | open | status | clients | widget-token | pair | bots | rpc | mcp | op | ops | search | stacks | embed | import-survey | import-legacy
+bin/drover      CLI: serve (alias up) | open | status | clients | widget-token | pair | bots | ask | rpc | mcp | op | ops | search | stacks | embed | import-survey | import-legacy
 bin/drover-embed-setup  builds llama-server (pinned) and installs EmbeddingGemma 2 for search
 core/           api.js (op table) and adapters: tmux, claude, codex, hosts, events, memory (incl. the reflections CLI), launch, effort, trust (launch trust), remote, terminals, filewait (files.wait), session-filter (sessions.list filters), lineage (handoff successors); plugins (the plugin loader), owner (DROVER_OWNER), env (settings and secrets files)
 core/search/    the search index: extract, chunk, store (node:sqlite), indexer, embed (llama-server), query
+core/ask/       asks (docs/ask.md): model (events, fold, codes, texts), parse (the reply grammar), policy (quiet hours, rate, pause), router (the hub), ops, caller (the asking session), channels/ (telegram, sms, imessage)
 core/bots/      Grok bots: oauth (the gateway's OAuth server), tools (the bot tools), tenant-tools and access (native tenants), policy (what leaves for bots: cleaned, secrets redacted), grok (bots as sessions, Routines)
 core/docker.js  docker stacks and the docker.* verbs (core/docker-format.js: drover stacks text; ui/stacks-text.js: summaries both use)
 server/http.js  HTTP + SSE front, bearer token, static ui/
-server/botgate.js  the bot gateway: OAuth endpoints, authorize page, routine setup page, MCP over Streamable HTTP for Grok bots
+server/botgate.js  the bot gateway: OAuth endpoints, authorize page, routine setup page, MCP over Streamable HTTP for Grok bots; on the ask hub, the Telegram and Twilio webhooks (server/ask-hooks.js)
 ui/             single-page app, vanilla ES modules
 mcp/server.js   MCP over stdio, maps tools onto core/api.js
 profiles.json   default launch profiles (claude: default, plan, yolo; codex: default, read-only, workspace, yolo), model aliases, tmux sessions; DROVER_PROFILES points at a fleet's own copy
