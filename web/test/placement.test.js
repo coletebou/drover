@@ -176,7 +176,25 @@ describe('judge, choose, reasonFor', () => {
   test('swap, swap rate, PSI stalls, disk and class rules', () => {
     assert.match(j(sampleOf({ swapPct: 95 })).why.join(), /swap 95% used/);
     const s = sampleOf(); s.swap.ioPerSec = 900;
-    assert.match(j(s).why.join(), /swapping 900 pages\/s/);
+    assert.match(j(s).why.join(), /swapping 900 pages\/s/, 'a sample with no in/out split still refuses on ioPerSec');
+    // The false storm the monitor stopped raising: 1731 pages/s in, none out, 6.5 of 15.6 GB free.
+    const recovering = sampleOf({ availGB: 6.5, totalGB: 15.6 });
+    recovering.swap = { ...recovering.swap, ioPerSec: 1731, inPerSec: 1731, outPerSec: 0 };
+    assert.equal(j(recovering).eligible, true, 'swap-in with memory to spare is recovery, not a reason to refuse');
+    const pushing = sampleOf();
+    pushing.swap = { ...pushing.swap, ioPerSec: 600, inPerSec: 0, outPerSec: 600 };
+    assert.match(j(pushing).why.join(), /swapping out 600 pages\/s/);
+    // 7 GB of 64 is under the 12% mem warn, and 7 - 3.5 still clears the 2 GB reserve.
+    const tight = sampleOf({ availGB: 7, totalGB: 64 });
+    tight.swap = { ...tight.swap, ioPerSec: 1900, inPerSec: 1800, outPerSec: 100 };
+    assert.match(j(tight).why.join(), /swapping 1900 pages\/s in and out while memory is short/);
+    const spare = sampleOf({ availGB: 20, totalGB: 64 });
+    spare.swap = { ...spare.swap, ioPerSec: 1900, inPerSec: 1800, outPerSec: 100 };
+    assert.equal(j(spare).eligible, true, 'the same in plus out is fine while memory is not short and swap-out is under the cap');
+    const floored = sampleOf({ availGB: 6.5, totalGB: 15.6 });
+    floored.swap = { ...floored.swap, ioPerSec: 1731, inPerSec: 1731, outPerSec: 0 };
+    const th = vitals.mergeThresholds(vitals.DEFAULT_THRESHOLDS, { memAvailableGB: { warn: 8, crit: 4 } });
+    assert.match(placement.judge({ vitals: floored, cls, className: 'claude-session', thresholds: th }).why.join(), /while memory is short/, 'a host memory floor makes combined swap count');
     assert.match(j(sampleOf({ pressure: { kind: 'psi', some60: 40 } })).why.join(), /memory stalls 40%/);
     assert.match(j(sampleOf({ diskFreeGB: 4 })).why.join(), /disk \/ has 4 GB free, under 5 GB/);
     assert.match(j(sampleOf({ diskFreeGB: 15 }), {}, placement.DEFAULT_CLASSES['heavy-build'], 'heavy-build').why.join(), /under 20 GB/);

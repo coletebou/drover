@@ -171,6 +171,39 @@ final class MockDroverService: DroverService, @unchecked Sendable {
         return AnswerResult(ok: true, refused: false, reason: nil, hash: Self.buildHash)
     }
 
+    /// A Grok bot's approval request, as a board strip carries it (not on the mock board: its counts stay as they are).
+    static let approval = ApprovalInfo(
+        id: "ap_00000000demo", bot: "grok:demo-alpha", kind: "purchase",
+        question: "Buy the demo plan, 1 month, $9.99 on the demo store?",
+        options: [ApprovalOption(n: 1, label: "Buy it"), ApprovalOption(n: 2, label: "Not now")],
+        details: "You asked for it this morning. Paid with the card on file.",
+        createdAt: Date(timeIntervalSinceNow: -120), expiresAt: Date(timeIntervalSinceNow: 5 * 3600))
+    static let approvalSession = SessionItem(
+        id: "grok:demo-alpha", name: "Demo-alpha", host: "local", engine: "grok", status: "waiting", cwd: nil, tmuxTarget: nil,
+        live: true, updatedAt: Date(timeIntervalSinceNow: -120), lane: .waiting, waitKind: .decision,
+        headline: approval.question, answerMode: .approval, askLabel: "asks for your approval", askText: approval.question,
+        approval: approval, moreApprovals: 1)
+
+    /// The mock request in full, as `GET /api/approvals?id=` gives it; other ids are not kept here.
+    func approval(id: String) async throws -> ApprovalInfo? {
+        lock.withLock { sent.append("review \(id)") }
+        guard id == Self.approval.id else { return nil }
+        var full = Self.approval
+        full.details = (full.details ?? "") + " The plan includes the demo add-ons; it can be cancelled from the demo account page."
+        full.complete = true
+        full.status = "pending"
+        return full
+    }
+
+    /// The mock request is decided with the option pressed; any other id was answered elsewhere (409).
+    func answerApproval(id: String, choice: Int) async throws -> ApprovalAnswerResult {
+        lock.withLock { sent.append("approve \(id) \(choice)") }
+        guard id == Self.approval.id, let option = Self.approval.options.first(where: { $0.n == choice }) else {
+            return .closed(message: "approval \(id) was answered already: Not now (web)")
+        }
+        return .decided(label: option.label, delivered: true, queued: false, error: nil)
+    }
+
     func managerTranscript(thread: String, host: String?) async throws -> TranscriptPage {
         lock.withLock { managerReads.append(host) }
         if managerReadDelay > 0 { try? await Task.sleep(for: .seconds(managerReadDelay)) }

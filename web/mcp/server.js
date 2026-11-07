@@ -104,14 +104,22 @@ export const TOOLS = [
   {
     name: 'drover_session_transcript',
     title: 'Session transcript',
-    description: 'Read a session\'s transcript as turns (role, ts, text, tool calls with a one-line summary each, and their results). Works for live and finished Claude Code sessions, Codex threads and rollouts, headless agents and the manager (id "manager", thread for one conversation). For Claude transcripts `since` is the line offset to start from (use the returned offset to page) and a summary is included when since is omitted; `limit` caps the number of turns (default 200).',
+    description: 'Read a session\'s transcript in one of five views (format). turns (default): compact turns (role, ts, text, tool calls with a one-line summary each, and their results cut short), the last 8 MB first; since is the byte offset returned as offset. messages: only what was said (user text, messages from other sessions, assistant text, compaction summaries). calls: messages plus every tool call with its whole input (callStyle brief: one line each), no outputs. full: calls plus every output, nothing cut. raw: the original JSONL records. messages, calls and full come as Markdown text here (as entries for structured data), from the start of the transcript, paged by maxBytes (default 80000 here so a page fits a tool result): pass the returned offset as since while more is true. Works for Claude Code sessions (live or finished, interactive, background, -p and headless runs, subagents by agent id, reflection and dream runs), Codex threads and exec runs, headless agents, and the OpenClaw manager (id "manager", thread for one conversation; openclaw:<session id or key> for its heartbeat and cron runs). drover_transcripts_list finds any of them.',
     inputSchema: schema({
-      id: { type: 'string', description: 'Session id (Claude session id, Codex thread id, or headless id); Claude registry names also work; "manager" for the manager.' },
-      since: { type: 'number', description: 'Transcript line offset to start from (Claude). Default 0.' },
-      limit: { type: 'number', description: 'Maximum turns to return. Default 200.' },
+      id: { type: 'string', description: 'Session id or name, subagent id, Codex thread id, headless id, "manager", openclaw:<session id or key>, or a transcript .jsonl path on that host.' },
+      format: { type: 'string', enum: ['turns', 'messages', 'calls', 'full', 'raw'], description: 'The view. Default turns.' },
+      since: { type: 'number', description: 'Offset from the previous call (turns: byte offset; other formats: where the last page stopped). Default: turns the tail, other formats the start.' },
+      limit: { type: 'number', description: 'turns: maximum turns (default 200); other formats: maximum entries per page.' },
+      maxBytes: { type: 'number', description: 'Page size for messages, calls, full and raw. Default 80000 here.' },
+      callStyle: { type: 'string', enum: ['input', 'brief'], description: 'calls and full: the whole input (default) or one line per call.' },
+      as: { type: 'string', enum: ['text', 'entries'], description: 'messages, calls and full: Markdown text (default here) or structured entries.' },
       thread: { type: 'string', description: 'Manager only: the conversation (default main).' },
     }, ['id']),
-    run: (dispatch, args) => dispatch('sessions.transcript', pick(args, ['id', 'since', 'limit', 'host', 'thread'])),
+    run: (dispatch, args) => {
+      const a = pick(args, ['id', 'since', 'limit', 'host', 'thread', 'format', 'callStyle', 'maxBytes', 'as']);
+      if (a.format && a.format !== 'turns') { a.maxBytes ??= MCP_TRANSCRIPT_PAGE; if (a.format !== 'raw') a.as ??= 'text'; }
+      return dispatch('sessions.transcript', mcpArgs('sessions.transcript', a));
+    },
   },
   {
     name: 'drover_send',
@@ -166,7 +174,7 @@ export const TOOLS = [
       cwd: { type: 'string', description: 'Working directory for the agent (tilde allowed). Default the home directory.' },
       prompt: { type: 'string', description: 'First prompt to give the agent.' },
       tmuxSession: { type: 'string', description: 'tmux session to open the window in (created if missing). Default: the launch profiles\' tmuxSession.' },
-      name: { type: 'string', description: 'Window name (tmux mode) or label (headless mode).' },
+      name: { type: 'string', description: 'Window name (tmux mode) or label (headless mode). A tmux Claude launch also gives the session this name (claude --name), so drover_send to the name reaches it.' },
       resume: { type: 'string', description: 'Session id (Claude, Hermes) or thread id (Codex) to resume instead of starting fresh.' },
       trust: { type: 'boolean', description: 'tmux mode: record cwd as trusted in the agent\'s own config first, so it starts at its prompt instead of the first-run trust dialog. Default true.' },
       host: { type: 'string', description: 'ssh alias of another fleet machine, "auto" to let the fleet\'s placement choose one, or omit for this one' },
@@ -379,8 +387,17 @@ export const MCP_WAIT_MAX_SEC = 110;
 // in the calling session's working directory. Both are set here, after argument checks, over anything the caller
 // passed. The front drops callerCwd before the search goes to any host.
 const withCallerCwd = (a) => ({ ...a, callerCwd: process.cwd(), remote: true });
+// An agent that reads a Grok bot's thread has read the bot's answers to it (read receipts, core/bots/grok.js): the read,
+// and sessions.seen, name this server's actor, never one an agent passes, so no agent marks a reply read for the owner
+// or for another reader. Sessions that are not bots ignore seenBy.
+const withSeenBy = (a) => ({ ...a, seenBy: writeActor(undefined) });
+// A transcript page through MCP: Claude Code holds a tool result to about 25k tokens.
+const MCP_TRANSCRIPT_PAGE = 80_000;
 const MCP_ARGS = {
   'files.wait': (a) => { const n = Number(a.timeoutSec ?? MCP_WAIT_MAX_SEC); return { ...a, timeoutSec: Number.isFinite(n) ? Math.min(n, MCP_WAIT_MAX_SEC) : a.timeoutSec }; },
+  'sessions.transcript': withSeenBy,
+  'sessions.lastReply': withSeenBy,
+  'sessions.seen': (a) => ({ ...a, actor: writeActor(undefined) }),
   'search.semantic': withCallerCwd,
   'search.fleet': withCallerCwd,
 };

@@ -15,7 +15,7 @@ import * as hermes from './hermes.js';
 import { append } from './events.js';
 import { checkEffort, checkModelEffort } from './effort.js';
 import { loginShellPath } from './proc.js';
-import { trustFolder } from './trust.js';
+import { trustFolder, onboardClaude } from './trust.js';
 // Cycle: credpool.js imports loadProfiles from here. Neither module uses the
 // other at module load, so the cycle is safe.
 import * as credentials from './credpool.js';
@@ -61,8 +61,8 @@ export async function resolveProfile(engine, profileId) {
 
 const SAFE_NAME = (s) => String(s ?? '').replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'agent';
 
-/** Test seams: the tmux window spawner, the headless Claude and Hermes classes, the Codex thread starter, the Codex model catalog, the agent PATH, the folder trust step and the Hermes pane record. Default to the real adapters. */
-export const _deps = { newWindow: (opts) => tmux.newWindow(opts), HeadlessClaude: claude.HeadlessClaude, HeadlessHermes: hermes.HeadlessHermes, startCodexThread: (opts) => codex.startThread(opts), codexModelEfforts: () => codex.modelEfforts(), agentPath: () => loginShellPath(), trustFolder: (engine, dir, opts) => trustFolder(engine, dir, opts), rememberHermesPane: (title, window) => hermes.rememberPane(title, window, { home: hermes.rootHome() }) };
+/** Test seams: the tmux window spawner, the headless Claude and Hermes classes, the Codex thread starter, the Codex model catalog, the agent PATH, the folder trust step, Claude's first-run onboarding and the Hermes pane record. Default to the real adapters. */
+export const _deps = { newWindow: (opts) => tmux.newWindow(opts), HeadlessClaude: claude.HeadlessClaude, HeadlessHermes: hermes.HeadlessHermes, startCodexThread: (opts) => codex.startThread(opts), codexModelEfforts: () => codex.modelEfforts(), agentPath: () => loginShellPath(), trustFolder: (engine, dir, opts) => trustFolder(engine, dir, opts), onboardClaude: (opts) => onboardClaude(opts), rememberHermesPane: (title, window) => hermes.rememberPane(title, window, { home: hermes.rootHome() }) };
 
 /** The engines a launch starts; anything else is a Claude launch, as it always was. */
 const ENGINES = new Set(['claude', 'codex', 'hermes']);
@@ -249,7 +249,7 @@ export async function launch(req, { actor = 'drover' } = {}) {
     // core/effort.js, never text from the request.
     const title = engine === 'hermes' && !req.resume ? hermes.launchTitle(name) : null;
     const argv = engine === 'claude'
-      ? claude.interactiveArgv(profile, { model, effort, resume: req.resume, prompt: req.prompt })
+      ? claude.interactiveArgv(profile, { model, effort, resume: req.resume, prompt: req.prompt, ...(req.name ? { name } : {}) })
       : engine === 'hermes'
         ? hermes.interactiveArgv(profile, { model, effort, cwd, prompt: req.prompt, resume: req.resume, title })
         : codex.interactiveArgv(profile, { model, effort, prompt: req.prompt, resume: req.resume });
@@ -257,8 +257,12 @@ export async function launch(req, { actor = 'drover' } = {}) {
     // would leave the token readable in #{pane_start_command}); the event stores only the bare argv.
     const childEnv = { ...(engine === 'claude' ? UNATTENDED_CLAUDE_ENV : {}), PATH: agentPath, ...Object.fromEntries(Object.entries(profile.env).map(([k, v]) => [k, expandHome(v)])), ...credEnv };
     // Before the window opens: the agent reads its trust as it starts. The env decides which config file it reads.
-    const trust = req.trust === false || req.trust === 'false' ? null : await _deps.trustFolder(engine, cwd, { env: { ...process.env, ...childEnv } });
-    const withTrust = trust ? { trust } : {};
+    const trustOff = req.trust === false || req.trust === 'false';
+    // A config that never finished first-run onboarding shows two screens before the trust dialog: finish it too,
+    // and say so only when something was written.
+    const onboarding = trustOff || engine !== 'claude' ? null : await _deps.onboardClaude({ env: { ...process.env, ...childEnv } });
+    const trust = trustOff ? null : await _deps.trustFolder(engine, cwd, { env: { ...process.env, ...childEnv } });
+    const withTrust = { ...(trust ? { trust } : {}), ...(onboarding && onboarding.changed !== false ? { onboarding } : {}) };
     const { target } = await _deps.newWindow({ session, name, cwd, argv, env: childEnv });
     if (cred) await credentials.acquire(cred.id, `tmux:${target}`, { ttlMs: TMUX_ACTIVE_TTL_MS });
     // Which window the titled Hermes session is in: a failure here costs only the strip's link to its pane.

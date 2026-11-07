@@ -87,10 +87,10 @@ extension DialogInfo {
     }
 }
 
-/// How a waiting item is answered: `keys` (press one of `keys` on the dialog) or `reply` (send a message:
-/// the agent asked in text). Unknown values decode as `unknown`.
+/// How a waiting item is answered: `keys` (press one of `keys` on the dialog), `reply` (send a message: the agent
+/// asked in text) or `approval` (a Grok bot's approval request, answered by its id). Unknown values decode as `unknown`.
 enum AnswerMode: String, Codable, Sendable {
-    case keys, reply, unknown
+    case keys, reply, approval, unknown
 
     init(from decoder: Decoder) throws {
         let raw = try decoder.singleValueContainer().decode(String.self)
@@ -121,8 +121,14 @@ struct WaitingItem: Codable, Sendable, Hashable, Identifiable {
     /// The keys this dialog takes, in display order.
     var keys: [String]? = nil
     var answer: AnswerMode? = nil
+    /// A Grok bot's approval request (`answer` is `approval`; `kind` stays `decision` for older clients).
+    var approval: ApprovalInfo? = nil
+    /// How many more requests from the same bot wait behind this one.
+    var moreApprovals: Int? = nil
 
     var sinceDate: Date? { since.flatMap(ISODate.parse) }
+    /// The bot's name, for "Asked by Alpha, a Grok bot".
+    var botName: String? { ApprovalFormat.botName(bot: approval?.bot, fallback: name) }
 }
 
 extension WaitingItem {
@@ -140,6 +146,8 @@ extension WaitingItem {
         hash = try? c.decodeIfPresent(String.self, forKey: .hash)
         keys = try? c.decodeIfPresent([String].self, forKey: .keys)
         answer = try? c.decodeIfPresent(AnswerMode.self, forKey: .answer)
+        approval = try? c.decodeIfPresent(ApprovalInfo.self, forKey: .approval)
+        moreApprovals = try? c.decodeIfPresent(Int.self, forKey: .moreApprovals)
     }
 }
 
@@ -207,6 +215,8 @@ struct NotificationItem: Codable, Sendable, Hashable, Identifiable {
     var answer: AnswerMode? = nil
     /// A tmux window target, for an agent seen only as a window (no session id).
     var target: String? = nil
+    /// A Grok bot's approval request, answered by its id (as on waiting items).
+    var approval: ApprovalInfo? = nil
 
     var isNeedsYou: Bool { category == "needs-you" || kind == "decision" || kind == "question" }
     var isHeld: Bool { category == "held" }
@@ -231,6 +241,7 @@ extension NotificationItem {
         keys = try? c.decodeIfPresent([String].self, forKey: .keys)
         answer = try? c.decodeIfPresent(AnswerMode.self, forKey: .answer)
         target = try? c.decodeIfPresent(String.self, forKey: .target)
+        approval = try? c.decodeIfPresent(ApprovalInfo.self, forKey: .approval)
     }
 }
 

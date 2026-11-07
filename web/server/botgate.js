@@ -1,9 +1,11 @@
 // The bot gateway: a second listener (127.0.0.1:7338 by default) that a public HTTPS front (Tailscale Funnel or a
 // Cloudflare Tunnel) exposes to the internet, so Grok Bot agents, which run in Cursor-hosted VMs off the tailnet,
-// can reach Drover. It serves exactly three things: the OAuth 2.1 endpoints and metadata (core/bots/oauth.js), the
-// authorize page (a 6-digit code the owner approves in Drover), and MCP over Streamable HTTP at /mcp with the scoped
-// bot tools (core/bots/tools.js). Never /api/, never the UI, never an op by name: the main listener stays on loopback
-// and the tailnet. Enabled by DROVER_BOTS_URL, the public origin (https://host[:port], no path).
+// can reach Drover. It serves exactly four things: the OAuth 2.1 endpoints and metadata (core/bots/oauth.js), the
+// authorize page (a 6-digit code the owner approves in Drover), a bot's routine setup page (/bots/<bot>/routine: the
+// owner pastes the routine's webhook there and approves its code in Drover, core/bots/routine-setup.js), and MCP over
+// Streamable HTTP at /mcp with the scoped bot tools (core/bots/tools.js). Never /api/, never the UI, never an op by
+// name: the main listener stays on loopback and the tailnet. Enabled by DROVER_BOTS_URL, the public origin
+// (https://host[:port], no path).
 import { createServer as createHttpServer } from 'node:http';
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -11,6 +13,7 @@ import { isIP } from 'node:net';
 import { envvar } from '../core/envvars.js';
 import { OWNER_NAME } from '../core/owner.js';
 import * as oauth from '../core/bots/oauth.js';
+import * as routineSetup from '../core/bots/routine-setup.js';
 import { isTenantBot } from '../core/bots/access.js';
 import { botTools, instructionsFor } from '../core/bots/tools.js';
 import { TENANT_INSTRUCTIONS } from '../core/bots/tenant-tools.js';
@@ -33,17 +36,20 @@ const json = (res, code, body, headers = {}) => {
   res.end(s);
 };
 const redirect = (res, location) => { res.writeHead(302, { location, 'cache-control': 'no-store' }); res.end(); };
-const PAGE_HEADERS = { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'x-frame-options': 'DENY', 'referrer-policy': 'no-referrer', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" };
+const PAGE_CSP = "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+const PAGE_HEADERS = { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'x-frame-options': 'DENY', 'referrer-policy': 'no-referrer', 'content-security-policy': PAGE_CSP };
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-function page(res, code, { title, body, refreshTo = null }) {
+/** A page; form: its one form may post back to this origin (every other page posts nowhere). */
+function page(res, code, { title, body, refreshTo = null, form = false }) {
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${refreshTo ? `<meta http-equiv="refresh" content="2;url=${esc(refreshTo)}">` : ''}<title>${esc(title)}</title>
 <style>:root{color-scheme:light dark;--bg:#f6f5f2;--fg:#1d1d1b;--mute:#6b6a66;--card:#fff;--line:#e3e1db;--accent:#c2410c}@media(prefers-color-scheme:dark){:root{--bg:#141413;--fg:#ecebe7;--mute:#9c9a93;--card:#1d1d1b;--line:#33322f;--accent:#fb923c}}
 body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;display:grid;place-items:center;min-height:100vh;padding:16px;box-sizing:border-box}
 main{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:28px;max-width:440px;width:100%}h1{font-size:20px;margin:0 0 12px}p{margin:10px 0;color:var(--mute)}b{color:var(--fg)}
-.code{font:600 40px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:4px;text-align:center;margin:18px 0;color:var(--accent)}code{font:14px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--bg);padding:2px 6px;border-radius:5px}</style></head>
+.code{font:600 40px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:4px;text-align:center;margin:18px 0;color:var(--accent)}code{font:14px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--bg);padding:2px 6px;border-radius:5px}
+label{display:block;font-size:14px;margin-top:12px}input{font:15px ui-monospace,SFMono-Regular,Menlo,monospace;width:100%;box-sizing:border-box;padding:9px 10px;margin:4px 0;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg)}button{font:inherit;margin-top:16px;padding:9px 18px;border:0;border-radius:8px;background:var(--accent);color:#fff;cursor:pointer}.err{color:var(--accent)}</style></head>
 <body><main>${body}</main></body></html>`;
-  res.writeHead(code, { ...PAGE_HEADERS, 'content-length': Buffer.byteLength(html) });
+  res.writeHead(code, { ...PAGE_HEADERS, ...(form ? { 'content-security-policy': PAGE_CSP.replace("form-action 'none'", "form-action 'self'") } : {}), 'content-length': Buffer.byteLength(html) });
   res.end(html);
 }
 
@@ -246,6 +252,50 @@ function authorizePage(res, a, base) {
   });
 }
 
+// ---------------------------------------------------------------- the routine setup page
+/** The form: the routine's Webhook URL and key, and the nonce this page was given. Nothing about the bot's current setup. */
+function routineForm(res, bot, nonce, { error = null, status = 200 } = {}) {
+  page(res, status, {
+    title: `Set ${bot}'s Drover routine`, form: true,
+    body: `<h1>Set ${esc(bot)}'s Drover routine</h1><p>Paste the <b>Webhook URL</b> and the <b>Webhook key</b> of the routine named Drover on ${esc(bot)}, from its panel in Grok Bot. Drover keeps them only once you approve, in Drover, the code this page shows next. Never paste them into a chat.</p>
+${error ? `<p class="err">${esc(error)}.</p>` : ''}<form method="post" autocomplete="off"><input type="hidden" name="nonce" value="${esc(nonce)}">
+<label for="url">Webhook URL</label><input id="url" name="url" type="url" required spellcheck="false" autocapitalize="off" placeholder="https://api2.cursor.sh/automations/webhook/...">
+<label for="key">Webhook key</label><input id="key" name="key" type="password" required spellcheck="false" autocapitalize="off" autocomplete="off">
+<button type="submit">Continue</button></form><p>If ${esc(bot)} already has a Drover routine, this one replaces it once you approve. If you did not start this, close the page.</p>`,
+  });
+}
+
+/** The form with a new nonce for this address, or why none is given now (too many pages open): a page either way. */
+function routineFormFor(res, bot, source, opts) {
+  let nonce;
+  try { nonce = routineSetup.formNonce(bot, { source }); }
+  catch (e) {
+    if (!(e instanceof routineSetup.SetupError)) throw e;
+    return page(res, e.status, { title: 'Try again later', body: `<h1>Cannot set ${esc(bot)}'s Drover routine now</h1><p>${esc(e.message)}.</p>` });
+  }
+  return routineForm(res, bot, nonce, opts);
+}
+
+/** Where a sent form waits: its code until the owner answers in Drover, then how it went (in Drover's words). */
+function routineWait(res, bot, rid, base) {
+  const s = routineSetup.status(rid);
+  if (!s || s.bot !== bot) return page(res, 410, { title: 'Expired', body: `<h1>This setup expired</h1><p>Open the link again to set ${esc(bot)}'s Drover routine.</p>` });
+  if (s.status === 'pending') {
+    return page(res, 200, {
+      title: 'Approve in Drover', refreshTo: `${base}${oauth.botPrefix(bot)}/routine/wait?rid=${rid}`,
+      body: `<h1>Approve in Drover</h1><p>To set <b>${esc(bot)}</b>'s Drover routine, approve this code in Drover, on the machine it runs on or in its browser banner:</p><div class="code">${esc(oauth.formatCode(s.code))}</div>
+<p><code>drover bots routine approve ${esc(s.code)}</code></p><p>This page moves on by itself once you answer. Codes expire in ten minutes.</p>`,
+    });
+  }
+  if (s.status === 'saved') {
+    return page(res, 200, {
+      title: 'Routine set',
+      body: `<h1>${esc(bot)}'s Drover routine is set</h1><p>${s.test?.ok ? `Drover sent it a connection test: ${esc(bot)} answers "connected" within a minute.` : `Drover could not send it a connection test (${esc(s.test?.why ?? 'it failed')}): check the routine in Grok Bot, then <code>drover bots routine test ${esc(bot)}</code>.`}</p><p>You can close this page.</p>`,
+    });
+  }
+  return page(res, 200, { title: 'Not set', body: `<h1>Not set</h1><p>The setup was denied in Drover: ${esc(bot)}'s routine did not change.</p>` });
+}
+
 /**
  * The bot a path addresses and the route inside its server: /bots/alpha/oauth/token is ['alpha', '/oauth/token'].
  * A bot server's metadata comes both by RFC 8414 / 9728 path insertion (/.well-known/<doc>/bots/alpha[/mcp]) and
@@ -264,9 +314,10 @@ function routeOf(p) {
  * Start the gateway. base is the public origin; dispatch(op, args) resolves to an op's result (the daemon's
  * dispatcher); hasOp(op) whether it has an op (default: every op), so tools built on a plugin's ops are listed only where
  * the plugin is loaded; onPending(authorization) runs when a bot asks to connect (the daemon tells the browser UI, and raises
- * an alert when authorization.alert says so). Returns { server, url, base }.
+ * an alert when authorization.alert says so), onRoutineSetup(setup) when a routine setup is sent ({ code, bot, expiresAt,
+ * alert }: never its URL or key). Returns { server, url, base }.
  */
-export async function startBotGateway({ base, port = DEFAULT_PORT, bind = '127.0.0.1', dispatch, hasOp = () => true, log = () => {}, onPending = null } = {}) {
+export async function startBotGateway({ base, port = DEFAULT_PORT, bind = '127.0.0.1', dispatch, hasOp = () => true, log = () => {}, onPending = null, onRoutineSetup = null } = {}) {
   if (!base) throw new Error('the bot gateway needs its public URL (DROVER_BOTS_URL)');
   if (typeof dispatch !== 'function') throw new Error('the bot gateway needs a dispatch function');
   const server = createHttpServer(async (req, res) => {
@@ -311,6 +362,27 @@ export async function startBotGateway({ base, port = DEFAULT_PORT, bind = '127.0
         log(`bot authorization ${s.status === 'approved' ? 'handed to the browser' : s.status}`, s.clientName, s.bot ?? '');
         return redirect(res, s.redirect);
       }
+      // A bot's routine setup (core/bots/routine-setup.js): the form, what it sends, and where that waits.
+      if (bot !== null && route === '/routine' && req.method === 'GET') return routineFormFor(res, bot, sourceKey(clientAddress(req)));
+      if (bot !== null && route === '/routine' && req.method === 'POST') {
+        const source = sourceKey(clientAddress(req));
+        // A browser says where a form came from: one from another site is never this page's (the nonce stops it too).
+        const origin = req.headers.origin;
+        if (origin && origin !== 'null' && origin !== new URL(base).origin) return page(res, 403, { title: 'Refused', body: '<h1>Refused</h1><p>This form can only be sent from its own page.</p>' });
+        const f = await readForm(req);
+        let s;
+        try { s = routineSetup.submit(bot, { url: f.url, key: f.key, nonce: f.nonce }, { source, from: fromOf(req) }); }
+        catch (e) {
+          if (!(e instanceof routineSetup.SetupError)) throw e;
+          return routineFormFor(res, bot, source, { error: e.message, status: e.status });
+        }
+        log('routine setup waiting', bot);
+        // Never the rid (the page's secret), never the URL or the key.
+        try { onRoutineSetup?.({ code: s.code, bot: s.bot, expiresAt: s.expiresAt, alert: s.alert }); } catch (e) { log('onRoutineSetup failed', e?.message ?? String(e)); }
+        res.writeHead(303, { location: `${base}${oauth.botPrefix(bot)}/routine/wait?rid=${s.rid}`, 'cache-control': 'no-store' });
+        return res.end();
+      }
+      if (bot !== null && route === '/routine/wait' && req.method === 'GET') return routineWait(res, bot, url.searchParams.get('rid'), base);
       if (route === '/oauth/token' && req.method === 'POST') {
         const form = await readForm(req);
         try {

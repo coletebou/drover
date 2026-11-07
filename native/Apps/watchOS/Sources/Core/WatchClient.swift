@@ -128,4 +128,88 @@ struct WatchClient: Sendable {
         if let host, !host.isEmpty, host != "local" { a["host"] = host }
         return a
     }
+
+    // MARK: approvals
+
+    /// `POST /api/approvals/answer {id, choice, via: "watch"}` with the main token: a Grok bot's approval request,
+    /// answered by its id. Not an op (no `/api/op/` path). 409 (answered already, withdrawn, expired) is a result.
+    func answerApproval(id: String, choice: Int, token: String) async throws -> ApprovalAnswerResult {
+        let req = try approvalRequest(id: id, choice: choice, token: token)
+        let data: Data
+        let resp: URLResponse
+        do {
+            (data, resp) = try await session.data(for: req)
+        } catch let e as URLError {
+            throw WatchClientError.transport(e.code == .timedOut ? "Server timed out" : "Server unreachable")
+        } catch {
+            throw WatchClientError.transport("Server unreachable")
+        }
+        return try WatchClient.approvalResult(data, status: (resp as? HTTPURLResponse)?.statusCode ?? 0, redacting: token)
+    }
+
+    /// `GET /api/approvals?id=<id>` with the main token: the whole request (its words unshortened, its status). nil
+    /// when this daemon keeps no such request.
+    func approval(id: String, token: String) async throws -> ApprovalRequest? {
+        var url = baseURL.appending(path: "api/approvals")
+        url.append(queryItems: [URLQueryItem(name: "id", value: id)])
+        var req = URLRequest(url: url, timeoutInterval: timeout)
+        req.httpMethod = "GET"
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let data: Data
+        let resp: URLResponse
+        do {
+            (data, resp) = try await session.data(for: req)
+        } catch let e as URLError {
+            throw WatchClientError.transport(e.code == .timedOut ? "Server timed out" : "Server unreachable")
+        } catch {
+            throw WatchClientError.transport("Server unreachable")
+        }
+        let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        if status == 401 || status == 403 { throw WatchClientError.unauthorized }
+        let result = try WatchClient.unwrap(data, status: status, redacting: token)
+        struct Lookup: Decodable {
+            var items: [ApprovalRequest]
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                items = ((try? c.decodeIfPresent([Lossy].self, forKey: .items)) ?? []).compactMap(\.value)
+            }
+            enum CodingKeys: String, CodingKey { case items }
+            struct Lossy: Decodable {
+                let value: ApprovalRequest?
+                init(from decoder: Decoder) throws { value = try? ApprovalRequest(from: decoder) }
+            }
+        }
+        let lookup: Lookup
+        do { lookup = try JSONDecoder().decode(Lookup.self, from: result) } catch { throw WatchClientError.decoding }
+        return lookup.items.first { $0.id == id }
+    }
+
+    func approvalRequest(id: String, choice: Int, token: String) throws -> URLRequest {
+        var req = URLRequest(url: baseURL.appending(path: "api/approvals/answer"), timeoutInterval: timeout)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let body: [String: Any] = ["id": id, "choice": choice, "via": "watch"]
+        req.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
+        return req
+    }
+
+    /// 200 decided, 409 closed (with the daemon's words), 401/403 rejected token, 400/404 the daemon's error.
+    static func approvalResult(_ data: Data, status: Int, redacting token: String? = nil) throws -> ApprovalAnswerResult {
+        if status == 401 || status == 403 { throw WatchClientError.unauthorized }
+        if status == 409 {
+            let env = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            var message = (env?["error"] as? String) ?? "This request is no longer waiting for an answer"
+            if let token, token.count >= 8 { message = message.replacingOccurrences(of: token, with: "[redacted]") }
+            return .closed(message: String(message.prefix(200)))
+        }
+        let result = try unwrap(data, status: status, redacting: token)
+        let r = (try? JSONSerialization.jsonObject(with: result, options: [.fragmentsAllowed])) as? [String: Any]
+        let decision = r?["decision"] as? [String: Any]
+        let delivery = r?["delivery"] as? [String: Any]
+        return .decided(label: decision?["label"] as? String ?? "", told: (delivery?["ok"] as? Bool) != false,
+                        queued: (delivery?["queued"] as? Bool) == true)
+    }
 }

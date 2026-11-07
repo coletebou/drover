@@ -20,6 +20,12 @@ protocol DroverService: Sendable {
     /// Press one key on the dialog a session shows, only if the screen still hashes to `expect`
     /// (`sessions.answer`, falling back to `tmux.answer` on the window `target` for daemons that predate it).
     func answer(id: String, host: String, target: String?, key: String, expect: String?) async throws -> AnswerResult
+    /// Answer a Grok bot's approval request with option `choice` (its `n`): `POST /api/approvals/answer {id, choice,
+    /// via: "mac"}`. Not an op. A request no longer pending (409) is a result, not an error.
+    func answerApproval(id: String, choice: Int) async throws -> ApprovalAnswerResult
+    /// The whole request (`GET /api/approvals?id=`): its words unshortened, its status and answer. nil when this daemon
+    /// keeps no such request. What a card whose words may be shortened answers from.
+    func approval(id: String) async throws -> ApprovalInfo?
     /// Ask the daemon to follow (or stop following) a Claude transcript, so `turn` events carry its new turns.
     func follow(id: String, host: String, on: Bool) async
     /// The manager conversation `thread` (`sessions.transcript {id: "manager", thread}`).
@@ -53,6 +59,10 @@ extension DroverService {
     func answer(id: String, host: String, target: String?, key: String, expect: String?) async throws -> AnswerResult {
         throw DroverError.unsupported("Answering dialogs")
     }
+    func answerApproval(id: String, choice: Int) async throws -> ApprovalAnswerResult {
+        throw DroverError.unsupported("Answering approval requests")
+    }
+    func approval(id: String) async throws -> ApprovalInfo? { throw DroverError.unsupported("Approval requests") }
     func follow(id: String, host: String, on: Bool) async {}
     func managerTranscript(thread: String, host: String?) async throws -> TranscriptPage { TranscriptPage(turns: [], offset: nil, incremental: false) }
     func messageManager(text: String, thread: String, host: String?) async throws -> MessageResult {

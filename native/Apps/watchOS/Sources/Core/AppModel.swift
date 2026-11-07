@@ -21,6 +21,9 @@ final class AppModel {
     var path: [WaitingItem] = []
     /// A deep link that did not resolve yet (the item may arrive with the next refresh).
     private(set) var pendingDeepLink: DeepLink?
+    /// Requests answered here or closed elsewhere (id -> what the card says instead of its buttons), until the summary
+    /// drops them: the daemon's board can lag an answer by seconds.
+    private(set) var settledApprovals: [String: String] = [:]
     /// Called with waiting items that are new since the last fetch (the app plays a haptic).
     @ObservationIgnored var onNewWaiting: (@MainActor ([WaitingItem]) -> Void)?
     /// Called after summary.json was rewritten (the app reloads complication timelines).
@@ -116,6 +119,10 @@ final class AppModel {
             let out = f.commit(fresh, raw: raw)
             summary = out.summary
             lastUpdated = Date()
+            if !settledApprovals.isEmpty {
+                let listed = Set(waiting.compactMap { $0.approval?.id })
+                settledApprovals = settledApprovals.filter { listed.contains($0.key) }
+            }
             phase = .loaded
             onSummaryCached?()
             if !out.newWaiting.isEmpty { onNewWaiting?(out.newWaiting) }
@@ -150,6 +157,32 @@ final class AppModel {
         let (client, token) = try mainClient()
         try await client.sendMessage(id: item.id, host: item.host, text: trimmed, token: token)
         await refresh()
+    }
+
+    /// Answer a Grok bot's approval request with option `choice` (main token, via watch), then refresh: the item
+    /// leaves the list, or the bot's next request takes its place.
+    func answerApproval(_ approval: ApprovalRequest, choice: Int) async throws -> ApprovalAnswerResult {
+        if offline {
+            let label = approval.options.first { $0.n == choice }.map(ApprovalFormat.title) ?? ""
+            return .decided(label: label, told: true, queued: false)
+        }
+        let (client, token) = try mainClient()
+        let result = try await client.answerApproval(id: approval.id, choice: choice, token: token)
+        settledApprovals[approval.id] = ApprovalFormat.settledText(result)
+        await refresh()
+        return result
+    }
+
+    /// The whole request behind a card whose words may be shortened (main token). nil: no longer kept here.
+    func reviewApproval(_ approval: ApprovalRequest) async throws -> ApprovalRequest? {
+        if offline {
+            var full = approval
+            full.complete = true
+            full.status = "pending"
+            return full
+        }
+        let (client, token) = try mainClient()
+        return try await client.approval(id: approval.id, token: token)
     }
 
     func open(_ url: URL) {

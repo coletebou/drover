@@ -784,12 +784,12 @@ describe('setup in a sandbox', () => {
   test('an existing automation is brought to the role\'s definition in place, never added twice', async () => {
     await install.setup({ scope: 'all', exclude: ['laptop'], digest: true, actor: 'manager' });
     const want = install.loadRole('manager').duties.digest.automations[0];
-    assert.deepEqual([want.model, want.thinking], ['amazon-bedrock-mantle/openai.gpt-6-astra', 'max'], 'the digest runs on Astra at max');
+    assert.deepEqual([want.model, want.thinking], ['amazon-bedrock-mantle/openai.gpt-6.1-sol', 'max'], 'the digest runs on Sol Standard at max');
     Object.assign(host.jobs[0].payload, { model: 'amazon-bedrock-mantle/openai.gpt-6-luna', thinking: 'low' });   // an older definition
     const from = host.calls.length;
     const r = await install.setup({});
     assert.deepEqual([r.steps.find((x) => x.step === 'automation fleet-digest').action, r.steps.find((x) => x.step === 'automation fleet-digest').detail], ['updated', 'model, thinking']);
-    assert.ok(host.calls.slice(from).some((c) => / automations edit job-0 --model amazon-bedrock-mantle\/openai\.gpt-6-astra --thinking max$/.test(c)), 'edited in place');
+    assert.ok(host.calls.slice(from).some((c) => / automations edit job-0 --model amazon-bedrock-mantle\/openai\.gpt-6\.1-sol --thinking max$/.test(c)), 'edited in place');
     assert.equal(host.jobs.length, 1, 'no second digest job');
     assert.equal((await install.setup({})).steps.find((x) => x.step === 'automation fleet-digest').action, 'unchanged');
     done();

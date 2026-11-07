@@ -431,6 +431,19 @@ export function grade(value, limits, dir = 'above', unit = '') {
   return { level: 'ok', limit: null };
 }
 const worst = (...gs) => gs.reduce((a, b) => (levelRank(b.level) > levelRank(a.level) ? b : a), { level: 'ok', limit: null });
+
+/**
+ * The mem check's grade. Warn or worse means memory is short: available is at or under
+ * memAvailablePct or memAvailableGB. Unreadable memory grades ok here; the caller refuses it itself.
+ */
+export function memoryGrade(mem, th = DEFAULT_THRESHOLDS) {
+  if (!mem || !Number.isFinite(mem.availableMB)) return { level: 'ok', limit: null };
+  return worst(grade(mem.availablePct, th.memAvailablePct, 'below', '% available'), grade(mem.availableMB / 1024, th.memAvailableGB, 'below', ' GB available'));
+}
+
+/** True while the mem check would be warn or worse. Placement counts combined swap I/O only then. */
+export const memoryIsShort = (mem, th = DEFAULT_THRESHOLDS) => memoryGrade(mem, th).level !== 'ok';
+
 const gb = (mb) => round(mb / 1024, 1);
 const pct = (n) => `${round(n, 0)}%`;
 
@@ -464,7 +477,7 @@ export function evaluate(v, th = DEFAULT_THRESHOLDS) {
   if (v?.mem) {
     const m = v.mem;
     if (Number.isFinite(m.availableMB)) {
-      const g = worst(grade(m.availablePct, th.memAvailablePct, 'below', '% available'), grade(m.availableMB / 1024, th.memAvailableGB, 'below', ' GB available'));
+      const g = memoryGrade(m, th);
       memShort = g.level !== 'ok';
       add('mem', g, `memory ${gb(m.availableMB)} GB available of ${gb(m.totalMB)} (${pct(m.availablePct)})`, m.availableMB / 1024);
     }

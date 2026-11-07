@@ -99,6 +99,18 @@ Drover was called apx-web (CLI `apxw`) until 2026-10-15. Until 2026-11-15:
   `force`). Launches hand tmux an argv, never a shell string; an argument that
   ends in ";" is escaped (`core/tmux.js` tmuxArg), because tmux would otherwise
   read it as the end of the command and run the next argument as a tmux command.
+  A new window is opened at `=session:` (`core/tmux.js` `newWindow`). The `=` names that session exactly, and the
+  empty index is no window in it, so the window takes the next free index. A bare session name is a window first:
+  tmux prefix-matches it against the current session's window names, so a session `work` once hit its window
+  `work-notes` and the launch failed with "index 1 in use". Without `=`, another session can match the name too.
+  `tmux.new` and a tmux `launch.start` return the target as `session:@id` (the window id), not `session:index`.
+  With `renumber-windows` on, dropping a new session's placeholder, or any window closing later, renumbers the
+  rest, and the index the launch had can name another window or none. The id stays this window until it closes.
+  A command that exits with a code it was not expected to (`core/proc.js` `ProcError`), and a spawn failure, redacts
+  argv and stderr before the message reaches an MCP caller, a remote relay, the WAL or a log. A tmux launch passes
+  the agent's credential as `-e NAME=value`, and the message once returned that value in clear. Every `-e` value on
+  that command is replaced, not only the credential. The error keeps the first 4096 characters of stderr and the
+  message the first 500 of those, each cut on a word so a secret is not left in half.
   Window, pane and session lists split `-F` output on `<|>` (`core/tmux.js`
   `SEP`). tmux 3.4 (Ubuntu 24.04) escapes control characters in format output,
   so the old U+001F separator came back as the four characters `\037`, no line
@@ -229,6 +241,13 @@ accepting the dialog would (`core/trust.js`), and the agent starts at its prompt
 `drover_launch`) leaves the config alone. Headless launches skip it: `claude -p` never shows the dialog, and a
 headless Codex thread runs on the app-server.
 
+A Claude Code config that never finished first-run onboarding (a new host, a fresh `CLAUDE_CONFIG_DIR`) shows two
+more screens before that dialog, a theme picker and a security notice, and on 2026-11-07 the first fan-out on a new
+Linux host sat at them. A tmux Claude launch therefore also sets top-level `hasCompletedOnboarding: true`, the key
+finishing onboarding writes (`onboardClaude`; in 2.1.319 that key alone skips both screens), under the same lock and
+with the same rules as trust: nothing else changes, a file that does not parse is left as it is. The result and the
+launch event carry `onboarding` only when it wrote something. `trust: false` skips this too.
+
 | engine | written | key |
 |---|---|---|
 | claude | `projects[<key>].hasTrustDialogAccepted = true` in `~/.claude.json` (`$CLAUDE_CONFIG_DIR/.claude.json`, or the legacy `.config.json` while in use) | the folder's real path (Claude Code keys its physical cwd: a symlinked cwd counts as its target), NFC; inside git the checkout root, and for a linked worktree its main checkout, plus the worktree's own root |
@@ -318,7 +337,8 @@ drover op files.wait '{"host":"box-a","path":"~/runs/status","glob":"WS-*.md","s
   a dialog or held peer message appearing ("needs a decision"), a session that
   stops on a question or an unanswered AskUserQuestion ("asked you a question"),
   busy to idle ("finished", with an excerpt of the reply), a session dying, a
-  host going dark, launches, manager messages, and what a plugin watches
+  host going dark, launches, manager messages, a Grok bot asking for approval
+  (kind `approval`, answered from the alert: Grok bots, Approvals), and what a plugin watches
   (a merge request watch, say, while a browser is open). Each lands in the WAL as a `notify` event and goes out as the
   `alerts` SSE event. Claude's Notification hook events are enriched with the
   same context before they are written. A front daemon pulls other hosts'
@@ -341,6 +361,31 @@ drover op files.wait '{"host":"box-a","path":"~/runs/status","glob":"WS-*.md","s
   waiting board in Document Picture-in-Picture; `p` pops a drawer out; `?`
   lists every shortcut. Direct peers (Settings) let the browser call another
   daemon over a forwarded port or the tailnet instead of ssh rpc.
+
+## Browser terminals
+
+`terminals.open` (`core/terminals.js`) starts one ttyd per tmux target on
+`127.0.0.1` and an ephemeral port, and returns `{ id, url }`. A second open of
+the same target, while that ttyd is still running, returns the one already
+open. `readOnly: true` omits ttyd's `-W`, so the session is view-only. The
+Terminals view (`r`) embeds `url` in an iframe and can pop it into its own
+tab; the drawer's Terminal button opens that tab directly. Both load ttyd's
+own page.
+
+ttyd is started with `-O`. Its websocket then accepts only a request whose
+`Origin` is that page. Browsers allow any site to open a websocket to
+loopback, so a page other than the ttyd page could otherwise type into the
+tmux session. An iframe or client that loads the url under a different origin
+gets no socket. The daemon stops a terminal two hours after it was opened
+(`lastSeen` is set at open and nothing refreshes it) and when `terminals.close`
+is called. Closing the browser tab leaves the ttyd running until then. The
+tmux window stays either way.
+
+`terminals.list` reports `{ available, terminals }`. `available` is null when
+ttyd is not installed, and the view says so; the drawer's Screen tab still
+works. Terminals bind loopback on the daemon's machine, so the view works
+only while the working host is local. The MCP tool is `drover_terminals`
+(`list`, `open`, `close`).
 
 ## Vitals, resource alerts and placement
 
@@ -396,8 +441,10 @@ drover op launch.start '{"host":"auto","engine":"claude","prompt":"hi"}'   # lau
   `codex-session` 2, `heavy-build` 6 and 20 GB free disk, `macos-only` only on macOS) must leave the host's
   `reserveMemGB`; load must stay under `maxLoadPerCore` and `maxLoad`; macOS memory pressure under `maxPressure`
   (`normal`; `macos-only` may go at `warn`, never at `critical`), Linux stalls under `maxPsiSome60`; swap under
-  `maxSwapPct`/`maxSwapGB`, swapping under `maxSwapIoPerSec`; free disk on `diskPath` over `minFreeDiskGB`. Among the
-  eligible, the most memory and CPU headroom times `weight` wins (a production box gets a weight under 1), with the
+  `maxSwapPct`/`maxSwapGB`, pages swapped out under `maxSwapIoPerSec` (pages in plus out count against that cap only
+  while memory is short, the same rule as the monitor, so a host paging back in is not refused); free disk on
+  `diskPath` over `minFreeDiskGB`. Among the eligible, the most memory and CPU headroom times `weight` wins
+  (a production box gets a weight under 1), with the
   caller's own machine winning a near tie. The answer names the host (`local`, or the ssh alias), the reason, and
   every candidate with why it was passed over. Outside the daemon the daemon answers, through its warm ssh peers.
 - `launch.start` with `host: "auto"` (`drover_launch` too) places, then launches there; nothing starts when no host is
@@ -509,6 +556,33 @@ value already in the environment wins. The settings a fleet usually sets:
 | `DROVER_UPDATE_HINT` | "pull its Drover checkout and restart its daemon" | what an error tells you to do about a host on older code |
 | `DROVER_HANDOFF_CHAINS` | `HANDOFF_CHAIN_STATE_DIR`, else `~/.claude/state/handoff-chain` | where the handoff chains' session markers are (Handoff successors) |
 
+
+## Transcripts in every view
+
+`sessions.transcript` takes a `format`. `turns` (the default) is the compact view the web, iOS, Mac and Chrome
+clients poll. The other four read a whole transcript from its start, page by page (`offset` back as `since`
+while `more`), for Claude Code (interactive, `--bg`, `-p`, headless, subagents, reflection and dotsync runs),
+Codex (interactive and `exec`) and OpenClaw (the manager's chats, heartbeats and cron runs, from its SQLite store):
+
+| format | holds | 6.3 MB Claude session |
+|---|---|---|
+| `messages` | what was said: typed user text, messages from other sessions (`from`), assistant text, compaction summaries | 30 KB |
+| `calls` | messages plus every tool call with its whole input, no outputs (`callStyle: brief`: one line per call) | 356 KB (brief 120 KB) |
+| `full` | calls plus every tool output, nothing cut | 807 KB |
+| `raw` | the source records as they are (JSONL; OpenClaw events decompressed) | 6.3 MB |
+
+The parsers live in `core/transcript-export.js`: one entry shape (`role` user, assistant, summary, tool or result)
+for every engine. `transcripts.list` finds every transcript on a host with what made it; `as: text` renders
+entries as Markdown. An id can be a session id or name, a subagent id (`a0179…`, `agent-a0179…`,
+`<parent>/<agent>`), a Codex thread, a headless id, `manager` with `thread`, `openclaw:<session id or key>`, or a
+`.jsonl` path under the host's Claude projects or Codex sessions dir (nothing outside them, symlinks resolved).
+
+```
+drover transcripts                                   # newest 50 on this machine (--engine, --kind, --days, --parent, --host)
+drover transcript <id> [--format messages|calls|full|raw|turns] [--brief] [--host H] [--json] [--out FILE]
+drover transcript ~/.claude/projects/<slug>/<id>.jsonl --format calls --brief   # a file: read here, no daemon
+```
+
 ## Docker stacks
 
 Every compose stack on every machine, on demand: each service healthy, up (running with no healthcheck), unhealthy,
@@ -564,14 +638,17 @@ MCP server only through OAuth with dynamic client registration. The bot gateway 
 gives the owner's bots Drover anyway, in both directions.
 
 - **Bots to Drover**: a second listener, `127.0.0.1:7338` (`DROVER_BOTS_PORT`), on when `DROVER_BOTS_URL` names its
-  public origin. It serves only OAuth (`/.well-known/*`, `/oauth/*`), an authorize page, and MCP over Streamable HTTP
-  at `/mcp`: purpose-built tools (below), never `/api/`, the UI or an op by name.
+  public origin. It serves only OAuth (`/.well-known/*`, `/oauth/*`), an authorize page, a bot's routine setup page
+  (`/bots/<bot>/routine`, step 5 below), and MCP over Streamable HTTP at `/mcp`: purpose-built tools (below), never
+  `/api/`, the UI or an op by name.
 - **Drover to bots**: bots are sessions (engine `grok`, ids `grok:<name>`) on the host that runs the gateway.
   `sessions.message` (`drover_send`, the drawer, `drover bots send`) POSTs to the bot's Routine webhook, or queues the
   message for its inbox when it has none; the bot answers with `drover_reply`, which lands as a `chat` event threaded
   under the message, and reports `drover_status`, which shows on the board. A reply raises a "finished" alert;
   `needs-owner` and `blocked` raise "needs you" and put the bot in the waiting lane until its next status (a bot taught
-  the earlier `needs-<DROVER_OWNER>` is read the same). A bot is
+  the earlier `needs-<DROVER_OWNER>` is read the same). Messages and replies carry read receipts, a bot can ask the
+  owner to approve something before it acts, answered in one tap, and post to the owner's own chats, each post approved
+  (all below). A bot is
   live when it was heard from, or its Routine accepted a message, in the last day (a Routine alone makes it reachable,
   not live). One that should be acting and has gone silent, its last status `working` or a message its Routine
   accepted still unanswered, turns `stale` after `DROVER_BOTS_STALE_MINUTES` (default 30) and says why; waiting on
@@ -603,10 +680,22 @@ gives the owner's bots Drover anyway, in both directions.
    are shared by all bots and enabled per bot). In Grok Bot, add an **Always allow** rule for the Drover tools, or
    routine runs, which do not count as user intent, are held for review.
 5. Per bot, for Drover to send it tasks: the bot creates one routine named "Drover" (webhook trigger, the instruction
-   `drover_whoami` gives it) and hands you two links that open the routine's Webhook URL and Webhook key in Grok
-   Bot's routine panel (a link to the routine itself does not open); copy both from there and run
-   `drover bots routine add <bot> --url <url>` (the key is read from a hidden prompt, never argv). A connection test
-   follows; the bot should answer "connected".
+   `drover_whoami` gives it) and hands you its setup link, `<public origin>/bots/<bot>/routine`, with two links that
+   open the routine's Webhook URL and Webhook key in Grok Bot's routine panel (a link to the routine itself does not
+   open). Open the setup link on any device, paste both there, and approve the 6-digit code the page then shows in
+   Drover: the browser banner, or `drover bots routine approve <code>` (`drover bots routine pending` lists them). The
+   Routine is set only then, and a connection test follows; the bot should answer "connected", and the page says how
+   the test went. On the gateway host, `drover bots routine add <bot> --url <url>` does the same in one step (the key
+   from a hidden prompt, never argv), and so does the bot's drawer (Info, Routine) in the browser.
+   - The page is the bot gateway's, public like its sign-in: what it is sent waits in memory only for ten minutes, the
+     key and the URL go nowhere else (no log, event, alert or page; the banner and the CLI show the webhook as host
+     and id tail, and the Routine it would replace), and nothing is kept until the code is approved. What a webhook
+     answers is kept without its own key, URL and id, whatever it echoes back. Its form carries a single-use nonce
+     from the page that address opened, and a form sent from another site is refused. An address keeps at most five
+     forms open (opening more drops only its own oldest) and 500 are open in all (then a new page waits, and no open
+     form is dropped for it). The same address sending again for the same bot replaces its earlier setup; at most
+     three wait from one address and twenty in all, ten a minute from one address. Approving and denying are
+     main-token routes (`/api/bots/routine/*`), never ops.
 
 `drover bots` lists the gateway, connections, Routines and each bot's last state; `drover bots revoke <grantId>` cuts
 a connection off at once; `drover bots token --as <bot>` mints a static bearer token for a bot that cannot do OAuth (the token
@@ -616,9 +705,9 @@ then passes through that bot's chat once, so OAuth is the better path).
 
 | Scope | Tools |
 |---|---|
-| `drover.read` | `drover_whoami`, `drover_fleet`, `drover_search`, `drover_inbox`, `drover_features`, `drover_reflections` (list, search, show), and with a brain plugin `drover_brain_search`, `drover_brain_get` |
+| `drover.read` | `drover_whoami`, `drover_fleet`, `drover_search`, `drover_inbox`, `drover_sent`, `drover_approvals` (list, show), `drover_subscribe` and `drover_unsubscribe` (pushes, below), `drover_features`, `drover_reflections` (list, search, show), and with a brain plugin `drover_brain_search`, `drover_brain_get` |
 | `drover.write` | `drover_status`, `drover_reply`, `drover_note`, `drover_feature_upsert`, and with a brain plugin `drover_brain_note` (kinds memory and handoff, filed under `agent:grok-<bot>`) |
-| `drover.notify` | `drover_notify_owner`, also served as `drover_notify_<DROVER_OWNER>` for bots taught that name (12 alerts an hour per bot, counting `needs-owner` statuses) |
+| `drover.notify` | `drover_notify_owner`, also served as `drover_notify_<DROVER_OWNER>` for bots taught that name, `drover_request_approval`, `drover_approval_withdraw` and `drover_post` (12 alerts an hour per bot, counting `needs-owner` statuses, approval requests and posts) |
 
 The brain tools exist only where a plugin provides the `brain.*` ops (search, get, note); without one, the bots are
 neither offered them nor told about them.
@@ -630,10 +719,162 @@ out: secrets redacted, home paths as `~`, long text cut. No tool takes `host`, m
 reads raw transcripts or the raw truth file. Reflections are read-only for bots and brain notes cannot be decisions,
 because both reach every Claude session's context.
 
+### Read receipts
+
+Every message to a bot and every reply from one says how far it got. Drover writes the receipts itself, as `receipt`
+events (`{ of: [ids], thread, state: "read", by, via }`, `core/bots/grok.js`), and folds them per thread.
+
+- A message to a bot is `queued` (in its inbox, no Routine), `delivered` (its Routine accepted it, or the bot picked it
+  up from its inbox), `read` (the bot got it from `drover_inbox`, or started on it with `drover_status` naming it as
+  the task) and `answered` (its reply threads under it). A Routine that refused it says why; the message waits in
+  the inbox.
+- A reply is delivered once it is recorded: the owner's screens get an alert unless they muted the bot, and an agent
+  finds it in the bot's thread. It is read when whoever it is for sees it: the owner when the drawer shows the bot's
+  chat on a visible page or the iPhone app opens it, an agent when it reads the bot's thread through MCP
+  (`drover_session_transcript`, `drover_sessions_lastReply`) or `drover op` (as `cli`). A reply is for whoever sent
+  the message it answers; a message on the bot's own thread is for the owner. The owner's clients are one reader.
+- A receipt counts only when its event's actor is the reader it names, so an agent cannot mark a reply read for the
+  owner: MCP and the CLI always read (and mark) as themselves, the `events.append` op refuses receipt events (only
+  Drover writes them) and stamps every event's actor, id, time and host itself (a body cannot name its own), a reply
+  records who it is for as the bot sends it, and no bot reads another bot's thread. A read marks only the replies up to the last one its
+  page returned; the drawer marks a reply read once it is on screen while the page is visible (one that arrived
+  while the tab was hidden is marked when the tab shows it).
+- Bots see receipts in `drover_inbox` (`readAt`, and `reply.read` for their answer), `drover_sent` (their replies,
+  newest first, with `to` and `read`), `drover_whoami` (`inbox.unread`, and `replies.unread` over the last week),
+  `drover_search` (hits in their own thread carry `event` and `receipt`) and `drover_reply` (`to`, and `delivery`:
+  `alert`, with `muted` when the owner muted the bot, or `thread`). The owner sees them under each turn of the bot's
+  chat in the drawer, and a bot's session carries `unread`, the replies the owner has not read.
+- Ops: `sessions.transcript` turns carry `id` and `receipt` and the answer's `receipts` repeats them for the thread's
+  last turns (an incremental reader updates turns it already shows); `seenBy` on `sessions.transcript` and
+  `sessions.lastReply` records a read by that reader; `sessions.seen` marks a thread read without reading it (its
+  receipt is the record, so it writes no `op` event).
+
+### Approvals
+
+A bot asks before it does something that needs the owner's yes (a purchase, an action with consequences):
+`drover_request_approval` with one clear question, 2 to 4 options (default Approve / Deny), details, a kind
+(`purchase`, `action` or `other`; `post` is what `drover_post` makes, Channels below) and how long it stands (default
+a day; 5 minutes to 7 days). `messageId` ties it to the inbox message it is about. The owner answers in one tap, and
+the answer goes back to the bot (`core/bots/approvals.js`).
+
+- Where it shows: the bot moves to the waiting lane with the question as its ask (`asks for your approval`), on its
+  board strip and in its drawer; a needs-you alert carries it to the owner's screens; and
+  `native.summary`, `native.board` and `native.notifications` carry `answer: "approval"` and `approval {...}` for the
+  iPhone (board buttons, and notification actions that need the phone unlocked), the watch and the menu bar
+  (`../native/CONTRACT.md`). In a terminal, `drover approvals` lists them and `drover approvals answer <id> <n|label>`
+  answers one, on an interactive terminal only.
+- The owner approves only what they saw: a surface answers a request in one tap only when it shows the request
+  whole. The drawer's card always does (question, details, options). The board strip and the waiting window show the
+  question (whole, unclipped) and every label whole, so they offer the options for a request without details, and
+  otherwise "Review and answer", which opens the card. A browser notification always opens the card: the platform
+  cuts its text and buttons as it likes. The native payloads say so with `approval.complete` (`../native/CONTRACT.md`).
+- Answering is a main-token HTTP route, `POST /api/approvals/answer {id, choice, via}`, never an op: no MCP tool, ssh
+  rpc or `drover op` can answer. The CLI answers only on an interactive terminal, so an agent's tool calls (which have
+  none) do not answer by accident; it is no lock, since anything that runs as the owner and reads the main token can
+  answer, as it can do anything else in Drover. A request is answered once: a second tap (the phone and the watch
+  together) gets 409 with the first answer. The board answers a bot kept
+  on another host through that host's direct peer (Settings), or says to answer it on that host's own page.
+- The authority is `~/.local/state/drover/bots/approvals.json` (0600) on the host that keeps the bots: what a bot acts
+  on comes from there only. The truth file records each step as an `approval` event: the request as the bot's (its
+  question and details marked `[untrusted: grok:<bot>]`, `source` and `untrusted` set), the decision as the owner's (it
+  quotes none of the bot's question, and the label of the option picked, which the bot wrote, keeps its mark), a
+  withdrawal. Answered, withdrawn and expired requests are kept, the 300 that ended last. The `events.append` op refuses `approval` events and any event that carries `approval`, so an agent
+  cannot forge a decision there.
+- The decision reaches the bot as a message from the owner that carries `approval {id, n, label, messageId?}`: its
+  Routine runs on it (the webhook body carries `approval` too), or it waits in the inbox. The bot confirms it with
+  `drover_approvals` (`show`) before it acts, and only that counts: a message saying something was approved changes
+  nothing. `drover_approvals` also lists the bot's requests; `drover_approval_withdraw` takes one back.
+- Limits: a request counts as an alert (12 an hour per bot); at most 5 pending per bot and 50 in all; asking again with
+  the same question, options, details and message returns the pending request (other details make another). A request past its time is `expired`: it leaves the
+  board and can no longer be answered.
+- The Routine instruction (v2) says what a message that carries `approval` means; a routine saved before still runs
+  on it (the message's own text says the same), and `drover_whoami` gives a bot with a routine the current
+  instruction to update it to.
+- Ops: `approvals.list` (read-only) lists the requests on the host that keeps the bots, newest first; `bots.status`
+  counts each bot's pending ones; `GET /api/approvals` is the same list for the owner's clients.
+
+### Channels
+
+A bot answering a request often has news for people who are not in Drover: a group chat with the owner and a friend,
+a team channel. Instead of asking an agent to relay it, the bot posts it with `drover_post { channel, text }`
+(`core/bots/channels.js`), and the owner approves every post.
+
+- The owner sets the channels up, with the main token (`/api/bots/channels/*`, never an op), on the host that keeps
+  the bots:
+  - `drover channels add team --webhook --format slack|discord|text|json [--title "Team"] [--bots alpha,beta]` reads the
+    webhook URL (the channel's secret) from stdin, hidden on a terminal, and stores it in `bots/channels.json` (0600);
+    it is shown as host and id tail only. Slack text has `&`, `<` and `>` escaped (no `<!channel>`), Discord posts
+    allow no mentions, `json` posts `{source, channel, bot, text}`. Each change gives the channel a new version: a
+    post asked for before it is not sent.
+  - `drover channels add cole-brett --command '["imsg","send","--chat-identifier","<chat>","--text","{text}"]'` runs
+    that argv on the host, never through a shell: an argument that is exactly `{text}` (or a long option's value,
+    `--text={text}`) becomes the post, as that one argument, and appears once; `{text}` anywhere else in an argument
+    is refused (in `osascript -e` or `node -e` the post would be read as code). Without one the post goes on stdin.
+    (`imsg` sends from the Messages account of the user the daemon runs as.)
+  - `--bots` limits a channel to some bots. `drover channels` lists them, `drover channels test <name>` sends a test
+    post, `drover channels remove <name>` removes one.
+- A bot sees the names and titles of the channels it may use in `drover_whoami` (`channels`), never where they lead.
+- A post is an approval request of kind `post` (Approvals above) with the options "Post it" and "Do not post". Its
+  card says where it goes (the channel's title and its name) and quotes the post, and its details are exactly the text
+  that will be sent: the bot's words, cleaned (secrets redacted, and nothing no one sees: every default-ignorable
+  character, such as bidi controls, zero-width marks, fillers, tag characters and variation selectors, goes; emoji
+  keep a joiner between two emoji and one presentation selector), behind its name ("Alpha (<owner>'s bot): ..."), so
+  the people in the channel know a bot speaks. Only "Post it" sends it, once, after the decision is stored, and only
+  to the channel as the card showed it: a channel changed since (where it leads, its title), removed or closed to the
+  bot sends nothing.
+- The outcome is recorded (the request's `outcome`, the decided event) and told to the bot in the decision message;
+  `drover_approvals` (`show`) and `drover approvals` have it too. `ok: true` is posted ("Drover did what it asked:
+  posted to team"); `ok: false` is not, said why in Drover's words (the channel's webhook answered HTTP 400, imsg is
+  not installed here), and the bot may ask again; `unknown: true` may have gone out (the webhook did not answer in
+  time or the connection broke, it answered 202, 302, 303, 408 or 5xx, a command ran and failed or timed out, Drover stopped
+  partway): the bot is told not to ask again unless the owner says so, and Drover never sends it again. While a post is being sent the request says
+  `running`. What a channel answers can echo the post, so a webhook's answer and a command's output stay out of the
+  records and the bot's message: only `drover channels test <name>` shows them, to the owner. A webhook's redirect is
+  not followed, and a Discord webhook is asked to wait until the message is saved (`wait=true`), so its 2xx means the
+  post is there.
+
+### Pushes instead of polling
+
+A bot that sweeps the fleet on a timer mostly finds nothing. It can subscribe instead: `drover_subscribe { events,
+minIntervalMinutes }` (`core/bots/subscriptions.js`), and Drover runs its Routine when something it cares about
+happens.
+
+- `owner-waiting`: a session on any machine starts waiting on the owner (a needs-you or held alert about a session that
+  the gateway host's daemon raises or pulls from another host: a dialog, a question, a hook's notification; not a
+  bot's, not a test, not one the owner muted, and never Drover's own, such as a bot or a device asking to connect). `bot-needs-owner`: another bot goes blocked or needs the owner, or asks them for an approval.
+  `inbox`: a message reaches the bot's inbox that its Routine did not already run on (a broadcast to `grok:*`, one
+  its Routine refused). Statuses, approvals and messages are read from the truth file as it grows (a stat every five
+  seconds, then the new bytes only), so a message written by another host's `drover rpc` counts too; a file rewritten
+  in place (dotsync) starts again at its end, so nothing is told twice.
+- The first event waits a minute (`DROVER_BOTS_PUSH_DEBOUNCE_SECONDS`) for company; pushes are at least
+  `minIntervalMinutes` apart (default 10, 5 to 1440) and at most 144 attempts a day (failed ones count); one carries
+  at most 50 events and counts the rest. A failed push is tried at the next window, and its batch dropped after three
+  in a row. The pace outlives the subscription: a bot that unsubscribes and subscribes again gets no sooner push.
+- A restart loses nothing and tells nothing twice: the store keeps what waits, how far the truth file was read into
+  it (from the subscription on, and at least every minute while it moves) and the ids of what it told, as one record,
+  and the daemon carries on from there, so what was appended while it was down is read when it is back (up to 4 MB of
+  it; a larger gap is skipped). An attempt is stored before it goes out, and what it carries counts as gone out: a push
+  that was out when the daemon stopped is neither forgotten by the pace nor sent again, and one the store cannot
+  record first is not sent.
+- A push is one webhook body of type `drover.events` (Routine instruction v3 says what it is, and its `text` says it
+  in words for an older instruction): `events` such as `{kind: "owner-waiting", host, session: {id, name, engine},
+  wait: "needs a decision"}`, `{kind: "bot-needs-owner", bot, name, state, summary}` and `{kind: "inbox", messageId,
+  from, broadcast}`. It is not a message: nothing lands in the inbox and nothing needs an answer.
+- A push says no more than the bot could read with its own tools: which session on which machine and what kind of
+  wait, never what a dialog says; another bot's state and summary (that bot's words, marked untrusted), never what it
+  asks the owner to approve; an inbox message's id and sender, never its text (`drover_inbox` has it).
+- Only a bot with a Routine and a live connection of its own (not shared, not a native tenant's) that may read gets
+  a push: revoke it and they stop. `drover_whoami` shows the subscription (`subscription`: events, interval, the last
+  push and how it went). The owner sees every subscription with `drover bots subscriptions` and ends one with `drover
+  bots unsubscribe <bot>` (main-token routes `/api/bots/subscriptions`, never ops). Stored in
+  `bots/subscriptions.json` (0600).
+
 ### Security
 
-- Approving a connection, revoking it, minting a token and setting a Routine are main-token HTTP routes
-  (`/api/bots/*`), never ops, like pairing: no MCP tool or ssh rpc can let a bot in or redirect its Routine.
+- Approving a connection, revoking it, minting a token, setting a Routine and setting up a channel are main-token
+  HTTP routes (`/api/bots/*`), never ops, like pairing: no MCP tool or ssh rpc can let a bot in, redirect its Routine
+  or point its posts somewhere else. Answering
+  a bot's approval request is one too (`/api/approvals/answer`, Approvals above).
 - PKCE S256 is required; authorization codes are single use and live a minute; access tokens an hour; refresh tokens
   rotate (60 days), and replaying a used one revokes the whole grant. Tokens and keys are stored only as SHA-256
   hashes in `~/.local/state/drover/bots/oauth.json` (0600); Routine URLs and keys live in `bots/grok.json` (0600) and
@@ -836,7 +1077,10 @@ hosts and a fake manager gateway that streams (`test/fake-gateway.js`; a message
 8 s, "fail " fails, "echo " echoes). Tokens are copied from the real state dir, so a paired client works against it.
 A dialog comes back about 12 s after it is answered. Nothing in it can reach a real session, pane or host: its
 codex, docker and ssh are stand-ins (`test/showcase/fake-*.js`), every tmux server it starts or stops is named by
-socket, and it stops unless the daemon sees only its own hosts, no plugin and only its own tmux session.
+socket, and it stops unless the daemon sees only its own hosts, no plugin and only its own tmux session. `--bots
+<port>` also runs the bot gateway on that loopback port (its own public origin, plain http) and keeps the bots in the
+world's state, so a script can be a Grok bot end to end: sign in, get approved with the world's `drover bots`, call the
+tools, and take Routine webhooks on loopback.
 
 `--showcase` builds the showcase world instead (`test/showcase/world.js`): three hosts (studio runs the daemon, devbox
 answers through the stand-in ssh, spare is down) under a HOME of its own, Claude Code sessions on both, Codex threads,
@@ -870,7 +1114,7 @@ core/search/    the search index: extract, chunk, store (node:sqlite), indexer, 
 core/bots/      Grok bots: oauth (the gateway's OAuth server), tools (the bot tools), tenant-tools and access (native tenants), policy (what leaves for bots: cleaned, secrets redacted), grok (bots as sessions, Routines)
 core/docker.js  docker stacks and the docker.* verbs (core/docker-format.js: drover stacks text; ui/stacks-text.js: summaries both use)
 server/http.js  HTTP + SSE front, bearer token, static ui/
-server/botgate.js  the bot gateway: OAuth endpoints, authorize page, MCP over Streamable HTTP for Grok bots
+server/botgate.js  the bot gateway: OAuth endpoints, authorize page, routine setup page, MCP over Streamable HTTP for Grok bots
 ui/             single-page app, vanilla ES modules
 mcp/server.js   MCP over stdio, maps tools onto core/api.js
 profiles.json   default launch profiles (claude: default, plan, yolo; codex: default, read-only, workspace, yolo), model aliases, tmux sessions; DROVER_PROFILES points at a fleet's own copy

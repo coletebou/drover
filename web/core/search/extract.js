@@ -14,7 +14,7 @@ const WRAPPED = /^\s*<(command-name|command-message|command-args|local-command-s
 const PEER_OPEN = /<cross-session-message\b[^>]*>/g;
 const PEER_CLOSE = /<\/cross-session-message>/g;
 const INTERRUPTED = /^\[Request interrupted by user[^\]]*\]$/;
-const CODEX_INJECTED = ['<environment_context>', '<user_instructions>', '# AGENTS.md', '<permissions', '<user_shell_command>', '<turn_aborted>', '<developer'];
+export const CODEX_INJECTED = ['<environment_context>', '<user_instructions>', '# AGENTS.md', '<permissions', '<user_shell_command>', '<turn_aborted>', '<developer'];
 const ANSI = /\x1b\[[0-?]*[ -\/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]/g;
 const CONTROL = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
 
@@ -266,6 +266,8 @@ export function walEvent(ev) {
     case 'message': text = pick(ev.text); title = `message to ${ev.to?.name ?? ev.to?.id ?? 'a session'}${ev.to?.host ? ' on ' + ev.to.host : ''}`; sessionId = ev.to?.id ?? null; break;
     case 'chat': text = pick(ev.text); title = `chat from ${ev.from ?? 'agent'}`; sessionId = ev.to?.id ?? null; break;
     case 'handoff': text = pick(ev.text, ev.summary, ev.path); title = 'handoff'; break;
+    // A Grok bot's approval request (its words carry their untrusted mark) and the owner's answer, in the bot's thread.
+    case 'approval': text = pick(ev.question, ev.details, ev.decision?.label ? `answer: ${ev.decision.label}` : '', ev.outcome ? (ev.outcome.ok ? 'done' : ev.outcome.unknown ? `not known whether done: ${ev.outcome.error ?? ''}` : `not done: ${ev.outcome.error ?? ''}`) : '', ev.state === 'withdrawn' ? 'withdrawn' : ''); title = `approval ${ev.state ?? ''} ${ev.aid ?? ''}${ev.action?.channel ? ` (post to ${ev.action.channel})` : ''}`; sessionId = typeof ev.bot === 'string' ? ev.bot : null; break;
     case 'survey-item': {
       const it = ev.item ?? {};
       text = pick(it.title, it.summary, it.next_step ? `next: ${it.next_step}` : '', it.evidence, [...(it.activities ?? []), ...(it.mrs ?? [])].join(' '));

@@ -163,6 +163,13 @@ describe('argv builders', () => {
     assert.deepEqual(claude.interactiveArgv(profile('claude', 'claude-safe'), { effort: null }), ['claude']);
   });
 
+  test('claude interactive: a name becomes --name=<name> after resume and before the prompt; none, no flag', () => {
+    const skip = profile('claude', 'claude-skip');
+    assert.deepEqual(claude.interactiveArgv(skip, { model: 'opus', resume: 'S1', name: 'reflect-x', prompt: 'go' }),
+      ['claude', '--dangerously-skip-permissions', '--model', 'opus', '--resume=S1', '--name=reflect-x', '--', 'go']);
+    assert.deepEqual(claude.interactiveArgv(skip, { name: '' }), ['claude', '--dangerously-skip-permissions']);
+  });
+
   test('claude interactive: --effort comes after the model and before resume and the prompt; composes with a profile and a model', () => {
     const plan = profile('claude', 'claude-plan');
     assert.deepEqual(claude.interactiveArgv(plan, { model: 'sonnet', effort: 'max', resume: 'S1', prompt: 'go' }),
@@ -237,7 +244,7 @@ describe('launch() with fake tmux, headless claude and codex thread start', () =
   test('claude tmux: the effort reaches the spawned argv, the result and the launch event', async () => {
     windows.length = 0;
     const r = await launchMod.launch({ engine: 'claude', mode: 'tmux', profile: 'claude-plan', model: 'sonnet', effort: 'max', cwd: dir, prompt: 'go', name: 'e1' }, { actor: 't' });
-    const want = ['claude', '--dangerously-skip-permissions', '--permission-mode', 'plan', '--model', 'sonnet', '--effort', 'max', '--', 'go'];
+    const want = ['claude', '--dangerously-skip-permissions', '--permission-mode', 'plan', '--model', 'sonnet', '--effort', 'max', '--name=e1', '--', 'go'];
     assert.deepEqual(windows[0].argv, want);
     assert.deepEqual(r.argv, want);
     assert.equal(r.effort, 'max');
@@ -255,7 +262,7 @@ describe('launch() with fake tmux, headless claude and codex thread start', () =
     const rs = await launchMod.launch({ engine: 'codex', mode: 'tmux', effort: 'xhigh', resume: 'T-1', cwd: dir, name: 'e3' }, { actor: 't' });
     assert.deepEqual(rs.argv, ['codex', '-p', 'work', '-c', 'model_reasoning_effort="xhigh"', 'resume', '--', 'T-1']);
     const rc = await launchMod.launch({ engine: 'claude', mode: 'tmux', effort: 'low', resume: 'S-1', cwd: dir, name: 'e4' }, { actor: 't' });
-    assert.deepEqual(rc.argv, ['claude', '--dangerously-skip-permissions', '--effort', 'low', '--resume=S-1']);
+    assert.deepEqual(rc.argv, ['claude', '--dangerously-skip-permissions', '--effort', 'low', '--resume=S-1', '--name=e4']);
   });
 
   test('claude headless: HeadlessClaude gets the effort, headless.list shows it, and a failover resume keeps it', async () => {
@@ -324,7 +331,7 @@ describe('launch() with fake tmux, headless claude and codex thread start', () =
     for (const effort of [undefined, null, '']) {
       const req = effort === undefined ? {} : { effort };
       const t = await launchMod.launch({ engine: 'claude', mode: 'tmux', model: 'opus', cwd: dir, prompt: 'hi', name: 'p', ...req }, { actor: 't' });
-      assert.deepEqual(t.argv, ['claude', '--dangerously-skip-permissions', '--model', 'opus', '--', 'hi']);
+      assert.deepEqual(t.argv, ['claude', '--dangerously-skip-permissions', '--model', 'opus', '--name=p', '--', 'hi']);
       assert.deepEqual(Object.keys(t), ['ok', 'mode', 'target', 'name', 'argv', 'credential', 'credentialReason', 'event']);
       assert.deepEqual(Object.keys(windows.at(-1).env).sort(), ['CLAUDE_CODE_RETRY_WATCHDOG', 'FAKE_CHILD_TOKEN', 'PATH']);
       const tev = await lastEvent();
@@ -471,7 +478,7 @@ describe('real tmux: a launch reaches the agent as the exact argv, with no shell
 
   test('claude: a hostile prompt arrives as one argument, beside --effort, and nothing in it runs', async () => {
     const r = await launchMod.launch({ engine: 'claude', mode: 'tmux', profile: 'claude-plan', model: 'opus', effort: 'max', cwd: tdir, prompt: hostile(), tmuxSession: TMUX_SESSION, name: 'hostile' }, { actor: 't' });
-    assert.deepEqual(r.argv, ['claude', '--dangerously-skip-permissions', '--permission-mode', 'plan', '--model', 'opus', '--effort', 'max', '--', hostile()]);
+    assert.deepEqual(r.argv, ['claude', '--dangerously-skip-permissions', '--permission-mode', 'plan', '--model', 'opus', '--effort', 'max', '--name=hostile', '--', hostile()]);
     const got = await recorded('claude');
     assert.deepEqual(got.argv, r.argv.slice(1), 'the agent received exactly the argv the launch built');
     assert.equal(got.cwd, realpathSync(tdir));
@@ -515,7 +522,7 @@ describe('real tmux: a launch reaches the agent as the exact argv, with no shell
     await mkdir(dirWithSemi);
     const r = await launchMod.launch({ engine: 'claude', mode: 'tmux', model: 'x;', cwd: dirWithSemi, prompt: 'kill-server', tmuxSession: TMUX_SESSION, name: 'semi' }, { actor: 't' });
     const got = await recorded('claude');
-    assert.deepEqual(got.argv, ['--dangerously-skip-permissions', '--model', 'x;', '--', 'kill-server']);
+    assert.deepEqual(got.argv, ['--dangerously-skip-permissions', '--model', 'x;', '--name=semi', '--', 'kill-server']);
     assert.deepEqual(got.argv, r.argv.slice(1));
     assert.equal(got.cwd, realpathSync(dirWithSemi), 'the ";" in -c is part of the directory');
     assert.equal(alive(), true, 'kill-server stayed an argument of the agent');
@@ -524,8 +531,8 @@ describe('real tmux: a launch reaches the agent as the exact argv, with no shell
   test('a prompt that looks like a flag reaches the agent after --, on claude-safe and on codex (a subcommand name too)', async () => {
     for (const prompt of ['--dangerously-skip-permissions', '--version']) {
       const r = await launchMod.launch({ engine: 'claude', mode: 'tmux', profile: 'claude-safe', cwd: tdir, prompt, tmuxSession: TMUX_SESSION, name: 'flagprompt' }, { actor: 't' });
-      assert.deepEqual(r.argv, ['claude', '--', prompt]);
-      assert.deepEqual((await recorded('claude')).argv, ['--', prompt], `${prompt} is prompt text, not an option`);
+      assert.deepEqual(r.argv, ['claude', '--name=flagprompt', '--', prompt]);
+      assert.deepEqual((await recorded('claude')).argv, ['--name=flagprompt', '--', prompt], `${prompt} is prompt text, not an option`);
     }
     await launchMod.launch({ engine: 'codex', mode: 'tmux', profile: 'codex-default', cwd: tdir, prompt: 'logout', tmuxSession: TMUX_SESSION, name: 'subcmd' }, { actor: 't' });
     assert.deepEqual((await recorded('codex')).argv, ['--', 'logout']);
@@ -533,7 +540,7 @@ describe('real tmux: a launch reaches the agent as the exact argv, with no shell
 
   test('a resume id that looks like a flag stays the id (claude --resume=, codex resume --)', async () => {
     await launchMod.launch({ engine: 'claude', mode: 'tmux', profile: 'claude-safe', cwd: tdir, resume: '--dangerously-skip-permissions', prompt: '--version', tmuxSession: TMUX_SESSION, name: 'res-claude' }, { actor: 't' });
-    assert.deepEqual((await recorded('claude')).argv, ['--resume=--dangerously-skip-permissions', '--', '--version']);
+    assert.deepEqual((await recorded('claude')).argv, ['--resume=--dangerously-skip-permissions', '--name=res-claude', '--', '--version']);
     await launchMod.launch({ engine: 'codex', mode: 'tmux', cwd: tdir, resume: '--last', tmuxSession: TMUX_SESSION, name: 'res-codex' }, { actor: 't' });
     assert.deepEqual((await recorded('codex')).argv, ['-p', 'work', 'resume', '--', '--last']);
   });

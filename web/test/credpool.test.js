@@ -244,7 +244,7 @@ test('tmux launch: the value travels only in the spawned argv; result and event 
   assert.equal(windows[0].argv[0], 'claude', 'no env prefix in the argv (tmux -e carries the env)');
   assert.equal(windows[0].env.FAKE_CHILD_TOKEN, process.env.DROVER_TEST_MAIN, 'the child gets the resolved value through env');
   assert.equal(windows[0].env.CLAUDE_CODE_RETRY_WATCHDOG, '1', 'a Drover-launched claude runs in persistent retry mode');
-  assert.deepEqual(r.argv, ['claude', '--dangerously-skip-permissions', '--', 'hi']);
+  assert.deepEqual(r.argv, ['claude', '--dangerously-skip-permissions', '--name=demo', '--', 'hi']);
   noFakes(r, 'launch result');
   const { raw, ev } = await lastEvent();
   assert.equal(ev.type, 'launch'); assert.equal(ev.credential, 'main'); assert.deepEqual(ev.argv, r.argv); assert.equal(ev.id, r.event);

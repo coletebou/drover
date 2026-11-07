@@ -12,13 +12,14 @@ import { createHash } from 'node:crypto';
 import { connect } from 'node:net';
 import path from 'node:path';
 import { pidAlive, run, startLines } from './proc.js';
+import { listWindows } from './tmux.js';
 import { uuidv7 } from './ids.js';
 import { checkEffort } from './effort.js';
 import { toolSummary, toolDescription, resultEntry } from './toolcalls.js';
 
 export const CLAUDE_HOME = process.env.CLAUDE_CONFIG_DIR ?? path.join(process.env.HOME, '.claude');
 const SESSIONS_DIR = path.join(CLAUDE_HOME, 'sessions');
-const PROJECTS_DIR = path.join(CLAUDE_HOME, 'projects');
+export const PROJECTS_DIR = path.join(CLAUDE_HOME, 'projects');
 
 export function projectSlug(cwd) {
   return cwd.replace(/[\\/:]/g, '-');
@@ -79,11 +80,30 @@ export async function listSessions() {
   return [...byId.values()];
 }
 
-export async function findSession(idOrName) {
+export async function findSession(idOrName, { windows = listWindows } = {}) {
   const all = await listSessions();
   const hit = (s) => s.sessionId === idOrName || s.name === idOrName || s.sessionId.startsWith(idOrName);
   // A name or an id prefix can also match sessions that ended: a running one answers first.
-  return all.find((s) => running(s) && hit(s)) ?? all.find(hit) ?? null;
+  const found = all.find((s) => running(s) && hit(s)) ?? all.find(hit);
+  if (found) return found;
+  // Else the name of the tmux window a session runs in: the name a launch gave, for a session launched before
+  // launches passed --name, or one started by hand in a window someone named.
+  return byWindowName(all, idOrName, await windows().catch(() => []));
+}
+
+/**
+ * The one running session whose registry tmux field (`<session>:@<window id>.%<pane>`, or `<session>:<index>…`)
+ * is in a window called `name`; null when none is, or when several are (a message must not guess between them).
+ */
+export function byWindowName(sessions, name, windows) {
+  const keys = new Set();
+  for (const w of windows ?? []) if (w.name === name) { keys.add(`${w.session}:${w.windowId}`); keys.add(`${w.session}:${w.index}`); }
+  if (!keys.size) return null;
+  const inThem = sessions.filter((s) => {
+    const m = running(s) && String(s.tmux ?? '').match(/^(.+?):(@?\d+)/);
+    return Boolean(m) && keys.has(`${m[1]}:${m[2]}`);
+  });
+  return inThem.length === 1 ? inThem[0] : null;
 }
 
 async function readPeerToken(pid, socketPath) {
@@ -408,12 +428,18 @@ export function effortArgv(effort) {
  */
 function resumeArg(resume) { return `--resume=${resume}`; }
 
-/** Build the argv for an interactive claude launch from a resolved profile: profile argv, model, effort, resume, then -- and the prompt. */
-export function interactiveArgv(profile, { model, effort, resume, prompt, extra = [] } = {}) {
+/**
+ * Build the argv for an interactive claude launch from a resolved profile: profile argv, model, effort, resume,
+ * name, then -- and the prompt. `name` becomes the session's display name (`--name=<name>`, bound like
+ * `--resume`), which is what the registry records and what findSession matches: without it Claude Code names
+ * the session after its cwd (`<dir>-<suffix>`), so a launch's own name only reached the tmux window.
+ */
+export function interactiveArgv(profile, { model, effort, resume, name, prompt, extra = [] } = {}) {
   const argv = ['claude', ...(profile.argv ?? [])];
   if (model) argv.push('--model', model);
   argv.push(...effortArgv(effort));
   if (resume) argv.push(resumeArg(resume));
+  if (name) argv.push(`--name=${name}`);
   argv.push(...extra);
   if (prompt) argv.push('--', prompt);
   return argv;
@@ -453,8 +479,8 @@ export class HeadlessClaude {
   stop() { try { this.child.stdin.end(); } catch { /* already closed */ } setTimeout(() => this.child.kill('SIGTERM'), 2000).unref(); }
 }
 
-/** Recent transcript files across all projects (for the Sessions view when a session is not live). */
-export async function recentTranscripts({ days = 4, limit = 300 } = {}) {
+/** Recent transcript files across all projects (for the Sessions view when a session is not live; minBytes leaves out the near-empty ones). */
+export async function recentTranscripts({ days = 4, limit = 300, minBytes = 2000 } = {}) {
   if (!existsSync(PROJECTS_DIR)) return [];
   const cutoff = Date.now() - days * 86400_000;
   const out = [];
@@ -465,12 +491,22 @@ export async function recentTranscripts({ days = 4, limit = 300 } = {}) {
       if (!n.endsWith('.jsonl')) continue;
       const f = path.join(dir, n);
       let s; try { s = await stat(f); } catch { continue; }
-      if (s.mtimeMs < cutoff || s.size < 2000) continue;
+      if (s.mtimeMs < cutoff || s.size < minBytes) continue;
       out.push({ kind: 'claude', sessionId: n.slice(0, -6), slug, transcript: f, mtime: s.mtime.toISOString(), bytes: s.size });
     }
   }
   out.sort((a, b) => (a.mtime < b.mtime ? 1 : -1));
   return out.slice(0, limit);
+}
+
+/** The transcript file of a session id in any project, at any size and age (recentTranscripts leaves small and old ones out). */
+export async function transcriptById(sessionId) {
+  if (!/^[0-9a-f-]{36}$/i.test(String(sessionId ?? ''))) return null;
+  for (const slug of await readdir(PROJECTS_DIR).catch(() => [])) {
+    const f = path.join(PROJECTS_DIR, slug, `${sessionId}.jsonl`);
+    if (existsSync(f)) return f;
+  }
+  return null;
 }
 
 /** First user prompt + last assistant text of a transcript, cheaply. */

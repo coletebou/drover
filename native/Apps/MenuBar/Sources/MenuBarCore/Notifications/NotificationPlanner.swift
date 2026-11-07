@@ -17,6 +17,24 @@ struct PlannedAction: Sendable, Equatable {
     }
 }
 
+/// A notification button that answers a Grok bot's approval request with one option (`POST /api/approvals/answer`).
+struct PlannedApprovalAction: Sendable, Equatable {
+    /// `drover.approval.choice.<n>`.
+    var identifier: String
+    var title: String
+    var choice: Int
+    /// A clearly negative option (Deny, Not now): shown as destructive.
+    var destructive: Bool
+
+    static let prefix = "drover.approval.choice."
+
+    /// The option an action identifier answers, or nil for other actions.
+    static func choice(fromIdentifier id: String) -> Int? {
+        guard id.hasPrefix(prefix), let n = Int(id.dropFirst(prefix.count)), n >= 1 else { return nil }
+        return n
+    }
+}
+
 struct PlannedNotification: Sendable, Equatable {
     var identifier: String
     var title: String
@@ -31,13 +49,26 @@ struct PlannedNotification: Sendable, Equatable {
     /// `sessions.answer` id (the session, else the window) and the screen hash the alert was raised for.
     var answerID: String? = nil
     var expect: String? = nil
+    /// "Asked by Alpha, a Grok bot" on a bot's approval request: who wrote the words below it.
+    var subtitle: String? = nil
+    /// One button per option of an approval request, the request they answer and the bot's name. Never with Reply,
+    /// which would message the bot instead of answering.
+    var approvalActions: [PlannedApprovalAction] = []
+    var approvalID: String? = nil
+    var approvalBot: String? = nil
 
     static let waitingCategory = "drover.waiting"
     static let infoCategory = "drover.info"
+    static let approvalCategoryPrefix = "drover.approval."
 
     /// The notification category: the fixed waiting and info ones, or one per distinct set of dialog buttons
-    /// (`drover.dialog.<digest>`), registered on the fly.
+    /// (`drover.dialog.<digest>`) or approval options (`drover.approval.<digest>`), registered on the fly.
     var categoryID: String {
+        if !approvalActions.isEmpty {
+            // An approval category's id is the actions themselves, encoded one to one, not a hash: two option sets never share a category, so a bot that found colliding labels could not put one request's buttons on another's banner.
+            let parts = approvalActions.map { [$0.identifier, $0.title, $0.destructive ? "1" : "0"] }
+            return Self.approvalCategoryPrefix + ((try? JSONEncoder().encode(parts)).map { $0.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "") } ?? "")
+        }
         guard !actions.isEmpty else { return canReply ? Self.waitingCategory : Self.infoCategory }
         let signature = actions.map { "\($0.identifier)=\($0.title)" }.joined(separator: "\u{1F}") + (canReply ? "|reply" : "")
         return "drover.dialog.\(Self.digest(signature))"
@@ -73,6 +104,7 @@ enum NotificationPlanner {
         guard !fresh.isEmpty else { return [] }
 
         func make(_ item: NotificationItem) -> PlannedNotification {
+            if let approval = item.approval { return approvalNotification(item, approval, sound: preferences.notificationSound) }
             let actions = item.isNeedsYou ? dialogActions(item) : []
             return PlannedNotification(
                 identifier: "drover.notify.\(item.id)",
@@ -105,6 +137,38 @@ enum NotificationPlanner {
             canReply: false,
             playSound: preferences.notificationSound && rest.contains(where: \.isNeedsYou))
         return newest.map(make) + [summary]
+    }
+
+    /// A Grok bot's approval request: who asks, its question and details, and one button per option (at most four) only
+    /// for words the banner shows whole (a complete request without details). Anything else, and a request another
+    /// host keeps (this daemon would answer 404), gets Open only: the session opens, where the request is reviewed.
+    static func approvalNotification(_ item: NotificationItem, _ approval: ApprovalInfo, sound: Bool) -> PlannedNotification {
+        let bot = ApprovalFormat.botName(bot: approval.bot)
+        let oneClick = ApprovalFormat.isAnswerable(host: item.host) && ApprovalFormat.answersInNotification(approval)
+        let buttons = oneClick ? approvalActions(approval) : []
+        let text = approval.details.map { "\(approval.question)\n\($0)" } ?? approval.question
+        return PlannedNotification(
+            identifier: "drover.notify.\(item.id)",
+            title: truncate(item.title, 80),
+            body: truncate(approval.question.isEmpty ? (item.body ?? "") : text, 240),
+            threadID: item.sessionId ?? "drover",
+            sessionId: item.sessionId,
+            host: item.host,
+            canReply: false,
+            playSound: sound,
+            subtitle: "Asked by \(ApprovalFormat.askedBy(bot))",
+            approvalActions: buttons,
+            approvalID: buttons.isEmpty ? nil : approval.id,
+            approvalBot: bot)
+    }
+
+    /// One button per option, in the request's order, each label whole.
+    static func approvalActions(_ approval: ApprovalInfo) -> [PlannedApprovalAction] {
+        approval.options.map { o in
+            let title = ApprovalFormat.title(o)
+            return PlannedApprovalAction(identifier: PlannedApprovalAction.prefix + String(o.n), title: title,
+                                         choice: o.n, destructive: ApprovalFormat.isNegative(title))
+        }
     }
 
     /// Buttons for an alert raised by a dialog: one per option when it has options, else Approve (Enter) and

@@ -104,9 +104,10 @@ enum ServerEventMapper {
         let dialog = BoardDecoder.dialogInfo(v["dialog"])
         let held = v["held"].map { $0.isPresent && $0.bool != false } ?? (v["category"]?.text == "held")
         let answer = v["answer"]?.text.flatMap(AnswerMode.init(rawValue:))
+        let approval = BoardDecoder.approvalInfo(v["approval"])
         var keys = v["keys"]?.strings ?? []
         // A dialog alert from a daemon that predates `keys`: what every dialog takes.
-        if keys.isEmpty, answer != .reply, v["hash"]?.text != nil, dialog != nil || held { keys = held ? ["Enter", "Escape"] : DialogKeys.defaultKeys(dialog) }
+        if keys.isEmpty, answer != .reply, approval == nil, v["hash"]?.text != nil, dialog != nil || held { keys = held ? ["Enter", "Escape"] : DialogKeys.defaultKeys(dialog) }
         return NotifyItem(
             id: id,
             at: (v["ts"] ?? v["at"])?.date ?? Date(),
@@ -121,8 +122,9 @@ enum ServerEventMapper {
             dialog: dialog,
             hash: v["hash"]?.text,
             keys: keys,
-            answerMode: answer ?? (keys.isEmpty ? nil : .keys),
-            held: held
+            answerMode: approval != nil ? .approval : answer ?? (keys.isEmpty ? nil : .keys),
+            held: held,
+            approval: approval
         )
     }
 }

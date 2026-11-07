@@ -79,9 +79,16 @@ struct WaitingItem: Codable, Sendable, Equatable, Identifiable, Hashable {
     var since: FlexibleDate?
     var kind: WaitingKind
     var headline: String
+    /// How it is answered: `keys`, `reply`, or `approval` (a Grok bot's request, answered by its id).
+    var answer: String?
+    /// A Grok bot's approval request (`kind` stays `decision`, so older watches show it as a decision).
+    var approval: ApprovalRequest?
+    /// How many more requests from the same bot wait behind this one.
+    var moreApprovals: Int?
 
     init(id: String, name: String, host: String? = nil, engine: String = "claude",
-         since: FlexibleDate? = nil, kind: WaitingKind = .question, headline: String = "") {
+         since: FlexibleDate? = nil, kind: WaitingKind = .question, headline: String = "",
+         answer: String? = nil, approval: ApprovalRequest? = nil, moreApprovals: Int? = nil) {
         self.id = id
         self.name = name
         self.host = host
@@ -89,6 +96,9 @@ struct WaitingItem: Codable, Sendable, Equatable, Identifiable, Hashable {
         self.since = since
         self.kind = kind
         self.headline = headline
+        self.answer = answer
+        self.approval = approval
+        self.moreApprovals = moreApprovals
     }
 
     init(from decoder: Decoder) throws {
@@ -100,10 +110,16 @@ struct WaitingItem: Codable, Sendable, Equatable, Identifiable, Hashable {
         since = try c.decodeIfPresent(FlexibleDate.self, forKey: .since)
         kind = try c.decodeIfPresent(WaitingKind.self, forKey: .kind) ?? .other
         headline = try c.decodeIfPresent(String.self, forKey: .headline) ?? ""
+        // New and optional: a malformed one is ignored, never fatal to the summary.
+        answer = try? c.decodeIfPresent(String.self, forKey: .answer)
+        approval = try? c.decodeIfPresent(ApprovalRequest.self, forKey: .approval)
+        moreApprovals = try? c.decodeIfPresent(Int.self, forKey: .moreApprovals)
     }
 
     /// Stable identity across hosts: the same session id can exist on two machines.
     var key: String { "\(host ?? "local")/\(id)" }
+    /// The bot's name, for "Asked by Alpha, a Grok bot".
+    var botName: String? { ApprovalFormat.botName(bot: approval?.bot, fallback: name) }
 }
 
 struct WorkingItem: Codable, Sendable, Equatable, Identifiable {

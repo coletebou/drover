@@ -7,7 +7,7 @@ here="$(cd "$(dirname "$0")" && pwd)"; src="$here/../Sources"
 out="$(mktemp -d)"; trap 'rm -rf "$out"' EXIT
 # Files that import UIKit/SwiftUI stay out; logic files list themselves in LOGIC_FILES below.
 LOGIC_FILES=(
-  Core/Identifiers.swift Core/JSONValue.swift Core/Models.swift Core/DroverAPI.swift Core/MockDroverAPI.swift
+  Core/Identifiers.swift Core/JSONValue.swift Core/Models.swift Core/Approvals.swift Core/DroverAPI.swift Core/MockDroverAPI.swift
   Core/TokenVault.swift Core/SummaryCache.swift Core/AppModel.swift Core/UnconfiguredDroverAPI.swift Core/SingleFlight.swift
 )
 # Each slice lists its own Foundation-only source files (relative to Sources/) in logic-files.d/<slice>.txt.

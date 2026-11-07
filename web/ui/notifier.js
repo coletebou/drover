@@ -167,6 +167,10 @@ export class Notifier {
   actionsFor(g) {
     if (!g.single) return [{ action: 'open', title: 'Open board' }];
     const a = g.alerts[0];
+    // A Grok bot's approval request, whatever the alert carries: never its options (the platform lays a notification
+    // out and cuts its text and buttons where it likes, so nothing here proves the owner read the whole request) and
+    // never Reply (it would message the bot and answer nothing). It opens the card, which shows all of it.
+    if (a.kind === 'approval') return [{ action: 'open', title: 'Open to answer' }];
     if ((a.category === 'needs-you' && a.kind === 'dialog') || a.category === 'held') return a.target && a.meta?.hash ? [{ action: 'approve', title: a.category === 'held' ? 'Deliver (Enter)' : 'Approve (Enter)' }, { action: 'deny', title: 'Deny (Esc)' }] : [{ action: 'open', title: 'Open' }];
     if (a.sessionId && ['finished', 'needs-you'].includes(a.category)) return [{ action: 'reply', title: 'Reply', type: 'text', placeholder: `Reply to ${a.name ?? 'the session'}` }, { action: 'open', title: 'Open' }];
     if (a.category === 'mr' && a.meta?.url) return [{ action: 'open', title: 'Open MR' }];
@@ -174,7 +178,7 @@ export class Notifier {
   }
   dataFor(g) {
     const a = g.alerts[0];
-    return { single: g.single, ids: g.alerts.map((x) => x.id), category: g.category, host: hostForUi(a.host, this.ctx), sessionId: a.sessionId ?? null, target: a.target ?? null, hash: a.meta?.hash ?? null, name: a.name ?? null, engine: a.engine ?? null, url: a.meta?.url ?? null, number: a.meta?.number ?? null, kind: a.kind ?? null };
+    return { single: g.single, ids: g.alerts.map((x) => x.id), category: g.category, host: hostForUi(a.host, this.ctx), sessionId: a.sessionId ?? null, target: a.target ?? null, hash: a.meta?.hash ?? null, name: a.name ?? null, engine: a.engine ?? null, url: a.meta?.url ?? null, number: a.meta?.number ?? null, kind: a.kind ?? null, ...(a.meta?.approval?.id ? { approval: a.meta.approval.id } : {}) };
   }
   async #desktop(g, { sticky }) {
     if (this.permission() !== 'granted') return false;

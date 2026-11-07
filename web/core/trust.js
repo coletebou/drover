@@ -204,6 +204,38 @@ export async function trustClaude(dir, { env = process.env } = {}) {
   });
 }
 
+/**
+ * Mark Claude Code's first-run onboarding as finished: top-level hasCompletedOnboarding = true, the key finishing it
+ * writes, and nothing else. A config that never finished it (a new host, a fresh CLAUDE_CONFIG_DIR) opens on the
+ * theme picker and then a security notice, both before the trust dialog, so a launched agent waited there until
+ * someone pressed Enter twice (every worker of the first fan-out on a new Linux host, 2026-11-07). Claude Code
+ * 2.1.319, checked in a fresh CLAUDE_CONFIG_DIR on that host: this key alone skips both screens. Same lock, read and
+ * replacement as trustClaude; a file that does not parse, or is not an object, is left as it is.
+ */
+export async function onboardClaude({ env = process.env } = {}) {
+  const home = _deps.home();
+  try {
+    const file = claudeConfigFile(env, home), real = await configTarget(file);
+    const out = { file: tilde(file, home) };
+    const linked = Boolean((await lstat(file).catch(() => null))?.isSymbolicLink());
+    return await withLocks(linked ? [`${file}.lock`, `${real}.lock`] : [`${file}.lock`], async () => {
+      const { text, mode } = await readConfig(real);
+      let cfg = {};
+      if (text.trim()) {
+        try { cfg = JSON.parse(text); } catch (e) { _deps.log(`${file} does not parse (${e.message}): onboarding left as it is`); return { ...out, skipped: `${out.file} does not parse; left as it is` }; }
+      }
+      if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) return { ...out, skipped: `${out.file} is not a JSON object; left as it is` };
+      if (cfg.hasCompletedOnboarding === true) return { ...out, changed: false };
+      cfg.hasCompletedOnboarding = true;
+      await replaceFile(real, JSON.stringify(cfg, null, 2), mode);   // Claude Code's own layout: two spaces, no final newline
+      return { ...out, changed: true };
+    });
+  } catch (e) {
+    _deps.log(`claude onboarding: ${e.message}`);
+    return { skipped: e.busy ? e.message : `${e.code ?? 'error'}: ${e.message}`.slice(0, 300) };
+  }
+}
+
 /** A TOML basic string, as Codex writes its project keys. */
 export const tomlString = (s) => `"${s.replace(/[\\"\u0000-\u001f\u007f]/g, (c) => (c === '\\' || c === '"' ? `\\${c}` : `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`))}"`;
 
