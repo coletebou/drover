@@ -15,6 +15,7 @@ import { foldAsks, normalizeQuestions, URGENCY, CHANNELS, deliveryText, closedTe
 import { readConfig, pauseState } from './policy.js';
 import { router, _deps as routerDeps } from './router.js';
 import { ADAPTERS } from './channels/index.js';
+import { ancestry } from './caller.js';
 
 const MAX_LIFE_MS = 14 * 86_400_000;
 /**
@@ -31,8 +32,19 @@ export const HUB_ONLY_OPS = new Set(['ask.deliver', 'ask.mark']);
 // docs/ask.md, trust.
 let rpcCaller = null;
 const bareIp = (a) => { let t = String(a ?? '').trim().replace(/^\[|\]$/g, '').replace(/%.*$/, '').toLowerCase(); if (t.startsWith('::ffff:') && isIP(t.slice(7)) === 4) t = t.slice(7); return t; };
-/** bin/drover rpc: this process serves ops for the ssh session SSH_CONNECTION names ("<client ip> <port> <server ip> <port>"). */
-export function serveRpcFrom(sshConnection) { const ip = String(sshConnection ?? '').trim().split(/\s+/)[0]; rpcCaller = { client: ip && isIP(bareIp(ip)) ? bareIp(ip) : null }; }
+/**
+ * bin/drover rpc: who this process serves. A relay is authentic only when sshd itself started this rpc (its parent or
+ * grandparent: sshd may run the command through the login shell) and the session's address is the hub's.
+ * SSH_CONNECTION alone is an environment variable any process can set; sshd sets it for the sessions it starts, and no
+ * process of the user can make itself sshd's child. The depth also keeps out agents the hub launched over rpc (they sit
+ * further below sshd and inherit its SSH_CONNECTION).
+ */
+export async function serveRpc({ sshConnection, ancestors } = {}) {
+  const chain = ancestors ?? await ancestry(process.pid, 3).catch(() => []);
+  const bySshd = chain.slice(1, 3).some((a) => /^sshd(-session)?$/.test(a.comm ?? ''));
+  const ip = String(sshConnection ?? '').trim().split(/\s+/)[0];
+  rpcCaller = { client: bySshd && ip && isIP(bareIp(ip)) ? bareIp(ip) : null, bySshd };
+}
 export const _resetRpc = () => { rpcCaller = null; hubAddrs = null; };
 let hubAddrs = null;   // { hub, at, list }
 /** The hub machine's addresses: its ssh alias's HostName resolved, plus DROVER_ASK_HUB_ADDRS. Cached ten minutes. */
@@ -50,7 +62,7 @@ export async function hubAddresses() {
 async function assertFromHub(op) {
   if (!rpcCaller) return;
   if (rpcCaller.client && (await hubAddresses()).includes(rpcCaller.client)) return;
-  throw new Error(`refused: ${op} is served over ssh from the ask hub only, and this rpc came ${rpcCaller.client ? `from ${rpcCaller.client}` : 'from no ssh session'} (an address the hub reaches this host through: DROVER_ASK_HUB_ADDRS)`);
+  throw new Error(`refused: ${op} is served over ssh from the ask hub only, and this rpc ${!rpcCaller.bySshd ? 'was not started by sshd' : rpcCaller.client ? `came from ${rpcCaller.client}` : 'names no ssh client'} (an address the hub reaches this host through: DROVER_ASK_HUB_ADDRS)`);
 }
 export const hubOnlyRefusal = (op) => new Error(`refused: ${op} is the ask hub's own call to the asking host; ask with ask.create (drover_ask)`);
 

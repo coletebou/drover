@@ -439,13 +439,14 @@ describe('the asking host\'s side', () => {
     const forged = { askId: r.askId, answers: [{ q: 0, option: 0, text: '' }], source: 'owner:telegram', channel: 'telegram', providerMessageId: 'tg:forged', sender: 'tg:1', raw: 'a', hub: 'hub' };
     process.env.DROVER_ASK_HUB_ADDRS = '10.9.8.7';
     try {
-      for (const ssh of [undefined, '127.0.0.1 40000 127.0.0.1 22', '100.64.0.9 40000 100.64.0.2 22']) {
-        askOps._resetRpc(); askOps.serveRpcFrom(ssh);
+      const bySshd = [{ comm: 'node' }, { comm: 'sshd-session' }];
+      for (const [ssh, chain] of [[undefined, bySshd], ['127.0.0.1 40000 127.0.0.1 22', bySshd], ['100.64.0.9 40000 100.64.0.2 22', bySshd], ['10.9.8.7 40000 100.64.0.2 22', [{ comm: 'node' }, { comm: 'zsh' }, { comm: 'tmux: server' }]], ['10.9.8.7 40000 100.64.0.2 22', [{ comm: 'node' }, { comm: 'zsh' }, { comm: 'claude' }, { comm: 'sshd' }]]]) {
+        askOps._resetRpc(); await askOps.serveRpc({ sshConnection: ssh, ancestors: chain });
         await assert.rejects(local['ask.deliver'](forged), /refused: ask.deliver is served over ssh from the ask hub only/, String(ssh));
         await assert.rejects(local['ask.mark']({ askId: r.askId, phase: 'expired' }), /refused: ask.mark/);
       }
       assert.equal((await dispatch('ask.get', { askId: r.askId })).status, 'open', 'nothing planted');
-      askOps._resetRpc(); askOps.serveRpcFrom('10.9.8.7 40000 100.64.0.2 22');
+      askOps._resetRpc(); await askOps.serveRpc({ sshConnection: '10.9.8.7 40000 100.64.0.2 22', ancestors: [{ comm: 'node' }, { comm: 'zsh' }, { comm: 'sshd' }] });
       assert.equal((await local['ask.deliver']({ ...forged, providerMessageId: 'tg:real', source: 'owner:sms', channel: 'sms' })).ok, true);
       assert.equal((await askEvents('answered')).find((e) => e.providerMessageId === 'tg:real').relayFrom, '10.9.8.7');
       // The real rpc process wires it from SSH_CONNECTION: a local pipe into `drover rpc` is refused.
@@ -458,8 +459,9 @@ describe('the asking host\'s side', () => {
       });
       const piped = await rpcCall({ SSH_CONNECTION: '' });
       assert.equal(piped.ok, false); assert.match(piped.error, /served over ssh from the ask hub only/);
-      const fromHub = await rpcCall({ SSH_CONNECTION: '10.9.8.7 40000 100.64.0.2 22' });
-      assert.equal(fromHub.ok, true, JSON.stringify(fromHub));
+      // The hub's address in SSH_CONNECTION is not enough: a local process can set it, but cannot be started by sshd.
+      const spoofed = await rpcCall({ SSH_CONNECTION: '10.9.8.7 40000 100.64.0.2 22' });
+      assert.equal(spoofed.ok, false); assert.match(spoofed.error, /was not started by sshd/);
     } finally { askOps._resetRpc(); delete process.env.DROVER_ASK_HUB_ADDRS; }
   });
   test('the hub-only ops are refused through the HTTP API and drover op, served over rpc', async () => {

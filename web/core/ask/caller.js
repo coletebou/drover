@@ -11,6 +11,7 @@ export const _deps = {
   readFile: (f) => readFile(f, 'utf8'),
   platform: () => process.platform,
   ps: (pid) => new Promise((resolve) => execFile('ps', ['-o', 'ppid=', '-p', String(pid)], { timeout: 3000 }, (e, out) => resolve(e ? null : Number(String(out).trim()) || null))),
+  psComm: (pid) => new Promise((resolve) => execFile('ps', ['-o', 'ppid=,comm=', '-p', String(pid)], { timeout: 3000 }, (e, out) => { const m = /^\s*(\d+)\s+(.+?)\s*$/.exec(String(out)); resolve(e || !m ? null : { ppid: Number(m[1]), comm: m[2] }); })),
 };
 
 async function parentOf(pid) {
@@ -23,6 +24,29 @@ async function parentOf(pid) {
     } catch { return null; }
   }
   return _deps.ps(pid);
+}
+
+/** This process and its ancestors, nearest first: [{ pid, comm }] (comm the program's base name), up to depth entries. */
+export async function ancestry(pid = process.pid, depth = 4) {
+  const out = [];
+  let p = pid;
+  for (let i = 0; i < depth && p && p > 0; i++) {
+    let comm = null, ppid = null;
+    if (_deps.platform() === 'linux') {
+      try {
+        const stat = await _deps.readFile(`/proc/${p}/stat`);
+        comm = stat.slice(stat.indexOf('(') + 1, stat.lastIndexOf(')'));
+        ppid = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1]) || null;
+      } catch { break; }
+    } else {
+      const r = await _deps.psComm(p);
+      if (!r) break;
+      ({ comm, ppid } = r);
+    }
+    out.push({ pid: p, comm: path.basename(String(comm ?? '')) });
+    p = ppid;
+  }
+  return out;
 }
 
 /** { sessionId, name, cwd, pid } of the nearest Claude Code session above pid (default this process's parent), or null. */
