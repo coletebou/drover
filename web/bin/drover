@@ -111,7 +111,7 @@ async function main() {
   // on stderr, and the command goes on without it.
   const env = await import(path.join(ROOT, 'core', 'env.js'));
   await env.loadSettings();
-  if (['serve', 'up', 'rpc', 'mcp', 'op', 'search', 'grep', 'stacks', 'transcript', 'transcripts'].includes(cmd)) await env.loadEnvFile({ file: env.secretsFile() });
+  if (['serve', 'up', 'rpc', 'mcp', 'op', 'search', 'grep', 'stacks', 'transcript', 'transcripts', 'ask'].includes(cmd)) await env.loadEnvFile({ file: env.secretsFile() });
   if (['serve', 'up', 'rpc', 'op', 'search', 'grep', 'stacks', 'transcript', 'transcripts'].includes(cmd)) {
     const { loadPlugins } = await import(path.join(ROOT, 'core', 'api.js'));
     await loadPlugins();
