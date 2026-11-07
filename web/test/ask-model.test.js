@@ -110,11 +110,20 @@ describe('texts', () => {
     assert.match(t, /a\) yes {2}b\) no/);
     assert.match(t, /Reply: K7 a, tap a button, or any text/);
   });
-  test('SMS gets plain ASCII (one other character makes every segment UCS-2)', () => {
+  test('SMS gets the GSM alphabet: typographic marks take their plain forms (one other character makes every segment UCS-2)', () => {
     const t = askText(a, { channel: 'sms' });
     assert.equal(/[^\x09\x0a\x0d\x20-\x7e]/.test(t), false, t);
     assert.match(t, /"SMS" adapter - today\?/);
     assert.equal(forChannel('→ · …', 'sms'), '-> - ...');
+  });
+  test('SMS keeps every letter: an accent GSM lacks loses only its mark; text with no GSM form goes as written (UCS-2)', () => {
+    assert.equal(forChannel('Réunion à Zürich, São Paulo, façade, Kraków?', 'sms'), 'Réunion à Zürich, Sao Paulo, facade, Krakow?');
+    assert.equal(forChannel('Cafe\u0301 or the hotel?', 'sms'), 'Café or the hotel?');   // decomposed: é is GSM, kept whole
+    assert.equal(forChannel('Move the launch to 会议在苏黎世举行吗?', 'sms'), 'Move the launch to 会议在苏黎世举行吗?');
+    assert.equal(forChannel('Ship it ✅ — “now”?', 'sms'), 'Ship it ✅ - "now"?');   // as written, marks still plain
+    assert.equal(forChannel('run `npm test`\tnow, 2:05\u202fPM\u00a0ET', 'sms'), "run 'npm test' now, 2:05 PM ET");   // ` and tab are not GSM
+    assert.equal(forChannel('a [b] {c} ~ | € \\ ^', 'sms'), 'a [b] {c} ~ | € \\ ^');   // GSM's escaped characters stay
+    assert.equal(forChannel('Réunion', 'telegram'), 'Réunion');
   });
   test('several questions are numbered; several asks are listed with their codes', () => {
     const m = askText({ ...a, urgency: 'normal', questions: [{ question: 'One?', options: ['x', 'y'] }, { question: 'Two?', options: [] }] });

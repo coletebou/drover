@@ -203,10 +203,26 @@ export function nextCode(asks, now = Date.now()) {
 }
 
 // ---------------------------------------------------------------- texts
-// Plain text everywhere (no Markdown: a question is an agent's words and must not format the message). SMS gets ASCII
-// only, since one non-GSM character turns every segment into 70-character UCS-2 ones.
-const ascii = (s) => String(s ?? '').replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/[–—]/g, '-').replace(/…/g, '...').replace(/→/g, '->').replace(/·/g, '-').replace(/[^\x09\x0a\x0d\x20-\x7e]/g, '');
-export const forChannel = (text, channel) => (channel === 'sms' ? ascii(text) : text);
+// Plain text everywhere (no Markdown: a question is an agent's words and must not format the message). SMS keeps to the
+// GSM alphabet when it can, since one character outside it turns every segment into a 70-character UCS-2 one:
+// typographic marks take their plain forms, and a letter GSM lacks loses only its accent (São -> Sao; é, ü and ñ are
+// GSM and stay). A character with no GSM form at all (Chinese, Cyrillic, an emoji) sends the text as written, in UCS-2:
+// a few more segments, never a question with letters missing.
+const GSM = new Set('@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ !"#¤%&\'()*+,-./0123456789:;<=>?¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà^{}\\[~]|€');
+const PLAIN = [[/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, ''], [/\t/g, ' '], [/[‘’‚‛`]/g, "'"], [/[“”„‟]/g, '"'], [/[‐‑‒–—―−]/g, '-'], [/[→⇒]/g, '->'], [/[←⇐]/g, '<-'], [/[·•]/g, '-'], [/×/g, 'x']];
+function sms(text) {
+  let t = String(text ?? '').normalize('NFC');   // a decomposed é becomes the GSM letter, not e and a stray mark
+  for (const [re, to] of PLAIN) t = t.replace(re, to);
+  let out = '';
+  for (const ch of t) {
+    if (GSM.has(ch)) { out += ch; continue; }
+    const base = ch.normalize('NFKD').replace(/\p{M}/gu, '');   // á -> a, … -> ..., a no-break space -> a space
+    if ([...base].some((c) => !GSM.has(c))) return t;
+    out += base;   // empty only for a lone mark (a variation selector): nothing readable goes
+  }
+  return out;
+}
+export const forChannel = (text, channel) => (channel === 'sms' ? sms(text) : text);
 const letter = (i) => String.fromCharCode(97 + i);
 export const optionLine = (opts) => opts.map((o, i) => `${letter(i)}) ${o}`).join('  ');
 

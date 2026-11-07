@@ -391,6 +391,13 @@ describe('answers by SMS', () => {
     assert.equal((await dispatch('ask.get', { askId: r.askId })).answer.source, 'owner:sms');
     assert.match(tw.sends.at(-1).Body, new RegExp(`^${r.code} -> a \\(yes\\): sent to asker on hub`));
   });
+  test('an SMS ask keeps every letter: an accent GSM lacks loses only its mark, and Chinese goes as written', async () => {
+    const r = await ask({ question: 'Meet in São Paulo or Zürich?', options: ['São Paulo', 'Zürich'], channels: ['sms'] });
+    const body = (x) => tw.sends.findLast((m) => m.Body.startsWith(`Drover ask ${x.code} `))?.Body ?? '';
+    assert.match(body(r), /\nMeet in Sao Paulo or Zürich\?\na\) Sao Paulo {2}b\) Zürich\n/, body(r));
+    const zh = await ask({ question: '会议在苏黎世举行吗?', channels: ['sms'] });
+    assert.match(body(zh), /\n会议在苏黎世举行吗\?\n/, body(zh));
+  });
   test('a reply with no words (an MMS photo, a reaction) is recorded and never answered or acknowledged', async () => {
     const r = await ask({ question: 'Words only?', options: ['yes', 'no'], channels: ['sms'] });
     const before = tw.sends.length;
@@ -554,7 +561,7 @@ describe('limits: one text per send counted, batches split to fit, one ask fits 
       assert.equal(await texted(n), 0, 'the normal one waits for the rate limit');
     } finally { process.env.DROVER_ASK_RATE = '120'; }
   });
-  test('a batch fits every channel it may go out on, measured as that channel writes it (SMS drops what is not ASCII)', async () => {
+  test('a batch fits every channel it may go out on, measured as that channel writes it (each channel writes its own form)', async () => {
     await say('pause asks 1h', 722); await settle();
     const made = [];
     for (let i = 0; i < 7; i++) made.push(await ask({ question: `${'会议在苏黎世举行吗'.repeat(66)}${i}`, channels: ['telegram'] }));

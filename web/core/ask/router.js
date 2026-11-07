@@ -130,8 +130,8 @@ export class Router {
     const sent = [];
     for (const [k, group] of groups) {
       const chans = k.split('|')[0].split(',');
-      // A batch must fit every channel it may go out on, each measured as that channel writes it: SMS drops what is
-      // not ASCII, so its text is the shortest and no measure for Telegram's or iMessage's.
+      // A batch must fit every channel it may go out on, each measured as that channel writes it: the forms differ (SMS
+      // rewrites marks and accents into the GSM alphabet; only Telegram's text names its buttons).
       const fits = (asks) => chans.every((c) => batchText(asks, { channel: c }).length <= (TEXT_LIMITS[c] ?? 1600));
       const chunks = [];
       for (const a of group) {
@@ -156,7 +156,7 @@ export class Router {
   /** One text on one channel for these asks; records it either way. */
   async sendOn(channel, asks, { kind = 'ask', text = null } = {}) {
     const adapter = _deps.channels[channel];
-    // Every text goes through the channel's form (SMS: ASCII), acknowledgements and notices included.
+    // Every text goes through the channel's form (SMS: the GSM alphabet when the text fits it), acknowledgements and notices included.
     const body = text !== null ? forChannel(text, channel) : (kind === 'reminder' || kind === 'escalation' ? askText(asks[0], { channel, reminder: kind === 'reminder', escalation: kind === 'escalation' }) : asks.length > 1 ? batchText(asks, { channel }) : askText(asks[0], { channel }));
     try {
       const r = await adapter.send({ text: body, asks: kind === 'ack' || kind === 'notice' ? [] : asks }, { env: _deps.env });
