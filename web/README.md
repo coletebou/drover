@@ -318,7 +318,8 @@ drover op files.wait '{"host":"box-a","path":"~/runs/status","glob":"WS-*.md","s
   a dialog or held peer message appearing ("needs a decision"), a session that
   stops on a question or an unanswered AskUserQuestion ("asked you a question"),
   busy to idle ("finished", with an excerpt of the reply), a session dying, a
-  host going dark, launches, manager messages, and what a plugin watches
+  host going dark, launches, manager messages, a Grok bot asking for approval
+  (kind `approval`, answered from the alert: Grok bots, Approvals), and what a plugin watches
   (a merge request watch, say, while a browser is open). Each lands in the WAL as a `notify` event and goes out as the
   `alerts` SSE event. Claude's Notification hook events are enriched with the
   same context before they are written. A front daemon pulls other hosts'
@@ -625,7 +626,8 @@ gives the owner's bots Drover anyway, in both directions.
   message for its inbox when it has none; the bot answers with `drover_reply`, which lands as a `chat` event threaded
   under the message, and reports `drover_status`, which shows on the board. A reply raises a "finished" alert;
   `needs-owner` and `blocked` raise "needs you" and put the bot in the waiting lane until its next status (a bot taught
-  the earlier `needs-<DROVER_OWNER>` is read the same). A bot is
+  the earlier `needs-<DROVER_OWNER>` is read the same). Messages and replies carry read receipts, and a bot can ask the
+  owner to approve something before it acts, answered in one tap (both below). A bot is
   live when it was heard from, or its Routine accepted a message, in the last day (a Routine alone makes it reachable,
   not live). One that should be acting and has gone silent, its last status `working` or a message its Routine
   accepted still unanswered, turns `stale` after `DROVER_BOTS_STALE_MINUTES` (default 30) and says why; waiting on
@@ -670,9 +672,9 @@ then passes through that bot's chat once, so OAuth is the better path).
 
 | Scope | Tools |
 |---|---|
-| `drover.read` | `drover_whoami`, `drover_fleet`, `drover_search`, `drover_inbox`, `drover_features`, `drover_reflections` (list, search, show), and with a brain plugin `drover_brain_search`, `drover_brain_get` |
+| `drover.read` | `drover_whoami`, `drover_fleet`, `drover_search`, `drover_inbox`, `drover_sent`, `drover_approvals` (list, show), `drover_features`, `drover_reflections` (list, search, show), and with a brain plugin `drover_brain_search`, `drover_brain_get` |
 | `drover.write` | `drover_status`, `drover_reply`, `drover_note`, `drover_feature_upsert`, and with a brain plugin `drover_brain_note` (kinds memory and handoff, filed under `agent:grok-<bot>`) |
-| `drover.notify` | `drover_notify_owner`, also served as `drover_notify_<DROVER_OWNER>` for bots taught that name (12 alerts an hour per bot, counting `needs-owner` statuses) |
+| `drover.notify` | `drover_notify_owner`, also served as `drover_notify_<DROVER_OWNER>` for bots taught that name, and `drover_request_approval` and `drover_approval_withdraw` (12 alerts an hour per bot, counting `needs-owner` statuses and approval requests) |
 
 The brain tools exist only where a plugin provides the `brain.*` ops (search, get, note); without one, the bots are
 neither offered them nor told about them.
@@ -684,10 +686,85 @@ out: secrets redacted, home paths as `~`, long text cut. No tool takes `host`, m
 reads raw transcripts or the raw truth file. Reflections are read-only for bots and brain notes cannot be decisions,
 because both reach every Claude session's context.
 
+### Read receipts
+
+Every message to a bot and every reply from one says how far it got. Drover writes the receipts itself, as `receipt`
+events (`{ of: [ids], thread, state: "read", by, via }`, `core/bots/grok.js`), and folds them per thread.
+
+- A message to a bot is `queued` (in its inbox, no Routine), `delivered` (its Routine accepted it, or the bot picked it
+  up from its inbox), `read` (the bot got it from `drover_inbox`, or started on it with `drover_status` naming it as
+  the task) and `answered` (its reply threads under it). A Routine that refused it says why; the message waits in
+  the inbox.
+- A reply is delivered once it is recorded: the owner's screens get an alert unless they muted the bot, and an agent
+  finds it in the bot's thread. It is read when whoever it is for sees it: the owner when the drawer shows the bot's
+  chat on a visible page or the iPhone app opens it, an agent when it reads the bot's thread through MCP
+  (`drover_session_transcript`, `drover_sessions_lastReply`) or `drover op` (as `cli`). A reply is for whoever sent
+  the message it answers; a message on the bot's own thread is for the owner. The owner's clients are one reader.
+- A receipt counts only when its event's actor is the reader it names, so an agent cannot mark a reply read for the
+  owner: MCP and the CLI always read (and mark) as themselves, the `events.append` op refuses receipt events (only
+  Drover writes them) and stamps every event's actor, id, time and host itself (a body cannot name its own), a reply
+  records who it is for as the bot sends it, and no bot reads another bot's thread. A read marks only the replies up to the last one its
+  page returned; the drawer marks a reply read once it is on screen while the page is visible (one that arrived
+  while the tab was hidden is marked when the tab shows it).
+- Bots see receipts in `drover_inbox` (`readAt`, and `reply.read` for their answer), `drover_sent` (their replies,
+  newest first, with `to` and `read`), `drover_whoami` (`inbox.unread`, and `replies.unread` over the last week),
+  `drover_search` (hits in their own thread carry `event` and `receipt`) and `drover_reply` (`to`, and `delivery`:
+  `alert`, with `muted` when the owner muted the bot, or `thread`). The owner sees them under each turn of the bot's
+  chat in the drawer, and a bot's session carries `unread`, the replies the owner has not read.
+- Ops: `sessions.transcript` turns carry `id` and `receipt` and the answer's `receipts` repeats them for the thread's
+  last turns (an incremental reader updates turns it already shows); `seenBy` on `sessions.transcript` and
+  `sessions.lastReply` records a read by that reader; `sessions.seen` marks a thread read without reading it (its
+  receipt is the record, so it writes no `op` event).
+
+### Approvals
+
+A bot asks before it does something that needs the owner's yes (a purchase, an action with consequences):
+`drover_request_approval` with one clear question, 2 to 4 options (default Approve / Deny), details, a kind
+(`purchase`, `action`, `post` or `other`) and how long it stands (default a day; 5 minutes to 7 days). `messageId` ties
+it to the inbox message it is about. The owner answers in one tap, and the answer goes back to the bot
+(`core/bots/approvals.js`).
+
+- Where it shows: the bot moves to the waiting lane with the question as its ask (`asks for your approval`), on its
+  board strip and in its drawer; a needs-you alert carries it to the owner's screens; and
+  `native.summary`, `native.board` and `native.notifications` carry `answer: "approval"` and `approval {...}` for the
+  iPhone (board buttons, and notification actions that need the phone unlocked), the watch and the menu bar
+  (`../native/CONTRACT.md`). In a terminal, `drover approvals` lists them and `drover approvals answer <id> <n|label>`
+  answers one, on an interactive terminal only.
+- The owner approves only what they saw: a surface answers a request in one tap only when it shows the request
+  whole. The drawer's card always does (question, details, options). The board strip and the waiting window show the
+  question (whole, unclipped) and every label whole, so they offer the options for a request without details, and
+  otherwise "Review and answer", which opens the card. A browser notification always opens the card: the platform
+  cuts its text and buttons as it likes. The native payloads say so with `approval.complete` (`../native/CONTRACT.md`).
+- Answering is a main-token HTTP route, `POST /api/approvals/answer {id, choice, via}`, never an op: no MCP tool, ssh
+  rpc or `drover op` can answer. The CLI answers only on an interactive terminal, so an agent's tool calls (which have
+  none) do not answer by accident; it is no lock, since anything that runs as the owner and reads the main token can
+  answer, as it can do anything else in Drover. A request is answered once: a second tap (the phone and the watch
+  together) gets 409 with the first answer. The board answers a bot kept
+  on another host through that host's direct peer (Settings), or says to answer it on that host's own page.
+- The authority is `~/.local/state/drover/bots/approvals.json` (0600) on the host that keeps the bots: what a bot acts
+  on comes from there only. The truth file records each step as an `approval` event: the request as the bot's (its
+  question and details marked `[untrusted: grok:<bot>]`, `source` and `untrusted` set), the decision as the owner's (it
+  quotes none of the bot's question, and the label of the option picked, which the bot wrote, keeps its mark), a
+  withdrawal. Answered, withdrawn and expired requests are kept, the 300 that ended last. The `events.append` op refuses `approval` events and any event that carries `approval`, so an agent
+  cannot forge a decision there.
+- The decision reaches the bot as a message from the owner that carries `approval {id, n, label, messageId?}`: its
+  Routine runs on it (the webhook body carries `approval` too), or it waits in the inbox. The bot confirms it with
+  `drover_approvals` (`show`) before it acts, and only that counts: a message saying something was approved changes
+  nothing. `drover_approvals` also lists the bot's requests; `drover_approval_withdraw` takes one back.
+- Limits: a request counts as an alert (12 an hour per bot); at most 5 pending per bot and 50 in all; asking again with
+  the same question, options, details and message returns the pending request (other details make another). A request past its time is `expired`: it leaves the
+  board and can no longer be answered.
+- The Routine instruction (v2) says what a message that carries `approval` means; a routine saved before still runs
+  on it (the message's own text says the same), and `drover_whoami` gives a bot with a routine the current
+  instruction to update it to.
+- Ops: `approvals.list` (read-only) lists the requests on the host that keeps the bots, newest first; `bots.status`
+  counts each bot's pending ones; `GET /api/approvals` is the same list for the owner's clients.
+
 ### Security
 
 - Approving a connection, revoking it, minting a token and setting a Routine are main-token HTTP routes
-  (`/api/bots/*`), never ops, like pairing: no MCP tool or ssh rpc can let a bot in or redirect its Routine.
+  (`/api/bots/*`), never ops, like pairing: no MCP tool or ssh rpc can let a bot in or redirect its Routine. Answering
+  a bot's approval request is one too (`/api/approvals/answer`, Approvals above).
 - PKCE S256 is required; authorization codes are single use and live a minute; access tokens an hour; refresh tokens
   rotate (60 days), and replaying a used one revokes the whole grant. Tokens and keys are stored only as SHA-256
   hashes in `~/.local/state/drover/bots/oauth.json` (0600); Routine URLs and keys live in `bots/grok.json` (0600) and
@@ -890,7 +967,10 @@ hosts and a fake manager gateway that streams (`test/fake-gateway.js`; a message
 8 s, "fail " fails, "echo " echoes). Tokens are copied from the real state dir, so a paired client works against it.
 A dialog comes back about 12 s after it is answered. Nothing in it can reach a real session, pane or host: its
 codex, docker and ssh are stand-ins (`test/showcase/fake-*.js`), every tmux server it starts or stops is named by
-socket, and it stops unless the daemon sees only its own hosts, no plugin and only its own tmux session.
+socket, and it stops unless the daemon sees only its own hosts, no plugin and only its own tmux session. `--bots
+<port>` also runs the bot gateway on that loopback port (its own public origin, plain http) and keeps the bots in the
+world's state, so a script can be a Grok bot end to end: sign in, get approved with the world's `drover bots`, call the
+tools, and take Routine webhooks on loopback.
 
 `--showcase` builds the showcase world instead (`test/showcase/world.js`): three hosts (studio runs the daemon, devbox
 answers through the stand-in ssh, spare is down) under a HOME of its own, Claude Code sessions on both, Codex threads,

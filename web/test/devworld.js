@@ -8,7 +8,10 @@
 // checkout (so its web UI too) on --port. Tokens are copied from the real state dir so clients reuse them.
 // --showcase builds the showcase world instead (test/showcase/world.js): three hosts, every engine, docker stacks and
 // a truth file with history, under a HOME of its own, for screenshots and demos.
-//   node test/devworld.js [--port 7338] [--gateway 18799] [--dir DIR] [--showcase]
+// --bots PORT also runs the Grok bot gateway (server/botgate.js) on that loopback port, as its own public origin (plain
+// http to loopback, as the tests use), and keeps the bots in the world's state: a script can then be a Grok bot end to
+// end (OAuth sign-in, approval with the world's `drover bots`, the MCP tools, a Routine webhook on loopback).
+//   node test/devworld.js [--port 7338] [--gateway 18799] [--dir DIR] [--showcase] [--bots PORT]
 // Ctrl-C (or SIGTERM) stops the daemon, the gateway and the private tmux servers.
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdirSync, rmSync, writeFileSync, copyFileSync, existsSync, chmodSync, readFileSync, realpathSync, lstatSync } from 'node:fs';
@@ -23,6 +26,8 @@ const ROOT = path.join(HERE, '..');
 const arg = (k, d) => { const i = process.argv.indexOf(`--${k}`); return i >= 0 ? process.argv[i + 1] : d; };
 const PORT = Number(arg('port', 7338)), GW = Number(arg('gateway', 18799));
 const SHOWCASE = process.argv.includes('--showcase');
+const BOTS = arg('bots', null) === null ? null : Number(arg('bots'));
+if (BOTS !== null && !(Number.isInteger(BOTS) && BOTS > 0 && BOTS < 65536)) { console.error('[devworld] --bots takes a port'); process.exit(2); }
 // Its real path (macOS: /var is /private/var): tmux reports a pane's folder that way, and paths must match HOME.
 const given = path.resolve(arg('dir', path.join(tmpdir(), `drover-devworld-${PORT}`)));
 const DIR = path.join(realpathSync(path.dirname(given)), path.basename(given));
@@ -188,7 +193,10 @@ const env = {
   DROVER_STATE: path.join(DIR, 'state'), DROVER_CACHE: path.join(DIR, 'cache'), DROVER_SHARE: path.join(DIR, 'share'),
   CODEX_HOME: path.join(DIR, 'codex'),
   OPENCLAW_MANAGER_STATE_DIR: MANAGER, OPENCLAW_GATEWAY_URL: `http://127.0.0.1:${gateway.port}`, OPENCLAW_GATEWAY_TOKEN: 'dev',
+  // No macOS banner for a bot asking to connect here: the world's own `drover bots approve` answers it.
+  ...(BOTS !== null ? { DROVER_BOTS_URL: `http://127.0.0.1:${BOTS}`, DROVER_BOTS_PORT: String(BOTS), DROVER_PAIR_NOTIFY: 'off' } : {}),
 };
+if (BOTS !== null) mkdirSync(path.join(DIR, 'state', 'bots'), { recursive: true, mode: 0o700 });   // this world keeps the bots
 // What a shell needs to use the CLI and the TUI here (`. <dir>/env.sh`): the settings the daemon got on top of the
 // shell's own environment (TMUX among them, naming the world's socket: the shell's own TMUX would reach the owner's
 // server), no TMUX_PANE and no GIT_* (a GIT_DIR would point the CLI's look at a stack's code at the shell's own repository).

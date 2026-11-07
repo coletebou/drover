@@ -36,6 +36,12 @@ extension Suites {
         expect(page.offset == 4096 && page.turns.count == 2, "transcript page")
         expect(page.turns[0].toolNames == ["Bash"], "tool names")
 
+        // Reading a Grok bot's thread here reads its replies (seenBy); any other session's read names no reader.
+        let botArgs = HTTPDroverAPI.transcriptArgs(SessionRef(id: "grok:alpha", host: "local"), since: 3, limit: 50)
+        expect(botArgs["seenBy"] == .string("ios") && botArgs["since"] == .number(3) && botArgs["host"] == nil, "bot transcript names its reader")
+        let otherArgs = HTTPDroverAPI.transcriptArgs(SessionRef(id: "abc", host: "box-a"), since: nil, limit: 50)
+        expect(otherArgs["seenBy"] == nil && otherArgs["host"] == .string("box-a"), "other transcripts name none")
+
         let msg = try decode(MessageResult.self, #"{"delivery":{"ok":true,"queuedBehindTurn":true}}"#)
         expect(msg.ok == true && msg.queuedBehindTurn == true, "nested delivery")
         let feed = try decode(NotificationFeed.self, #"{"cursor":42,"items":[{"id":"n1","title":"t","sessionId":"s","host":"local"}]}"#)
@@ -134,7 +140,8 @@ extension Suites {
     static func mock() async {
         let m = AppModel.preview()
         await m.refreshAll()
-        expect(m.summary?.totals.waiting == 2, "mock summary")
+        // Two sessions and a Grok bot's approval request.
+        expect(m.summary?.totals.waiting == 3 && m.summary?.waiting.filter { $0.approval != nil }.count == 1, "mock summary")
         expect(m.sessions.contains { $0.host == "demo-box" }, "sessions across hosts")
         expect(m.boardState(for: SessionRef(id: "11111111-aaaa-4bbb-8ccc-000000000001", host: "local")) == .waiting, "board state")
         m.handle(url: URL(string: "drover://session/thread-demo-review?host=demo-box")!)

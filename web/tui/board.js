@@ -47,10 +47,12 @@ const KEY_LABEL = { Enter: 'approve', Escape: 'deny', y: 'yes', n: 'no', Up: 'up
 /**
  * The keys that answer a strip's dialog, in display order: [{ key, label, hint, selected }]. From the daemon's
  * keys when it sent them (native.board), else from the parsed dialog: its option digits, Enter, Escape. A held
- * peer message takes Enter (deliver) and Escape (drop). A question asked in text (answer: "reply") takes none.
+ * peer message takes Enter (deliver) and Escape (drop). A question asked in text (answer: "reply") takes none, and
+ * neither does a Grok bot's approval request (answer: "approval"): it is on no screen, and is answered by its id on the
+ * board, the phone, the watch or `drover approvals answer`.
  */
 export function answerKeys(strip) {
-  if (!strip || strip.lane !== 'wait' || strip.answer === 'reply') return [];
+  if (!strip || strip.lane !== 'wait' || strip.answer === 'reply' || strip.answer === 'approval') return [];
   const options = strip.dialog?.options ?? [];
   let keys = Array.isArray(strip.keys) ? strip.keys.map(String) : null;
   if (!keys) {

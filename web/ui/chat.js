@@ -4,7 +4,7 @@
 import { h, fmtTime } from './dom.js';
 import { renderMarkdown } from './markdown.js';
 import { copyButton } from './clip.js';
-import { itemSig, headOf, toolName } from './chat-model.js';
+import { itemSig, headOf, toolName, receiptLine } from './chat-model.js';
 import { isOwner } from './owner.js';
 
 const USER_LINES = 24;      // a long paste shows its head; "show all" for the rest
@@ -80,7 +80,13 @@ export class ChatView {
       this.#who(it.label, it, extra),
       h('div', { class: 'text' }, shown),
       long ? h('button', { class: 'btn sm quiet more', type: 'button', onclick: () => { this.full.add(it.key); this.#rerender(it); } }, `show all ${it.text.split('\n').length} lines`) : null,
-      it.failed ? h('div', { class: 'turn-err' }, `Not sent: ${it.failed}`, this.onRetry ? h('button', { class: 'btn sm', type: 'button', onclick: () => this.onRetry(it.turn) }, 'Send again') : null) : null);
+      it.failed ? h('div', { class: 'turn-err' }, `Not sent: ${it.failed}`, this.onRetry ? h('button', { class: 'btn sm', type: 'button', onclick: () => this.onRetry(it.turn) }, 'Send again') : null) : null,
+      this.#receipt(it));
+  }
+  /** A Grok bot thread's read receipt under a turn (chat-model.js receiptLine), or nothing. */
+  #receipt(it) {
+    const line = it.receipt ? receiptLine(it.receipt, { name: this.assistantLabel, you: isOwner, at: (ts) => (ts ? fmtTime(ts) : '') }) : null;
+    return line ? h('div', { class: `receipt${it.receipt.state === 'read' || it.receipt.state === 'answered' ? ' done' : ''}` }, line) : null;
   }
   #assistant(it) {
     const body = it.text.trim() ? renderMarkdown(it.text, { codeTools: (code) => copyButton(code, 'Copy', { cls: 'sm quiet md-copy', title: 'Copy this code' }) }) : null;
@@ -88,7 +94,8 @@ export class ChatView {
     return h('div', { class: `turn assistant${it.pending ? ' writing' : ''}${it.error ? ' failed' : ''}` },
       this.#who(this.assistantLabel, it, it.model ? h('span', null, it.model) : null),
       body ? h('div', { class: 'text' }, body) : it.pending ? h('div', { class: 'text typing', 'aria-label': 'writing' }, h('span'), h('span'), h('span')) : null,
-      it.error ? h('div', { class: 'turn-err' }, it.error) : null);
+      it.error ? h('div', { class: 'turn-err' }, it.error) : null,
+      this.#receipt(it));
   }
   #tools(it) {
     const open = this.open.has(it.key);

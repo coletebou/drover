@@ -20,7 +20,7 @@ export const LEGACY_EVENTS_PATH = path.join(DOTFILES, 'claude', 'apx-events.json
 export const LEGACY_FEATURE_LOG = process.env.DROVER_FEATURE_LOG ?? process.env.APX_FEATURE_LOG ?? path.join(DOTFILES, 'claude', 'feature-log.jsonl');
 
 export const FEATURE_STATES = ['not-started', 'in-progress', 'shipped', 'abandoned'];
-export const EVENT_TYPES = ['feature', 'note', 'pin', 'unpin', 'message', 'launch', 'survey', 'survey-item', 'handoff', 'chat', 'failover', 'review', 'op', 'notify', 'settings', 'file-write', 'upload', 'status'];
+export const EVENT_TYPES = ['feature', 'note', 'pin', 'unpin', 'message', 'launch', 'survey', 'survey-item', 'handoff', 'chat', 'failover', 'review', 'op', 'notify', 'settings', 'file-write', 'upload', 'status', 'receipt', 'approval'];
 // A plugin adds its own event types with a validator each (core/plugins.js eventTypes).
 
 export function shortHost() {
@@ -69,6 +69,18 @@ export function validateEvent(ev) {
     // An agent's own report of what it is doing (Grok bots through the bot gateway: core/bots/grok.js).
     case 'status':
       if (typeof ev.agent !== 'string' || !ev.agent || typeof ev.state !== 'string' || !ev.state) throw new Error('status.agent and status.state required');
+      break;
+    // Who read which message or reply (core/bots/grok.js receipts): of names one id or up to 200.
+    case 'receipt': {
+      const ids = typeof ev.of === 'string' ? [ev.of] : ev.of;
+      if (!Array.isArray(ids) || !ids.length || ids.length > 200 || ids.some((x) => typeof x !== 'string' || !x || x.length > 200)) throw new Error('receipt.of must be an id or a list of 1 to 200 ids');
+      if (ev.state !== 'read' || typeof ev.by !== 'string' || !ev.by) throw new Error('receipt.state (read) and receipt.by required');
+      break;
+    }
+    // A Grok bot's approval request, the owner's decision on it, or its withdrawal (core/bots/approvals.js).
+    case 'approval':
+      if (typeof ev.aid !== 'string' || !/^ap_[a-f0-9]{12}$/.test(ev.aid) || !['pending', 'decided', 'withdrawn'].includes(ev.state) || typeof ev.bot !== 'string' || !ev.bot) throw new Error('approval.aid (ap_ and 12 hex digits), approval.state (pending, decided or withdrawn) and approval.bot required');
+      if (ev.state === 'decided' && (!Number.isInteger(ev.decision?.n) || typeof ev.decision?.label !== 'string')) throw new Error('a decided approval needs decision { n, label }');
       break;
     default: break;
   }

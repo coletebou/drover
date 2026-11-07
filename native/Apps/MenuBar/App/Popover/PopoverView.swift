@@ -185,6 +185,10 @@ struct PopoverView: View {
             .accessibilityElement(children: .combine)
             .accessibilityAddTraits(.isHeader)
 
+            if let notice = store.approvalNotice {
+                ApprovalNoticeLine(notice: notice) { store.dismissApprovalNotice() }
+            }
+
             if waitingItems.isEmpty {
                 Text("Nothing is waiting on you.")
                     .font(.callout)

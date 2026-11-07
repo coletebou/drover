@@ -16,10 +16,15 @@ struct SessionRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(session.name).font(.body).foregroundStyle(Theme.ink).lineLimit(1)
                 Text(BoardFormat.subtitle(session)).font(Theme.mono).foregroundStyle(Theme.ink3).lineLimit(1)
+                // A bot's approval question shows unclipped: a click on the row's buttons answers what is on show.
                 Text(BoardFormat.summaryLine(session))
-                    .font(.caption).foregroundStyle(Theme.ink2).lineLimit(2)
+                    .font(.caption).foregroundStyle(Theme.ink2).lineLimit(session.approval == nil ? 2 : nil)
                     .fixedSize(horizontal: false, vertical: true)
-                if session.lane == .waiting && model.showsAnswerCard(session) {
+                if session.lane == .waiting, let approval = session.approval {
+                    // One view per request: the bot's next request starts afresh, and a press on the last one's buttons ends with it.
+                    ApprovalAnswerView(session: session, approval: approval, style: .inline).id(approval.id)
+                        .padding(.top, 4)
+                } else if session.lane == .waiting && model.showsAnswerCard(session) {
                     DialogAnswerView(session: session, style: .inline)
                         .padding(.top, 4)
                 }

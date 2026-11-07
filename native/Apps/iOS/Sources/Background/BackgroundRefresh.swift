@@ -65,19 +65,29 @@ enum NotificationPipeline {
         if let cursor = plan.cursor { settings.notificationCursor = cursor }
         let center = UNUserNotificationCenter.current()
         for n in plan.notifications {
-            try? await center.add(request(for: n))
+            // An approval request's buttons are its own category, which must exist before the banner shows.
+            if !n.actions.isEmpty { await NotificationManager.shared.registerApprovalCategory(n) }
+            try? await center.add(request(for: n, server: settings.baseURL?.absoluteString))
         }
     }
 
-    static func request(for n: PlannedNotification) -> UNNotificationRequest {
+    /// `server` (the daemon's address, no credentials) rides along on an approval request, so its buttons answer only
+    /// the daemon that raised it.
+    static func request(for n: PlannedNotification, server: String? = nil) -> UNNotificationRequest {
         let content = UNMutableNotificationContent()
         content.title = n.title
+        if let subtitle = n.subtitle { content.subtitle = subtitle }
         content.body = n.body
         content.threadIdentifier = n.threadID
         content.categoryIdentifier = n.categoryID
         var info: [String: String] = ["kind": n.kind]
         if let s = n.sessionId { info["sessionId"] = s }
         if let h = n.host { info["host"] = h }
+        if let a = n.approvalID {
+            info["approvalId"] = a
+            if let bot = n.approvalBot { info["approvalBot"] = bot }
+            if let server { info["server"] = server }
+        }
         content.userInfo = info
         content.sound = n.playsSound ? .default : nil
         content.interruptionLevel = .active

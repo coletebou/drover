@@ -3,7 +3,8 @@
 // the truth file) sees the same alerts.
 //
 //   needs-you  a dialog appeared on an agent's screen, the Notification hook
-//              fired, or an agent asked for attention through notify.send
+//              fired, an agent asked for attention through notify.send, or a
+//              Grok bot asked for approval (kind approval, core/bots/approvals.js)
 //   finished   a session went busy -> idle (with its last line)
 //   error      a session died, a headless agent exited non-zero, a host went dark
 //   held       Claude's "Held message from another session" dialog appeared
@@ -250,6 +251,9 @@ export class Notifier {
    */
   #duplicateAsk(a) {
     if (a.category !== 'needs-you' || !a.sessionId || a.test) return false;
+    // A bot's approval request is its own card (it carries the options and is answered by id), never a repeat of the
+    // status alert the bot raised just before it.
+    if (a.kind === 'approval') return false;
     const now = _deps.now();
     const prev = this.ring.findLast((x) => x.category === 'needs-you' && x.sessionId === a.sessionId && !x.test && now - Date.parse(x.ts) < 90_000);
     if (!prev) return false;
@@ -266,7 +270,7 @@ export class Notifier {
       const alert = { ...a, observer: _deps.host(), ...(m ? { muted: `${m.scope} ${m.target}` } : {}) };
       if (record) {
         try {
-          const ev = await _deps.appendEvent({ type: 'notify', category: alert.category, kind: alert.kind, source: alert.source ?? 'detector', sessionId: alert.sessionId ?? null, tmuxTarget: alert.target ?? null, sessionName: alert.name ?? null, hostname: alert.host ?? null, title: alert.title, message: alert.body ?? '', key: alert.key ?? null, observer: alert.observer, ...(alert.muted ? { muted: alert.muted } : {}), ...(alert.test ? { test: true } : {}), ...(alert.meta?.number ? { mr: alert.meta.number } : {}), ...(alert.ask ? { ask: alert.ask } : {}) }, { actor: alert.actor ?? 'drover' });
+          const ev = await _deps.appendEvent({ type: 'notify', category: alert.category, kind: alert.kind, source: alert.source ?? 'detector', sessionId: alert.sessionId ?? null, tmuxTarget: alert.target ?? null, sessionName: alert.name ?? null, hostname: alert.host ?? null, title: alert.title, message: alert.body ?? '', key: alert.key ?? null, observer: alert.observer, ...(alert.muted ? { muted: alert.muted } : {}), ...(alert.test ? { test: true } : {}), ...(alert.meta?.number ? { mr: alert.meta.number } : {}), ...(alert.ask ? { ask: alert.ask } : {}), ...(alert.untrusted === true ? { untrusted: true } : {}) }, { actor: alert.actor ?? 'drover' });
           alert.id = ev.id; alert.ts = ev.ts;
         } catch { alert.id = `local-${_deps.now()}-${out.length}`; alert.ts = new Date(_deps.now()).toISOString(); }
       } else { alert.id = alert.id ?? `local-${_deps.now()}-${out.length}`; alert.ts = alert.ts ?? new Date(_deps.now()).toISOString(); }

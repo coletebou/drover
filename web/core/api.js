@@ -25,6 +25,7 @@ import { ops as credentialOps } from './credpool.js';
 import * as openclaw from './openclaw.js';
 import * as tx from './transcript-export.js';
 import * as grok from './bots/grok.js';
+import * as approvals from './bots/approvals.js';
 import * as botAuth from './bots/oauth.js';
 import * as native from './native.js';
 import { ops as settingsOps } from './settings.js';
@@ -314,6 +315,22 @@ export function slimSessions(list = []) {
     .map((s) => (typeof s.preview === 'string' && s.preview.length > 200 ? { ...s, preview: s.preview.slice(0, 199) + '…' } : s));
 }
 
+/**
+ * A bot's session changed outside an op (a receipt was written, an approval was asked or answered): the cached session
+ * lists and boards go, and in the daemon this host's board data is read again behind its cached copy (the other hosts'
+ * stay: dropping them would make the next board wait on every ssh).
+ */
+function botsChanged() {
+  cache.invalidate('sessions.', 'native.');
+  if (notifier.daemon) hostSummary('', { fresh: true }).catch(() => {});   // only the daemon keeps a board
+}
+approvals._deps.changed = botsChanged;
+/** Receipts were written (marked > 0): the bot's session now says less unread. Returns marked. */
+function afterSeen(marked) {
+  if (marked > 0) botsChanged();
+  return marked;
+}
+
 /** Local implementations keyed by op name. */
 export const local = {
   // ---- host facts
@@ -400,7 +417,7 @@ export const local = {
     return { ...r, ...filterSessions(sessions, args) };
   },
   async 'sessions.get'({ id }) { return sessionById(str(id, 'id')); },
-  async 'sessions.transcript'({ id, since = 0, limit, thread, format = 'turns', callStyle, maxBytes, as }) {
+  async 'sessions.transcript'({ id, since = 0, limit, thread, seenBy, format = 'turns', callStyle, maxBytes, as }) {
     if (tx.checkFormat(format) !== 'turns') return exportTranscript({ id, since, limit, thread, format, callStyle, maxBytes, as });
     limit = Number(limit) > 0 ? Number(limit) : 200;
     const s = await sessionById(str(id, 'id'));
@@ -414,7 +431,14 @@ export const local = {
     }
     if (s.headless) return { engine: s.engine, headless: true, turns: headlessTurns(s.events), offset: s.events.length };
     if (s.engine === 'openclaw') return openclaw.transcript({ since, limit, thread });
-    if (s.engine === grok.ENGINE) return grok.transcript(s.id, { since, limit });
+    // seenBy: the reader is shown this page, so the bot's replies to them up to its last one are read (core/bots/grok.js
+    // receipts); the page is read again only when that changed what it says.
+    if (s.engine === grok.ENGINE) {
+      const page = await grok.transcript(s.id, { since, limit });
+      const last = page.turns.findLast((t) => t.role === 'assistant')?.id;
+      if (seenBy && last && afterSeen(await grok.markSeen(s.id, { by: seenBy, upTo: last, via: 'thread' }).catch(() => 0))) return grok.transcript(s.id, { since, limit });
+      return page;
+    }
     if (s.engine === 'claude') { const r = await claude.readTranscript(s.transcript, { since, limit }); return { engine: 'claude', ...r, summary: since ? undefined : await claude.transcriptSummary(s.transcript).catch(() => null) }; }
     // codex: read the rollout file first. thread/read materializes every turn inside the
     // app-server, and on a long session it reached 19 GB in 8 minutes (2026-10-15) and
@@ -428,7 +452,7 @@ export const local = {
   },
   async 'transcripts.list'(args = {}) { return listTranscripts(args); },
   /** The last thing a session said (final assistant text and its last line), cheap: reads the transcript tail. */
-  async 'sessions.lastReply'({ id }) {
+  async 'sessions.lastReply'({ id, seenBy }) {
     const s = await sessionById(str(id, 'id'));
     if (!s) throw new Error('session not found');
     let r = null;
@@ -438,7 +462,11 @@ export const local = {
       const t = turns.at(-1); if (t) r = { text: t.text, ts: t.ts ?? null };
     } else if (s.engine === 'claude') r = await claude.lastAssistantText(s.transcript);
     else if (s.engine === 'openclaw') { const t = (await openclaw.transcript({ limit: 50 })).turns.filter((x) => x.role === 'assistant' && !x.pending).at(-1); if (t) r = { text: t.text, ts: t.ts }; }
-    else if (s.engine === grok.ENGINE) r = await grok.lastReply(s.id);
+    else if (s.engine === grok.ENGINE) {
+      r = await grok.lastReply(s.id);
+      // The reader got this reply (seenBy): it, and what came before it for them, is read.
+      if (r && seenBy && afterSeen(await grok.markSeen(s.id, { by: seenBy, upTo: r.event, via: 'last reply' }).catch(() => 0))) r = await grok.lastReply(s.id);
+    }
     else if (s.engine === 'codex') {
       const file = s.file ?? (await codex.recentRollouts({ days: 30, limit: 2000 })).find((x) => x.threadId === s.threadId)?.file;
       if (file) { const t = (await codex.readRollout(file, { limit: 40 })).turns?.filter((x) => x.role === 'assistant' && x.text?.trim()).at(-1); if (t) r = { text: t.text, ts: t.ts ?? null }; }
@@ -447,7 +475,7 @@ export const local = {
     if (s.engine === 'claude' && !s.headless) { const a = await askContextFor({ transcript: s.transcript, tmux: s.tmux }); const { lastText, lastTs, ...rest } = a; ask = rest; }
     else if (r?.text) ask = classifyAsk({ text: r.text });
     // A Grok bot's reply comes marked (core/bots/grok.js provenance): the mark goes with it to whoever asked.
-    return r ? { id: s.id ?? s.sessionId ?? s.threadId, name: s.name ?? null, engine: s.engine, text: r.text.slice(-4000), line: claude.lastLine(r.text), ts: r.ts ?? null, ask, ...(r.untrusted === true ? { source: r.source ?? null, untrusted: true } : {}) } : { id: s.id ?? s.sessionId ?? s.threadId, name: s.name ?? null, engine: s.engine, text: null, line: null, ask };
+    return r ? { id: s.id ?? s.sessionId ?? s.threadId, name: s.name ?? null, engine: s.engine, text: r.text.slice(-4000), line: claude.lastLine(r.text), ts: r.ts ?? null, ask, ...(r.untrusted === true ? { source: r.source ?? null, untrusted: true } : {}), ...(r.receipt ? { event: r.event, receipt: r.receipt } : {}) } : { id: s.id ?? s.sessionId ?? s.threadId, name: s.name ?? null, engine: s.engine, text: null, line: null, ask };
   },
   async 'sessions.message'({ id, text, actor = OWNER, wait, thread }) {
     let s = await sessionById(str(id, 'id'));
@@ -505,7 +533,18 @@ export const local = {
   // ---- truth file
   async 'events.state'() { const all = await events.readAll(); return { ...events.fold(all), file: await events.fileInfo() }; },
   async 'events.tail'({ since, limit = 200 }) { const r = await events.since(since); return r.slice(-limit); },
-  async 'events.append'({ event, actor = OWNER }) { return events.append(await enrichHookNotify(event), { actor }); },
+  async 'events.append'({ event, actor = OWNER }) {
+    // Receipts are Drover's own record of who read what (core/bots/grok.js writes them as the reader): an append that
+    // names its own actor could otherwise claim the owner read a bot's reply.
+    if (event?.type === 'receipt') throw new Error('refused: receipt events are written by Drover itself (sessions.seen, or reading the thread)');
+    // Approvals the same: a request is a bot's (drover_request_approval), a decision the owner's (a main-token route), and
+    // a message that carries one is how the decision reaches the bot. An agent's append must pass for neither.
+    if (event && typeof event === 'object' && (event.type === 'approval' || Object.hasOwn(event, 'approval'))) throw new Error('refused: approval events are written by Drover itself (a bot asks with drover_request_approval; the owner answers in Drover)');
+    // Who, when and where are the op's to stamp: a body that named them could pass as another actor (the owner, a bot)
+    // or sort itself before an earlier event.
+    const { id: _id, ts: _ts, host: _host, actor: _actor, ...body } = event && typeof event === 'object' ? event : {};
+    return events.append(await enrichHookNotify(event && typeof event === 'object' ? body : event), { actor });
+  },
   async 'events.importLegacy'() { return events.importLegacyFeatureLog(); },
   async 'features.upsert'({ fid, state, title, repo, notes, links, source, untrusted, actor = OWNER }) {
     const ev = { type: 'feature', fid: fid || `feat-${Date.now()}` };
@@ -551,8 +590,14 @@ export const local = {
   async 'reflections.edit'(args) { return memory.reflectionEdit(args); },
   async 'reflections.apply'({ ops, repo, anyRepo, note, actor }) { return memory.reflectionsApply(ops, { repo, anyRepo, note, actor }); },
 
-  // ---- Grok bots (core/bots): read-only. Approving a bot, revoking it and setting a Routine are main-token HTTP
-  // routes (server/http.js /api/bots/*), never ops: an op is reachable through MCP and ssh rpc.
+  // ---- Grok bots (core/bots): read-only, but for read receipts. Approving a bot, revoking it and setting a Routine are
+  // main-token HTTP routes (server/http.js /api/bots/*), never ops: an op is reachable through MCP and ssh rpc.
+  /** The caller has read a bot's thread: its replies to the caller (actor; the owner's clients are one reader) are read. */
+  async 'sessions.seen'({ id, upTo, actor = OWNER }) {
+    if (!grok.isGrokId(str(id, 'id', { max: 80 }))) throw new Error('id must be a Grok bot, grok:<name>');
+    if (!grok.configured()) throw new Error('this host keeps no Grok bots (the one that runs the bot gateway does)');
+    return { id: grok.idFor(grok.botName(id)), marked: afterSeen(await grok.markSeen(id, { by: actor, upTo, via: 'seen' })) };
+  },
   async 'bots.status'() {
     let base = null, configError = null;
     try { base = botAuth.publicBase(); } catch (e) { configError = e.message; }
@@ -560,9 +605,15 @@ export const local = {
     const [grants, routines, bots] = await Promise.all([botAuth.grantsList(), grok.routines(), keepsBots ? grok.listSessions({ host }) : []]);
     return {
       host, keepsBots, gateway: base ? { publicUrl: base, mcp: `${base}/mcp`, port: botAuth.gatewayPort() } : null, ...(configError ? { configError } : {}),
+      // pendingApprovals: bot connections waiting for the owner's OK (core/bots/oauth.js); a bot's approval requests are approvals.
       pendingApprovals: botAuth.pendingList().length, grants, routines,
-      bots: bots.map((b) => ({ id: b.id, name: b.name, state: b.state, summary: b.summary, task: b.task, status: b.status, lastSeenAt: b.lastSeenAt, routine: b.routine, live: b.live, ...(b.stale ? { stale: b.stale } : {}) })),
+      bots: bots.map((b) => ({ id: b.id, name: b.name, state: b.state, summary: b.summary, task: b.task, status: b.status, lastSeenAt: b.lastSeenAt, routine: b.routine, live: b.live, ...(b.stale ? { stale: b.stale } : {}), ...(b.approvals?.length ? { approvals: b.approvals.length } : {}) })),
     };
+  },
+  /** Grok bots' approval requests on the host that keeps the bots, newest first (answering is a main-token route, never an op). */
+  async 'approvals.list'({ bot, status, limit } = {}) {
+    if (!grok.configured()) return { keepsBots: false, host: hosts.localShortName(), items: [] };
+    return { keepsBots: true, host: hosts.localShortName(), items: await approvals.list({ bot, status, limit }) };
   },
 
   // ---- terminals (ttyd)
@@ -1147,6 +1198,7 @@ const INVALIDATES = {
   'tmux.answer': ['tmux.', 'fleet.', 'events.', 'native.'], 'sessions.answer': ['tmux.', 'fleet.', 'events.', 'native.'],
   'settings.set': ['settings.', 'events.'], 'settings.reset': ['settings.', 'events.'], 'notify.mute': ['settings.', 'events.'], 'notify.unmute': ['settings.', 'events.'],
   'notify.test': ['notify.', 'events.'], 'notify.send': ['notify.', 'events.'],
+  'sessions.seen': ['events.', 'sessions.'],
   'openclaw.sweep': ['openclaw.', 'events.'],
   'uploads.put': ['uploads.', 'events.'], 'uploads.remove': ['uploads.', 'events.'], 'files.write': ['files.', 'events.'],
   'docker.restart': ['docker.'], 'docker.start': ['docker.'], 'docker.exec': ['docker.'], 'docker.run': ['docker.'],
@@ -1203,7 +1255,7 @@ function walArgs(args) {
 }
 /** Every mutating op is written to the truth file as an `op` event (the WAL): who did what, where, with what result. */
 async function wal(op, args, { ok, ms, error, result }) {
-  if (op === 'events.append' || op === 'events.importLegacy') return; // those are WAL writes already
+  if (op === 'events.append' || op === 'events.importLegacy' || op === 'sessions.seen') return; // those are WAL writes already (sessions.seen: its receipt)
   try {
     const summary = result && typeof result === 'object' ? Object.fromEntries(Object.entries(result).filter(([k, v]) => ['ok', 'refused', 'target', 'headlessId', 'sessionId', 'threadId', 'id', 'event', 'via', 'queuedBehindTurn', 'turnId', 'number', 'url', 'credential', 'effort', 'ref', 'sha', 'branch', 'running', 'project', 'service', 'verb', 'count', 'exitCode', 'timedOut'].includes(k) && (typeof v !== 'object' || v === null)).map(([k, v]) => [k, k === 'url' ? walValue(v) : v])) : undefined;   // a URL can carry user:password@; the rest are ids
     await events.append({ type: 'op', op, target: args?.host ?? 'local', args: walArgs(args), ok, ms, ...(error && { error: walText(String(error)).slice(0, 300) }), ...(summary && { result: summary }) }, { actor: args?.actor ?? OWNER });

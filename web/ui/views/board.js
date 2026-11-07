@@ -2,12 +2,13 @@
 // Idle), and the manager docked beside them (on top on narrow screens, a slim bar when hidden). Strips come from
 // the daemon's compact board (native.board and `board` events) when it has one, else from the fleet summary;
 // they are rendered by key, so an update rebuilds only the strips that changed. A waiting strip with a dialog
-// answers it in place (its keys, sent only to the dialog it shows). Click a strip for the drawer; j/k move,
-// Enter opens, m talks to the manager.
+// answers it in place (its keys, sent only to the dialog it shows); a Grok bot's approval request is answered in
+// place too (one button per option). Click a strip for the drawer; j/k move, Enter opens, m talks to the manager.
 import { h, clear, engine, ago, dot, empty, loading, fmtTime, plural } from '../dom.js';
 import { mountManagerChat } from '../manager-chat.js';
-import { answerModel, pressKey, pressedLabel } from '../answer-model.js';
+import { answerModel, pressKey, pressedLabel, pressApproval, oneTap } from '../answer-model.js';
 import { mdText } from '../markdown.js';
+import { receiptText, approvalText } from '../chat-model.js';
 
 const LANES = [
   { id: 'wait', title: 'Waiting on you', hint: 'a dialog is open or the agent stopped and asked', none: 'Nothing needs you.' },
@@ -19,7 +20,28 @@ const ms = (v) => (v == null ? 0 : typeof v === 'number' ? (v < 1e11 ? v * 1000 
 
 /** What a strip shows, as one string: an unchanged signature keeps its element. */
 function stripSig(s) {
-  return JSON.stringify([s.lane, s.faded, s.name, s.engine, s.status, ms(s.since), s.host, s.tmux, s.windowName, s.ask?.label, s.ask?.text, s.finished?.ts, s.tail, s.hash, s.keys, s.dialog?.options?.map((o) => [o.n, o.label, o.selected])]);
+  return JSON.stringify([s.lane, s.faded, s.name, s.engine, s.status, ms(s.since), s.host, s.tmux, s.windowName, s.ask?.label, s.ask?.text, s.finished?.ts, s.tail, s.hash, s.keys, s.dialog?.options?.map((o) => [o.n, o.label, o.selected]), s.unread, s.approval?.id, s.moreApprovals]);
+}
+
+/** One line of the board's recent-events feed. */
+export function feedLine(e) {
+  switch (e.type) {
+    case 'message': return `${e.actor} → ${e.to?.name ?? e.to?.id}: ${e.text}`;
+    case 'chat': return `${e.from}: ${e.error ? `did not answer: ${e.error}` : e.text}`;
+    case 'notify': return [e.category, e.name ?? e.sessionName, e.title ?? e.message].filter(Boolean).join(': ');
+    case 'op': return `${e.op}${e.target && e.target !== 'local' ? ` on ${e.target}` : ''}${e.ok === false ? ` failed${e.error ? `: ${e.error}` : ''}` : ''}`;
+    case 'launch': return `${e.engine} ${e.mode} ${e.profile} ${e.result?.tmux ?? ''}`;
+    case 'feature': return `${e.fid} ${e.state ?? ''} ${e.title ?? ''}`;
+    case 'note': return `${e.about}: ${e.text}`;
+    case 'status': return `${e.name ?? e.agent} ${e.state}${e.summary ? `: ${e.summary}` : ''}`;
+    case 'receipt': return receiptText(e);
+    case 'approval': return approvalText(e);
+    case 'survey': return `${e.count} items from ${e.file?.split('/').pop()}`;
+    case 'survey-item': return e.item?.title ?? e.item?.id ?? '';
+    case 'pin': case 'unpin': return e.target;
+    case 'handoff': return e.path;
+    default: return JSON.stringify(e).slice(0, 120);
+  }
 }
 
 export default {
@@ -35,7 +57,8 @@ export default {
     // The answered dialog is known by its hash, or by its words: the daemon can read the copy tmux keeps in the
     // scrollback as a dialog still on screen (with another hash), and that copy is not one to answer.
     const dialogWords = (s) => JSON.stringify([s.dialog?.question ?? s.ask?.text ?? null, (s.dialog?.options ?? []).map((o) => o.label)]);
-    const sentFor = (s) => { const x = sent.get(s.key); return Boolean(x && Date.now() - x.at < SENT_MS && ((x.hash && x.hash === s.hash) || x.words === dialogWords(s))); };
+    // An approval request answered from here is Sent while the board still shows that request (it goes on the next read).
+    const sentFor = (s) => { const x = sent.get(s.key); return Boolean(x && Date.now() - x.at < SENT_MS && (x.approval ? x.approval === s.approval?.id : (x.hash && x.hash === s.hash) || x.words === dialogWords(s))); };
     const meta = h('span', { class: 'muted small', id: 'board-meta' }, 'loading');
     const head = h('div', { class: 'view-head' }, h('h1', null, 'Board'), meta, h('span', { class: 'spacer' }), h('span', { class: 'muted small board-keys' }, 'j k move, enter open, m manager'));
     const lanesEl = h('div', { class: 'board' });
@@ -110,17 +133,21 @@ export default {
         class: `strip ${color}${s.faded ? ' faded' : ''}${isNew && s.lane === 'wait' ? ' new' : ''}${busy.has(s.key) ? ' sending' : ''}`, tabindex: 0, 'data-key': s.key,
         onclick: () => open(s), onkeydown: (e) => { if (e.key === 'Enter' && e.target === el) open(s); },
       },
-      h('div', { class: 'title' }, engine(s.engine), h('span', { class: 'name', title: s.cwd ?? '' }, s.name), s.status === 'busy' || s.lane === 'work' ? dot('busy', { pulse: true }) : null),
+      h('div', { class: 'title' }, engine(s.engine), h('span', { class: 'name', title: s.cwd ?? '' }, s.name), s.status === 'busy' || s.lane === 'work' ? dot('busy', { pulse: true }) : null,
+        // A Grok bot's replies the owner has not read yet (read receipts): opening its chat reads them.
+        s.unread ? h('span', { class: 'unread', title: `${plural(s.unread, 'reply', 'replies')} you have not read; open the chat to read them` }, `${s.unread} unread`) : null),
       h('span', { class: 'age', title: s.since ? new Date(ms(s.since)).toLocaleString() : '' }, s.since ? ago(s.since) : ''),
       h('div', { class: 'where' }, [s.host !== 'local' ? s.host : null, s.tmux, s.windowName && s.windowName !== s.name ? s.windowName : null].filter(Boolean).join('  ')),
       s.ask ? h('div', { class: 'ask-label' }, s.ask.label) : s.finished ? h('div', { class: 'ask-label quiet' }, 'finished') : null,
-      tail?.length ? h('div', { class: 'tail' }, tail.join('\n')) : null,
+      // An approval's question is read whole (its buttons answer all of it): never clipped like a pane's tail.
+      tail?.length ? h('div', { class: s.answer === 'approval' ? 'tail whole' : 'tail' }, tail.join('\n')) : null,
       keys);
       return el;
     }
     /** A waiting strip's dialog, answered from the board: its own keys, only on the dialog the strip shows. */
     function keysRow(s) {
       const m = answerModel(s);
+      if (m?.mode === 'approval') return approvalRow(s, m);
       if (!m || m.mode !== 'keys' || !m.hash) return null;
       if (sentFor(s)) return h('div', { class: 'strip-keys sent', role: 'status' }, h('span', { class: 'muted small' }, 'Sent; waiting for the screen to move on'));
       const row = h('div', { class: 'strip-keys', role: 'group', 'aria-label': `Answer ${s.name}` });
@@ -130,6 +157,28 @@ export default {
           onclick: (e) => { e.stopPropagation(); press(s, m, b.key); } }, b.kind === 'option' ? h('span', { class: 'trunc' }, b.label) : b.label));
       }
       return row;
+    }
+    /** A bot's approval request, answered from the board: one button per option, sent with the request's id. */
+    function approvalRow(s, m) {
+      if (sentFor(s)) return h('div', { class: 'strip-keys sent', role: 'status' }, h('span', { class: 'muted small' }, 'Answered; telling the bot'));
+      const row = h('div', { class: 'strip-keys approval', role: 'group', 'aria-label': `Answer ${s.name}'s approval request` });
+      // Details the strip does not show: they are answered where they are read in full.
+      if (!oneTap(m)) { row.append(h('button', { class: 'btn sm', type: 'button', title: 'The request has details: read them on its card, and answer there', onclick: (e) => { e.stopPropagation(); open(s); } }, 'Review and answer')); return row; }
+      // Whole labels (they wrap): two options cut to the same words would be one button answering two ways.
+      for (const b of m.buttons) row.append(h('button', { class: 'btn sm', type: 'button', disabled: busy.has(s.key) ? true : null, title: `Answer ${b.label}${m.more ? ` (${m.more} more wait after this one)` : ''}`, onclick: (e) => { e.stopPropagation(); answerApproval(s, m, b.n); } }, b.label));
+      if (m.more) row.append(h('span', { class: 'muted small' }, `+${m.more} more`));
+      return row;
+    }
+    async function answerApproval(s, m, n) {
+      if (busy.has(s.key)) return;
+      busy.add(s.key); render();
+      try {
+        const r = await pressApproval(ctx.answerApproval, m, n);
+        ctx.toast(`${s.name}: ${r?.decision?.label ?? 'answered'}${r?.delivery?.ok === false ? ` (not delivered: ${r.delivery.error ?? 'failed'})` : ''}`, r?.delivery?.ok === false ? 'error' : 'ok', 6000);
+        sent.set(s.key, { approval: m.id, at: Date.now() }); setTimeout(() => render(), SENT_MS + 100);
+      } catch (e) { ctx.toast(`${s.name}: not answered, ${e.message}`, 'error', 7000); }
+      busy.delete(s.key); render();
+      refreshSoon(600);
     }
     async function press(s, m, key) {
       if (busy.has(s.key)) return;
@@ -184,23 +233,7 @@ export default {
       } catch { /* quiet */ }
     }
     function renderFoot() { renderLaunches(); renderEvents(); }
-    function summarize(e) {
-      switch (e.type) {
-        case 'message': return `${e.actor} → ${e.to?.name ?? e.to?.id}: ${e.text}`;
-        case 'chat': return `${e.from}: ${e.error ? `did not answer: ${e.error}` : e.text}`;
-        case 'notify': return [e.category, e.name ?? e.sessionName, e.title ?? e.message].filter(Boolean).join(': ');
-        case 'op': return `${e.op}${e.target && e.target !== 'local' ? ` on ${e.target}` : ''}${e.ok === false ? ` failed${e.error ? `: ${e.error}` : ''}` : ''}`;
-        case 'launch': return `${e.engine} ${e.mode} ${e.profile} ${e.result?.tmux ?? ''}`;
-        case 'feature': return `${e.fid} ${e.state ?? ''} ${e.title ?? ''}`;
-        case 'note': return `${e.about}: ${e.text}`;
-        case 'status': return `${e.name ?? e.agent} ${e.state}${e.summary ? `: ${e.summary}` : ''}`;
-        case 'survey': return `${e.count} items from ${e.file?.split('/').pop()}`;
-        case 'survey-item': return e.item?.title ?? e.item?.id ?? '';
-        case 'pin': case 'unpin': return e.target;
-        case 'handoff': return e.path;
-        default: return JSON.stringify(e).slice(0, 120);
-      }
-    }
+    const summarize = feedLine;
 
     // ------------------------------------------------------------ the manager dock
     // Wide: a column beside the lanes; narrow: a card above them. Hidden, it is a slim bar (a rail when wide) that
@@ -233,6 +266,11 @@ export default {
     // through are announced: answer-model.js announceAnswered.)
     const onAnswered = (e) => {
       const a = e.detail ?? {}; const host = a.host ?? 'local';
+      if (a.approval) {
+        const st = ctx.strips().find((x) => x.host === host && x.approval?.id === a.approval);
+        if (st && !sentFor(st)) { sent.set(st.key, { approval: a.approval, at: Date.now() }); render(); setTimeout(() => render(), SENT_MS + 100); }
+        return;
+      }
       const st = ctx.strips().find((x) => x.host === host && x.lane === 'wait' && [a.id, a.target].some((v) => v && (x.id === v || x.sessionId === v || x.tmux === v)) && (!a.hash || a.hash === x.hash));
       if (st && !sentFor(st)) { sent.set(st.key, { hash: st.hash, words: dialogWords(st), at: Date.now() }); render(); setTimeout(() => render(), SENT_MS + 100); }
     };

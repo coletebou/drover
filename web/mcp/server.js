@@ -118,7 +118,7 @@ export const TOOLS = [
     run: (dispatch, args) => {
       const a = pick(args, ['id', 'since', 'limit', 'host', 'thread', 'format', 'callStyle', 'maxBytes', 'as']);
       if (a.format && a.format !== 'turns') { a.maxBytes ??= MCP_TRANSCRIPT_PAGE; if (a.format !== 'raw') a.as ??= 'text'; }
-      return dispatch('sessions.transcript', a);
+      return dispatch('sessions.transcript', mcpArgs('sessions.transcript', a));
     },
   },
   {
@@ -387,10 +387,17 @@ export const MCP_WAIT_MAX_SEC = 110;
 // in the calling session's working directory. Both are set here, after argument checks, over anything the caller
 // passed. The front drops callerCwd before the search goes to any host.
 const withCallerCwd = (a) => ({ ...a, callerCwd: process.cwd(), remote: true });
+// An agent that reads a Grok bot's thread has read the bot's answers to it (read receipts, core/bots/grok.js): the read,
+// and sessions.seen, name this server's actor, never one an agent passes, so no agent marks a reply read for the owner
+// or for another reader. Sessions that are not bots ignore seenBy.
+const withSeenBy = (a) => ({ ...a, seenBy: writeActor(undefined) });
 // A transcript page through MCP: Claude Code holds a tool result to about 25k tokens.
 const MCP_TRANSCRIPT_PAGE = 80_000;
 const MCP_ARGS = {
   'files.wait': (a) => { const n = Number(a.timeoutSec ?? MCP_WAIT_MAX_SEC); return { ...a, timeoutSec: Number.isFinite(n) ? Math.min(n, MCP_WAIT_MAX_SEC) : a.timeoutSec }; },
+  'sessions.transcript': withSeenBy,
+  'sessions.lastReply': withSeenBy,
+  'sessions.seen': (a) => ({ ...a, actor: writeActor(undefined) }),
   'search.semantic': withCallerCwd,
   'search.fleet': withCallerCwd,
 };

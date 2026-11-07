@@ -20,7 +20,7 @@ struct SessionRef: Hashable, Codable, Sendable, Identifiable {
 }
 
 enum Engine: String, Codable, Sendable, CaseIterable {
-    case claude, codex, headless, openclaw, unknown
+    case claude, codex, headless, openclaw, grok, unknown
 
     init(from decoder: Decoder) throws {
         let raw = try decoder.singleValueContainer().decode(String.self)
@@ -33,6 +33,7 @@ enum Engine: String, Codable, Sendable, CaseIterable {
         case .codex: "Codex"
         case .headless: "Headless"
         case .openclaw: "Manager"
+        case .grok: "Grok bot"
         case .unknown: "Agent"
         }
     }
@@ -105,8 +106,17 @@ struct NativeSummary: Codable, Sendable, Hashable {
         var kind: String?
         /// At most 140 chars, no secrets (server guarantees).
         var headline: String?
+        /// How it is answered: `keys`, `reply`, or `approval` (a Grok bot's request, answered by its id). New values
+        /// are kept as sent.
+        var answer: String? = nil
+        /// A Grok bot's approval request (`answer` is `approval`); `kind` stays `decision` for older clients.
+        var approval: ApprovalRequest? = nil
+        /// How many more requests from the same bot wait behind this one.
+        var moreApprovals: Int? = nil
         var ref: SessionRef { SessionRef(id: id, host: host) }
         var title: String { name?.isEmpty == false ? name! : id }
+        /// The bot's name for "Asked by Alpha, a Grok bot".
+        var botName: String? { ApprovalFormat.botName(bot: approval?.bot, fallback: name) }
     }
 
     struct WorkingItem: Codable, Sendable, Hashable, Identifiable {
@@ -132,6 +142,24 @@ struct NativeSummary: Codable, Sendable, Hashable {
     }
 }
 
+extension NativeSummary.WaitingItem {
+    /// The fields an older client knew decode as before; the answer fields are new and optional, so a malformed one is
+    /// ignored, never fatal to the summary.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decodeIfPresent(String.self, forKey: .name)
+        host = try c.decodeIfPresent(String.self, forKey: .host)
+        engine = try c.decodeIfPresent(Engine.self, forKey: .engine)
+        since = try c.decodeIfPresent(LooseDate.self, forKey: .since)
+        kind = try c.decodeIfPresent(String.self, forKey: .kind)
+        headline = try c.decodeIfPresent(String.self, forKey: .headline)
+        answer = c.lenient(String.self, forKey: .answer)
+        approval = c.lenient(ApprovalRequest.self, forKey: .approval)
+        moreApprovals = c.lenient(Int.self, forKey: .moreApprovals)
+    }
+}
+
 // MARK: native.notifications
 
 struct NotificationFeed: Codable, Sendable, Hashable {
@@ -151,7 +179,28 @@ struct NotificationFeed: Codable, Sendable, Hashable {
         var body: String?
         var sessionId: String?
         var host: String?
+        /// `approval` for a Grok bot's approval request (answered by its id), as on waiting items.
+        var answer: String? = nil
+        var approval: ApprovalRequest? = nil
         var ref: SessionRef? { sessionId.map { SessionRef(id: $0, host: host) } }
+    }
+}
+
+extension NotificationFeed.Item {
+    /// As before for the fields an older client knew; the answer fields are optional and a malformed one is ignored.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        at = try c.decodeIfPresent(LooseDate.self, forKey: .at)
+        kind = try c.decodeIfPresent(String.self, forKey: .kind)
+        category = try c.decodeIfPresent(String.self, forKey: .category)
+        test = try c.decodeIfPresent(Bool.self, forKey: .test)
+        title = try c.decode(String.self, forKey: .title)
+        body = try c.decodeIfPresent(String.self, forKey: .body)
+        sessionId = try c.decodeIfPresent(String.self, forKey: .sessionId)
+        host = try c.decodeIfPresent(String.self, forKey: .host)
+        answer = c.lenient(String.self, forKey: .answer)
+        approval = c.lenient(ApprovalRequest.self, forKey: .approval)
     }
 }
 
