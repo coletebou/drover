@@ -365,7 +365,10 @@ export class Router {
     const now = _deps.now();
     const candidates = [...st.asks.values()].filter((a) => a.code && (a.status === 'open' || (a.closedAt && now - Date.parse(a.closedAt) < RECENT_MS)));
     // The message a reply or a button belongs to pins the ask exactly.
-    const sentWith = (id) => st.sends.find((s) => s.ok !== false && (s.messageIds ?? []).includes(id));
+    // The newest send that carried this message id: ids can repeat over the truth file's life (a replaced Telegram bot
+    // numbers its messages from 1 again, in a chat whose id is the owner's either way), and a reply or a tap can only
+    // be to a message the owner still sees, the latest one.
+    const sentWith = (id) => st.sends.findLast((s) => s.ok !== false && (s.messageIds ?? []).includes(id));
     if (msg.button) {
       const m = /^ask:([A-Z]\d{1,2}):(\d):(\d)$/.exec(msg.button.data);
       const s = msg.replyTo ? sentWith(msg.replyTo) : null;

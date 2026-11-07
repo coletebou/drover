@@ -25,7 +25,8 @@ process.stdin.on('data', (d) => {
     log({ method: req.method, params: req.params });
     if (req.method === 'watch.subscribe' && process.env.FAKE_IMSG_SUBSCRIBE_FAIL && require0()) out({ jsonrpc: '2.0', id: req.id, error: { code: -32000, message: 'database not readable (Full Disk Access)' } });
     else if (req.method === 'watch.subscribe') { subscribed = true; out({ id: req.id, result: { subscription: 1 }, jsonrpc: '2.0' }); }
-    else if (req.method === 'send') { rowid++; out({ jsonrpc: '2.0', id: req.id, result: { ok: true, rowid, guid: `FAKE-GUID-${rowid}` } }); }
+    // A message GUID is unique, as Messages' are, across restarts of this child too (each restart counts rowids from 1000).
+    else if (req.method === 'send') { rowid++; out({ jsonrpc: '2.0', id: req.id, result: { ok: true, rowid, guid: `FAKE-GUID-${process.pid}-${rowid}` } }); }
     else out({ jsonrpc: '2.0', id: req.id, error: { code: -32601, message: 'Method not found', data: req.method } });
   }
 });

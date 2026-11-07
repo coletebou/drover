@@ -127,11 +127,40 @@ describe('iMessage', () => {
     assert.ok(await until(async () => { try { await imessage.send({ text: 'back' }); return true; } catch { return false; } }, 6000), 'recovers after the restart');
     delete process.env.FAKE_IMSG_SUBSCRIBE_FAIL;
   });
+  test('a reply to an ask\'s own iMessage (reply_to_guid) is that ask\'s, even with another ask the only open one', async () => {
+    const first = await dispatch('ask.create', { question: 'First by iMessage?', options: ['yes', 'no'], sessionId: SESSION, actor: 'test' });
+    const sent = (await lines(process.env.DROVER_EVENTS)).find((e) => e.type === 'ask' && e.phase === 'sent' && e.ok && (e.askIds ?? []).includes(first.askId));
+    const guid = String(sent.messageIds[0]).replace(/^imsg:/, '');
+    const n = inbox.length;
+    await incoming(msg({ text: `${first.code} a` }));
+    assert.ok(await until(async () => inbox.length > n), 'answered');
+    const second = await dispatch('ask.create', { question: 'Second by iMessage?', options: ['yes', 'no'], sessionId: SESSION, actor: 'test' });
+    await incoming(msg({ text: 'b', reply_to_guid: guid }));
+    assert.ok(await until(async () => inbox.length > n + 1), 'delivered');
+    await router.exclusive(() => {});
+    assert.match(inbox.at(-1), new RegExp(`\\[Owner via imessage, verified, follow-up\\] ${first.code} → b \\(no\\)`));
+    assert.equal((await dispatch('ask.get', { askId: second.askId })).status, 'open', 'the open ask is not answered');
+    await dispatch('ask.cancel', { askId: second.askId, actor: 'test' });
+  });
   test('who counts as the owner, as read from a message', () => {
     assert.equal(imessage.readMessage(msg({ text: 'x' })).verified, true);
     assert.equal(imessage.readMessage(msg({ sender: 'OWNER@Example.com', chat_guid: 'iMessage;-;owner@example.com' }), { env: { DROVER_ASK_IMESSAGE_TO: 'owner@example.com' } }).verified, true);
     assert.equal(imessage.readMessage(msg({ is_from_me: 1 })).verified, false);
     assert.equal(imessage.dmHandle('any;-;+15005550123'), OWNER);
     assert.equal(imessage.dmHandle('iMessage;+;chat1'), null);
+  });
+  test('imsg starts on a hub whose default order leaves iMessage out, so an ask that names it can use it', async () => {
+    const { Router, _deps: rd } = await import('../core/ask/router.js');
+    const real = rd.channels, realOrder = process.env.DROVER_ASK_CHANNELS;
+    let started = false;
+    rd.channels = { ...real, imessage: { ...imessage, configured: () => true, health: async () => ({ ok: true }), start: async () => { started = true; return () => {}; } } };
+    process.env.DROVER_ASK_CHANNELS = 'sms';
+    const r = new Router();
+    try {
+      assert.deepEqual(r.config().order, ['sms']);
+      r.start();
+      assert.ok(await until(async () => started), 'imsg started though the default order is SMS only');
+      assert.ok(r.usable(r.config()).includes('imessage'), 'and usable for an ask whose channels name it');
+    } finally { r.stop(); rd.channels = real; process.env.DROVER_ASK_CHANNELS = realOrder; }
   });
 });

@@ -48,7 +48,7 @@ function fakeTelegram(req, res) {
     if (m[2] === 'sendMessage') return send({ ok: true, result: { message_id: tg.next++, chat: { id: Number(OWNER_CHAT) } } });
     if (m[2] === 'getMe') return send({ ok: true, result: { id: 999, is_bot: true, username: 'test_drover_bot' } });
     if (m[2] === 'getChat') return send(args.chat_id === OWNER_CHAT ? { ok: true, result: { id: Number(OWNER_CHAT), type: 'private' } } : { ok: false, description: 'Bad Request: chat not found' });
-    if (m[2] === 'getWebhookInfo') return send({ ok: true, result: { url: '', pending_update_count: 0 } });
+    if (m[2] === 'getWebhookInfo') return send({ ok: true, result: { url: tg.webhookUrl ?? '', pending_update_count: 0 } });
     return send({ ok: true, result: true });
   });
 }
@@ -229,6 +229,77 @@ describe('answers by Telegram', () => {
     assert.equal((await askEvents('control')).filter((e) => e.providerMessageId === `tg:${OWNER_CHAT}:901`).length, 1);
     await tgUpdate({ update_id: 33, message: { message_id: 902, from: { id: Number(OWNER_CHAT) }, chat: { id: Number(OWNER_CHAT), type: 'private' }, text: 'resume' } }, secret);
     await settle();
+  });
+  test('a reply to the message of an ask closed over an hour ago is that ask\'s follow-up, never the open ask\'s answer', async () => {
+    const old = await ask({ question: 'Old one?', options: ['yes', 'no'] });
+    const oldMsg = lastAskMessageId();
+    await tgUpdate({ update_id: 700, message: { message_id: 970, from: { id: Number(OWNER_CHAT) }, chat: { id: Number(OWNER_CHAT), type: 'private' }, text: `${old.code} a` } }, secret);
+    await settle();
+    assert.equal((await dispatch('ask.get', { askId: old.askId })).status, 'answered');
+    const realNow = routerDeps.now;
+    routerDeps.now = () => Date.now() + 2 * 3_600_000;   // two hours on: the old ask is past the window of recent ones
+    try {
+      const fresh = await ask({ question: 'New one?', options: ['yes', 'no'] });
+      inbox.length = 0;
+      await tgUpdate({ update_id: 701, message: { message_id: 971, from: { id: Number(OWNER_CHAT) }, chat: { id: Number(OWNER_CHAT), type: 'private' }, text: 'b', reply_to_message: { message_id: oldMsg } } }, secret);
+      await settle();
+      assert.equal((await dispatch('ask.get', { askId: fresh.askId })).status, 'open', 'the open ask is not answered');
+      assert.match(inbox.at(-1), new RegExp(`^\\[Owner via telegram, verified, follow-up\\] ${old.code} → b \\(no\\)`));
+    } finally { routerDeps.now = realNow; }
+  });
+  test('a reply to one of our own acknowledgements is read as unbound: a code there still answers its ask', async () => {
+    const a = await ask({ question: 'First?', options: ['yes', 'no'] });
+    const b = await ask({ question: 'Second?', options: ['yes', 'no'] });
+    await tgUpdate({ update_id: 702, message: { message_id: 972, from: { id: Number(OWNER_CHAT) }, chat: { id: Number(OWNER_CHAT), type: 'private' }, text: 'a' } }, secret);
+    await settle();
+    assert.match(sentTexts().at(-1).args.text, /^Which ask\?/);
+    const ackMsg = lastAskMessageId();
+    await tgUpdate({ update_id: 703, message: { message_id: 973, from: { id: Number(OWNER_CHAT) }, chat: { id: Number(OWNER_CHAT), type: 'private' }, text: `${b.code} b`, reply_to_message: { message_id: ackMsg } } }, secret);
+    await settle();
+    assert.match(inbox.at(-1), new RegExp(`${b.code} → b \\(no\\)`));
+    assert.equal((await dispatch('ask.get', { askId: a.askId })).status, 'open');
+  });
+  test('a bare reply that found no open ask, read again after a restart, never answers an ask made since', async () => {
+    const realNow = routerDeps.now;
+    routerDeps.now = () => Date.now() + 3 * 3_600_000;   // every earlier ask is long closed: nothing for a bare "a" to bind to
+    try {
+      await tgUpdate({ update_id: 704, message: { message_id: 974, from: { id: Number(OWNER_CHAT) }, chat: { id: Number(OWNER_CHAT), type: 'private' }, text: 'a' } }, secret);
+      await settle();
+      assert.match(sentTexts().at(-1).args.text, /^No open asks right now/);
+      const r = await ask({ question: 'Made after?', options: ['yes', 'no'] });
+      router.seen.clear();   // as after a restart
+      await tgUpdate({ update_id: 704, message: { message_id: 974, from: { id: Number(OWNER_CHAT) }, chat: { id: Number(OWNER_CHAT), type: 'private' }, text: 'a' } }, secret);   // the same message, read again
+      await settle();
+      assert.equal((await dispatch('ask.get', { askId: r.askId })).status, 'open', 'not answered by the old reply');
+      assert.equal(inbox.length, 0);
+      assert.equal((await askEvents('inbound')).filter((e) => e.providerMessageId === `tg:${OWNER_CHAT}:974`).length, 1, 'recorded once');
+    } finally { routerDeps.now = realNow; }
+  });
+  test('a message id sent twice (a replaced bot numbers from 1 again): a reply to it is the newest ask\'s', async () => {
+    const old = await ask({ question: 'Old bot?', options: ['yes', 'no'] });
+    const reused = lastAskMessageId();
+    await tgUpdate({ update_id: 705, message: { message_id: 975, from: { id: Number(OWNER_CHAT) }, chat: { id: Number(OWNER_CHAT), type: 'private' }, text: `${old.code} a` } }, secret);
+    await settle();
+    const realNext = tg.next;
+    tg.next = reused;   // the new bot's next message carries the same id as the old bot's ask
+    try {
+      const fresh = await ask({ question: 'New bot?', options: ['yes', 'no'] });
+      assert.equal(lastAskMessageId(), reused);
+      await tgUpdate({ update_id: 706, message: { message_id: 976, from: { id: Number(OWNER_CHAT) }, chat: { id: Number(OWNER_CHAT), type: 'private' }, text: 'b', reply_to_message: { message_id: reused } } }, secret);
+      await settle();
+      assert.equal((await dispatch('ask.get', { askId: fresh.askId })).status, 'answered', 'the newest message with that id is the one replied to');
+      assert.match(inbox.at(-1), new RegExp(`^\\[Owner via telegram, verified\\] ${fresh.code} → b \\(no\\)`));
+    } finally { tg.next = Math.max(tg.next, realNext); }
+  });
+  test('the webhook secret is set again on every start, even when Telegram already has the URL', async () => {
+    const url = `${base}/hooks/telegram`;
+    tg.webhookUrl = url;   // Telegram kept the URL from an earlier start, and the secret that start gave it
+    const n = tg.calls.length;
+    try {
+      const r = await telegram.ensureWebhook(url);
+      assert.equal(r.changed, false);
+      assert.ok(tg.calls.slice(n).some((x) => x.method === 'setWebhook' && x.args.url === url && x.args.secret_token === secret), 'set again, with this start\'s secret');
+    } finally { delete tg.webhookUrl; }
   });
   test('anyone else is recorded as untrusted and never answers; a wrong secret is refused outright', async () => {
     const r = await ask({ question: 'Rotate the key?', options: ['yes', 'no'] });
@@ -492,6 +563,39 @@ describe('asks from another host', () => {
       // A second tick does not take it again.
       assert.deepEqual((await router.tick()).taken, []);
     } finally { routerDeps.askHosts = realHosts; routerDeps.call = realCall; }
+  });
+  test('a pulled ask keeps the channels it was made with: an SMS-only ask goes by SMS, not the hub\'s first channel', async () => {
+    // The asking host's own view of an SMS-only ask, as the hub's pull reads it (ask.list with the pull's arguments).
+    const made = await ask({ question: 'By SMS only?', options: ['yes', 'no'], channels: ['sms'] });
+    const listed = (await dispatch('ask.list', { mine: true, status: 'open', recentMs: 3_600_000, limit: 200 })).asks.find((a) => a.askId === made.askId);
+    await dispatch('ask.cancel', { askId: made.askId, actor: 'test' });
+    assert.deepEqual(listed.channels, ['sms']);
+    const remote = { ...listed, askId: '0199-remote-ch', origin: 'box-f', code: null, status: 'open' };
+    const realHosts = routerDeps.askHosts, realCall = routerDeps.call;
+    routerDeps.askHosts = async () => ['box-f'];
+    routerDeps.call = async (host, op, args, opts) => (host !== 'box-f' ? realCall(host, op, args, opts) : op === 'ask.list' ? { asks: [remote] } : { ok: true });
+    const tgBefore = sentTexts().length, smsBefore = tw.sends.length;
+    try {
+      const code = (await router.tick()).taken[0];
+      assert.ok(code, 'taken');
+      assert.ok(tw.sends.slice(smsBefore).some((f) => f.Body.includes(`Drover ask ${code}`)), 'texted by SMS');
+      assert.equal(sentTexts().slice(tgBefore).some((m) => m.args.text.includes(`Drover ask ${code}`)), false, 'not by Telegram');
+    } finally { routerDeps.askHosts = realHosts; routerDeps.call = realCall; }
+  });
+  test('a malformed ask from another host is skipped and logged; the rest of the pull still goes out', async () => {
+    const good = { askId: '0199-remote-ok', status: 'open', origin: 'box-g', sessionId: 'rs-ok', sessionName: 'w-ok', questions: [{ question: 'Still texted?', options: ['yes', 'no'] }], urgency: 'normal', createdAt: new Date().toISOString() };
+    const bad = { askId: '0199-remote-bad', status: 'open', origin: 'box-g', sessionId: 'rs-bad', sessionName: 'w-bad', urgency: 'normal', createdAt: new Date().toISOString() };   // no question at all
+    const logs = [];
+    const realHosts = routerDeps.askHosts, realCall = routerDeps.call, realLog = routerDeps.log;
+    routerDeps.askHosts = async () => ['box-g'];
+    routerDeps.call = async (host, op, args, opts) => (host !== 'box-g' ? realCall(host, op, args, opts) : op === 'ask.list' ? { asks: [bad, good] } : { ok: true });
+    routerDeps.log = (...a) => logs.push(a.join(' '));
+    try {
+      const t = await router.tick();
+      assert.equal(t.taken.length, 1, 'the good one is taken');
+      assert.ok(logs.some((l) => l.startsWith('skipping an ask from box-g 0199-remote-bad')), 'the bad one is logged');
+      assert.match(sentTexts().at(-1).args.text, /Still texted\?/);
+    } finally { routerDeps.askHosts = realHosts; routerDeps.call = realCall; routerDeps.log = realLog; }
   });
   test('an expiry notice the asking host could not take is retried until it lands', async () => {
     const remote = { askId: '0199-remote-exp', status: 'open', origin: 'box-d', sessionId: 'rs3', sessionName: 'w3', questions: [{ question: 'Expire me?', options: [] }], urgency: 'normal', expiresAt: new Date(Date.now() + 120_000).toISOString(), createdAt: new Date().toISOString() };
