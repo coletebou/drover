@@ -408,12 +408,18 @@ export function effortArgv(effort) {
  */
 function resumeArg(resume) { return `--resume=${resume}`; }
 
-/** Build the argv for an interactive claude launch from a resolved profile: profile argv, model, effort, resume, then -- and the prompt. */
-export function interactiveArgv(profile, { model, effort, resume, prompt, extra = [] } = {}) {
+/**
+ * Build the argv for an interactive claude launch from a resolved profile: profile argv, model, effort, resume,
+ * name, then -- and the prompt. `name` becomes the session's display name (`--name=<name>`, bound like
+ * `--resume`), which is what the registry records and what findSession matches: without it Claude Code names
+ * the session after its cwd (`<dir>-<suffix>`), so a launch's own name only reached the tmux window.
+ */
+export function interactiveArgv(profile, { model, effort, resume, name, prompt, extra = [] } = {}) {
   const argv = ['claude', ...(profile.argv ?? [])];
   if (model) argv.push('--model', model);
   argv.push(...effortArgv(effort));
   if (resume) argv.push(resumeArg(resume));
+  if (name) argv.push(`--name=${name}`);
   argv.push(...extra);
   if (prompt) argv.push('--', prompt);
   return argv;
