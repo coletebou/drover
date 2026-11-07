@@ -128,7 +128,7 @@ export function view(a, { full = false } = {}) {
   const ans = a.answers[0] ?? null;
   return {
     askId: a.askId, code: a.code, status: a.status, origin: a.origin, sessionId: a.sessionId, sessionName: a.sessionName,
-    questions: a.questions, urgency: a.urgency, createdAt: a.createdAt, createdBy: a.createdBy, expiresAt: a.expiresAt, routedAt: a.routedAt, closedAt: a.closedAt, ...(a.why ? { why: a.why } : {}),
+    questions: a.questions, urgency: a.urgency, channels: a.channels ?? null, createdAt: a.createdAt, createdBy: a.createdBy, expiresAt: a.expiresAt, routedAt: a.routedAt, closedAt: a.closedAt, ...(a.why ? { why: a.why } : {}),
     answer: ans ? { answers: ans.answers, source: ans.source, channel: ans.channel, sender: ans.sender, providerMessageId: ans.providerMessageId, verified: true, ts: ans.ts, ...(full ? { raw: ans.raw } : {}) } : null,
     ...(a.followUps.length ? { followUps: a.followUps.map((f) => ({ answers: f.answers, source: f.source, ts: f.ts, ...(full ? { raw: f.raw } : {}) })) } : {}),
     texted: a.sends.filter((s) => s.ok && s.kind !== 'ack').map((s) => ({ channel: s.channel, kind: s.kind, ts: s.ts })),

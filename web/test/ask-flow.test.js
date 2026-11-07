@@ -195,6 +195,21 @@ describe('answers by Telegram', () => {
     assert.equal(inbox.length, 0);
     assert.match(sentTexts().at(-1).args.text, new RegExp(`^Which ask\\? Open: ${a.code} \\(One\\?\\), ${b.code} \\(Two\\?\\)`));
   });
+  test('another chat\'s message with the same number never shadows the owner\'s; a replayed command is not run twice', async () => {
+    const r = await ask({ question: 'Shadowed?', options: ['yes', 'no'] });
+    await tgUpdate({ update_id: 30, message: { message_id: 900, from: { id: 31337 }, chat: { id: 31337, type: 'private' }, text: 'hi' } }, secret);
+    await tgUpdate({ update_id: 31, message: { message_id: 900, from: { id: Number(OWNER_CHAT) }, chat: { id: Number(OWNER_CHAT), type: 'private' }, text: `${r.code} a` } }, secret);
+    await settle();
+    assert.match(inbox.at(-1), new RegExp(`${r.code} → a \\(yes\\)`));
+    await tgUpdate({ update_id: 32, message: { message_id: 901, from: { id: Number(OWNER_CHAT) }, chat: { id: Number(OWNER_CHAT), type: 'private' }, text: 'pause asks 1h' } }, secret);
+    await settle();
+    router.seen.clear();   // as after a restart
+    await tgUpdate({ update_id: 32, message: { message_id: 901, from: { id: Number(OWNER_CHAT) }, chat: { id: Number(OWNER_CHAT), type: 'private' }, text: 'pause asks 1h' } }, secret);
+    await settle();
+    assert.equal((await askEvents('control')).filter((e) => e.providerMessageId === `tg:${OWNER_CHAT}:901`).length, 1);
+    await tgUpdate({ update_id: 33, message: { message_id: 902, from: { id: Number(OWNER_CHAT) }, chat: { id: Number(OWNER_CHAT), type: 'private' }, text: 'resume' } }, secret);
+    await settle();
+  });
   test('anyone else is recorded as untrusted and never answers; a wrong secret is refused outright', async () => {
     const r = await ask({ question: 'Rotate the key?', options: ['yes', 'no'] });
     const before = sentTexts().length;
@@ -244,6 +259,17 @@ describe('answers by SMS', () => {
     await settle();
     assert.match(inbox.at(-1), new RegExp(`${r.code} → a \\(yes\\)`));
     assert.equal((await askEvents('delivered')).filter((e) => e.providerMessageId === 'sms:SMwords').length, 1);
+  });
+  test('the signature is checked against the URL with and without its port, as Twilio signs either', async () => {
+    const r = await ask({ question: 'Port?', options: ['yes', 'no'], channels: ['sms'] });
+    const u = new URL(`${base}/hooks/twilio/sms`);
+    const portless = `${u.protocol}//${u.hostname}${u.pathname}`;
+    const fields = { AccountSid: SID, From: OWNER_PHONE, To: FROM, Body: `${r.code} b`, MessageSid: 'SMportless' };
+    const res = await hook('/hooks/twilio/sms', new URLSearchParams(fields).toString(), { 'content-type': 'application/x-www-form-urlencoded', 'x-twilio-signature': sms.signature('fake-auth-token', portless, fields) });
+    assert.equal(res.status, 200);
+    await settle();
+    assert.match(inbox.at(-1), new RegExp(`${r.code} → b \\(no\\)`));
+    assert.deepEqual(sms.urlForms('https://h.example:10000/x?y=1'), ['https://h.example:10000/x?y=1', 'https://h.example/x?y=1']);
   });
   test('a bad signature is refused; another phone or another account is untrusted', async () => {
     const r = await ask({ question: 'Close the shop?', options: ['yes', 'no'], channels: ['sms'] });
@@ -470,6 +496,10 @@ describe('the asking host\'s side', () => {
     await assert.rejects(cliOp('ask.mark', {}), /refused/);
   });
   test('ask.status names what each channel lacks, never a value', async () => {
+    const c = await dispatch('ask.create', { question: 'Channels kept?', sessionId: SESSION, actor: 'test', channels: ['sms'] });
+    assert.deepEqual((await dispatch('ask.list', {})).asks.find((a) => a.askId === c.askId).channels, ['sms'], 'the hub\'s pull keeps them');
+    await telegram.ensureWebhook(`${base}/hooks/telegram`);
+    assert.ok(tg.calls.some((x) => x.method === 'setWebhook' && x.args.secret_token === secret), 'the secret is set every start');
     const s = await dispatch('ask.status', { probe: true });
     assert.equal(s.isHub, true); assert.deepEqual(s.order, ['telegram', 'sms']);
     assert.equal(s.channels.telegram.configured, true); assert.equal(s.channels.telegram.health.ok, true); assert.equal(s.channels.telegram.health.bot, 'test_drover_bot');

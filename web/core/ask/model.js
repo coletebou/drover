@@ -117,9 +117,11 @@ export function foldAsks(events = []) {
   const asks = new Map();
   const sends = [];
   const controls = [];
+  const handled = new Set();   // provider message ids already read (answers, commands, replies that answered nothing)
   const get = (id) => { let a = asks.get(id); if (!a) { a = blank(id); asks.set(id, a); } return a; };
   for (const e of events) {
     if (e?.type !== 'ask') continue;
+    if (e.providerMessageId && (e.phase === 'answered' || e.phase === 'control' || (e.phase === 'inbound' && e.untrusted === false))) handled.add(e.providerMessageId);
     switch (e.phase) {
       case 'created': { const a = get(e.askId); fill(a, e, e); a.origin ??= e.origin ?? e.host ?? null; break; }
       case 'routed': {
@@ -160,7 +162,7 @@ export function foldAsks(events = []) {
   }
   // An ask the fold only heard about through sends or inbound replies has no question: not an ask to show.
   for (const [id, a] of asks) if (!a.questions.length) asks.delete(id);
-  return { asks, sends, controls };
+  return { asks, sends, controls, handled };
 }
 
 /** The number in a code (K7 -> 7), or null. */

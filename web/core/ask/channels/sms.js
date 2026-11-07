@@ -83,12 +83,20 @@ export function signature(token, url, params = {}) {
   return createHmac('sha1', token).update(url + pairs.map(([k, v]) => k + v).join('')).digest('base64');
 }
 
-/** Whether a webhook's X-Twilio-Signature is right for this URL and these fields. */
+/** The URL with its port written out and without it: Twilio signs the form it was given, as its own SDKs check both. */
+export function urlForms(url) {
+  let u; try { u = new URL(url); } catch { return [url]; }
+  const port = u.port || (u.protocol === 'https:' ? '443' : u.protocol === 'http:' ? '80' : '');
+  const rest = `${u.pathname}${u.search}`;
+  return [...new Set([url, `${u.protocol}//${u.hostname}${rest}`, `${u.protocol}//${u.hostname}:${port}${rest}`])];
+}
+
+/** Whether a webhook's X-Twilio-Signature is right for this URL (with or without its port) and these fields. */
 export function authentic(url, params, header, { env = _deps.env } = {}) {
   const c = cfg(env);
   if (!c.token || typeof header !== 'string' || !header) return false;
-  const a = Buffer.from(signature(c.token, url, params)), b = Buffer.from(header);
-  return a.length === b.length && timingSafeEqual(a, b);
+  const b = Buffer.from(header);
+  return urlForms(url).some((form) => { const a = Buffer.from(signature(c.token, form, params)); return a.length === b.length && timingSafeEqual(a, b); });
 }
 
 /** An inbound SMS as the router reads it. Verified only for our account, our number, and the owner's phone. */

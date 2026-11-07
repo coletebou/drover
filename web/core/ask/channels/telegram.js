@@ -116,7 +116,8 @@ export function readUpdate(update, { env = _deps.env } = {}) {
   const from = String(m.from?.id ?? ''), chat = String(m.chat?.id ?? '');
   const verified = Boolean(owner) && from === owner && chat === owner && m.chat?.type === 'private' && m.from?.is_bot !== true;
   const text = typeof m.text === 'string' ? m.text : typeof m.caption === 'string' ? m.caption : '';
-  return { channel: NAME, verified, reason: verified ? null : 'not the owner\'s private chat', sender: `tg:${from}`, text, providerMessageId: `tg:${m.message_id}${update.edited_message ? ':edit' : ''}`, replyTo: m.reply_to_message?.message_id ? `tg:${m.reply_to_message.message_id}` : null, button: null };
+  // Telegram numbers messages per chat: the chat is part of the id, so another chat's message never shadows the owner's.
+  return { channel: NAME, verified, reason: verified ? null : 'not the owner\'s private chat', sender: `tg:${from}`, text, providerMessageId: `tg:${chat}:${m.message_id}${update.edited_message ? `:edit:${m.edit_date ?? ''}` : ''}`, replyTo: m.reply_to_message?.message_id ? `tg:${m.reply_to_message.message_id}` : null, button: null };
 }
 
 const secretFile = () => path.join(_deps.stateDir(), 'ask', 'telegram-webhook-secret');
@@ -145,9 +146,9 @@ export async function webhookAuthentic(headerValue) {
 export async function ensureWebhook(url, { env = _deps.env } = {}) {
   const secret = await webhookSecret();
   const info = await call('getWebhookInfo', {}, { env });
-  if (info.url === url) return { changed: false, pending: info.pending_update_count ?? 0, lastError: info.last_error_message ?? null };
+  // Set every start, even for the same URL: Telegram keeps the secret it was given, and a new state directory has a new one.
   await call('setWebhook', { url, secret_token: secret, allowed_updates: ['message', 'edited_message', 'callback_query'], max_connections: 4 }, { env });
-  return { changed: true, pending: info.pending_update_count ?? 0, lastError: null };
+  return { changed: info.url !== url, pending: info.pending_update_count ?? 0, lastError: info.last_error_message ?? null };
 }
 
 /**

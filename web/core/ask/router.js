@@ -305,10 +305,7 @@ export class Router {
 
   async #inbound(msg) {
     if (!msg) return { ignored: 'nothing to read' };
-    if (msg.providerMessageId && this.seen.has(msg.providerMessageId)) return { duplicate: true };
-    if (msg.providerMessageId) { this.seen.add(msg.providerMessageId); if (this.seen.size > 2000) this.seen = new Set([...this.seen].slice(-1000)); }
     const st = await this.state();
-    if (msg.providerMessageId && [...st.asks.values()].some((a) => [...a.answers, ...a.followUps].some((x) => x.providerMessageId === msg.providerMessageId))) return { duplicate: true };
     if (!msg.verified) {
       const now = _deps.now();
       const recent = (this.untrusted.get(msg.channel) ?? []).filter((t) => now - t < RECENT_MS);
@@ -318,6 +315,9 @@ export class Router {
       }
       return { untrusted: true, reason: msg.reason };   // never an answer, never acknowledged
     }
+    // Only the owner's messages reserve their ids: once handled here, or recorded (a restart forgets `seen`), never again.
+    if (msg.providerMessageId && (this.seen.has(msg.providerMessageId) || st.handled.has(msg.providerMessageId))) return { duplicate: true };
+    if (msg.providerMessageId) { this.seen.add(msg.providerMessageId); if (this.seen.size > 2000) this.seen = new Set([...this.seen].slice(-1000)); }
     if (!msg.button && wordless(msg.text)) {
       await _deps.append({ type: 'ask', phase: 'inbound', channel: msg.channel, untrusted: false, sender: msg.sender, reason: 'no words to read (media or a reaction)', providerMessageId: msg.providerMessageId ?? null, text: clip(oneLine(msg.text), 200) });
       return { ignored: 'no words' };
