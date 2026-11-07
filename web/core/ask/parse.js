@@ -3,7 +3,7 @@
 //   K7 b            option b of ask K7          7b, 7 b     the same, by number (numbers are unique among open asks)
 //   b, yes, ship it the only open ask           K7 ship it  free text for K7
 //   K7 1a 2b 3 yes  a multi-question ask        1a 2b 3 yes the same, when K7 is the only open ask or replied to
-//   K7 b M8 a       two asks in one reply       7b 8a       the same, by number
+//   K7 b M8 a       two asks in one reply       7b 8a       the same, by number (7a, 8 Drover: a comma, then words)
 //   K7 1 x; 2 y     two answers, split          one per line  a ; or a line break splits answers the same way
 //   stop | resume | start (after a stop: resume) | pause [asks] [for] 2h | status | help   (Telegram's /stop, /help too)
 //
@@ -85,6 +85,10 @@ export function parseReply(text, { asks = [], target = null } = {}) {
   // after a bare code only a question of that ask may follow ("B3 1b"). Once an answer's words start, codes and numbers
   // are those words: "K7 wait 2 days" never answers ask 2, "A1 2 a week" is A1's.
   let canSwitch = true, canSub = true;
+  // The token that just chose an option ("b" in "K7 b", "7b"), or null. Another ask may start after it by its code or its
+  // number with a letter ("K7 b M8 a", "7b 8a"); by a bare number only after a comma ("7a, 8 Drover"): else the number
+  // is the answer's words ("K7 b 2 tomorrow"), since numbers in a note are common and another ask's answer must be meant.
+  let picked = null, curTok = '';
   const loose = [];   // words before any ask is in hand, when none is implied
   let unknown = null; // a reference to an ask that is not there ("K9 b", "8a" with no ask 8): the reply is unclear
   const pickOption = (c, letterChar) => {
@@ -99,7 +103,7 @@ export function parseReply(text, { asks = [], target = null } = {}) {
   /** Take an ask (or a question of the one in hand), with a letter glued on: an option, else the start of the text. */
   const take = (next, glued) => {
     cur = next;
-    if (glued && pickOption(cur, glued)) { canSwitch = canSub = true; return; }
+    if (glued && pickOption(cur, glued)) { canSwitch = canSub = true; picked = curTok; return; }
     if (glued) { slot(cur.ask, cur.q).text.push(glued); canSwitch = canSub = false; return; }
     slot(cur.ask, cur.q);
     canSwitch = false; canSub = true;
@@ -113,6 +117,7 @@ export function parseReply(text, { asks = [], target = null } = {}) {
   let sepAfter = null;   // the answer a separator ended: if its words simply go on, the separator stays in them
   for (let ti = 0; ti < toks.length; ti++) {
     const tok = toks[ti];
+    const afterOption = picked; picked = null; curTok = tok;
     if (tok === SEP) { canSwitch = canSub = true; sepAfter = cur ? results.get(cur.ask.askId)?.per.get(cur.q) ?? null : null; continue; }
     const sep = sepAfter; sepAfter = null;
     const clean = tok.replace(TRIM, '');
@@ -142,15 +147,18 @@ export function parseReply(text, { asks = [], target = null } = {}) {
           // A letter may be glued ("8b") or, at a position a reference may start, sit in the next token alone
           // ("8 b"): the two read the same, so a late reply need not remember to glue it on.
           let letterTok = m[2] ?? null;
-          let tookNext = false;
+          let tookNext = false, prose = false;
           if (!letterTok) {
             const nextClean = ti + 1 < toks.length ? toks[ti + 1].replace(TRIM, '') : null;
             // Only when nothing but the reply's end, a separator or another reference follows the letter: "8 b" and
             // "8 b M9 a" are references, "2 a day" is words ("a" is also a word).
             const after = toks[ti + 2];
             const refAfter = after === undefined || after === SEP || /^(?:[a-z]\d{1,2}[a-z]?|\d{1,2}[a-z]?)$/i.test(after.replace(TRIM, ''));
-            if (nextClean && /^[a-z]$/i.test(nextClean) && refAfter) { letterTok = nextClean; tookNext = true; }
+            if (nextClean && /^[a-z]$/i.test(nextClean)) { if (refAfter) { letterTok = nextClean; tookNext = true; } else prose = true; }
           }
+          // A bare number right after a chosen option, or before a lone letter that is a word here ("2 a week": the
+          // letter is no option, so the number is no reference either), names no ask: it is the answer's words.
+          if (!letterTok && ((afterOption !== null && !afterOption.endsWith(',')) || prose)) { /* words, below */ } else {
           // Bound to an ask's message, a number naming a different ask (open, or closed with a letter attached,
           // the same late-reply case as below) is never a guess: the whole reply is unclear, not a switch.
           // A bare number there ("how many?" "3") is the answer's words, whichever ask holds that number.
@@ -166,7 +174,7 @@ export function parseReply(text, { asks = [], target = null } = {}) {
           if (found && inHand && found.askId === inHand.askId && !letterTok) {
             // Fall through: leave the number for the word handling below.
           } else if (found) {
-            if (tookNext) ti++;
+            if (tookNext) { ti++; curTok = toks[ti]; }
             take({ ask: found, q: 0 }, letterTok);
             continue;
           } else if (letterTok && !target) {
@@ -174,12 +182,13 @@ export function parseReply(text, { asks = [], target = null } = {}) {
             unknown = tookNext ? `${clean} ${letterTok}` : clean;
             continue;
           }
+          }
         }
         // A bare number that names no ask (or is the ask in hand's own number) is a number answering the ask in hand.
       }
     }
     // An option letter for the question in hand.
-    if (cur && /^[a-z]$/i.test(clean) && pickOption(cur, clean)) { canSwitch = canSub = true; continue; }
+    if (cur && /^[a-z]$/i.test(clean) && pickOption(cur, clean)) { canSwitch = canSub = true; picked = tok; continue; }
     // Anything else is the answer's words.
     if (cur) {
       const x = slot(cur.ask, cur.q);

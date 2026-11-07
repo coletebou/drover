@@ -128,23 +128,27 @@ export function readUpdate(update, { env = _deps.env } = {}) {
   return { channel: NAME, verified, reason: verified ? null : 'not the owner\'s private chat', sender: `tg:${from}`, text, providerMessageId: edit ? `${id}:edit:${m.edit_date ?? ''}` : id, ...(edit ? { edit: true, original: id } : {}), replyTo: m.reply_to_message?.message_id ? `tg:${bot}:${m.reply_to_message.message_id}` : null, button: null };
 }
 
-const secretFile = () => path.join(_deps.stateDir(), 'ask', 'telegram-webhook-secret');
+// One secret per bot: a webhook is the bot account's own, and a replaced bot's stays registered with Telegram, posting
+// the old bot's updates with the old secret. Those must never read as the new bot's (its ids would be stamped on them,
+// and the two bots' message ids collide), so the new bot's secret is its own.
+const secretFile = (env = _deps.env) => path.join(_deps.stateDir(), 'ask', `telegram-webhook-secret-${cfg(env).bot}`);
 
-/** The webhook's secret header value: created once, kept 0600 in the state directory. */
-export async function webhookSecret({ create = true } = {}) {
-  try { const s = (await readFile(secretFile(), 'utf8')).trim(); if (/^[A-Za-z0-9_-]{32,256}$/.test(s)) return s; } catch { /* none yet */ }
+/** The webhook's secret header value for the configured bot: created once, kept 0600 in the state directory. */
+export async function webhookSecret({ create = true, env = _deps.env } = {}) {
+  const file = secretFile(env);
+  try { const s = (await readFile(file, 'utf8')).trim(); if (/^[A-Za-z0-9_-]{32,256}$/.test(s)) return s; } catch { /* none yet */ }
   if (!create) return null;
   const s = randomBytes(32).toString('base64url');
-  await mkdir(path.dirname(secretFile()), { recursive: true, mode: 0o700 });
-  const tmp = `${secretFile()}.${process.pid}.tmp`;
+  await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+  const tmp = `${file}.${process.pid}.tmp`;
   await writeFile(tmp, `${s}\n`, { mode: 0o600 });
-  await rename(tmp, secretFile());
+  await rename(tmp, file);
   return s;
 }
 
-/** Whether a webhook request carries the secret (constant-time). */
-export async function webhookAuthentic(headerValue) {
-  const want = await webhookSecret({ create: false });
+/** Whether a webhook request carries the configured bot's secret (constant-time). */
+export async function webhookAuthentic(headerValue, { env = _deps.env } = {}) {
+  const want = await webhookSecret({ create: false, env });
   if (!want || typeof headerValue !== 'string') return false;
   const a = Buffer.from(headerValue), b = Buffer.from(want);
   return a.length === b.length && timingSafeEqual(a, b);
@@ -152,7 +156,7 @@ export async function webhookAuthentic(headerValue) {
 
 /** Point the bot's webhook at the gateway (only when it points elsewhere). */
 export async function ensureWebhook(url, { env = _deps.env } = {}) {
-  const secret = await webhookSecret();
+  const secret = await webhookSecret({ env });
   const info = await call('getWebhookInfo', {}, { env });
   // Set every start, even for the same URL: Telegram keeps the secret it was given, and a new state directory has a new one.
   await call('setWebhook', { url, secret_token: secret, allowed_updates: ['message', 'edited_message', 'callback_query'], max_connections: 4 }, { env });

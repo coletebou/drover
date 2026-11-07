@@ -17,7 +17,8 @@ export const PHASES = ['created', 'routed', 'sent', 'answered', 'delivered', 'ca
 export const CHANNELS = ['telegram', 'imessage', 'sms'];
 export const URGENCY = ['normal', 'urgent'];
 export const SEND_KINDS = ['ask', 'batch', 'reminder', 'escalation', 'ack', 'notice'];
-export const CONTROL = ['pause', 'resume', 'stop'];
+// optin: the owner's START/UNSTOP by SMS, the carrier's opt-in (SMS back in rotation; no pause or stop of Drover's lifted).
+export const CONTROL = ['pause', 'resume', 'stop', 'optin'];
 export const TERMINAL = new Set(['answered', 'cancelled', 'expired']);
 export const LIMITS = Object.freeze({ questions: 9, options: 9, question: 600, option: 80, raw: 2000, answer: 2000, total: 1200 });
 // What one text may hold on each channel (Twilio refuses a body over 1600 characters, Telegram a message over 4096).
@@ -277,11 +278,16 @@ export function answerWords(q, x) {
 }
 
 /** What the asking session receives: provenance first, then the answer, then how to check it. remaining: open questions. */
-export function deliveryText(a, ans, { followUp = false, channel, ownerName = OWNER_NAME, remaining = [] } = {}) {
+/**
+ * standing: question -> the answer an earlier message gave it, for the parts of a partly fresh reply that answer a
+ * question again: those parts are follow-ups (the first answer stands), the rest the owner's decision.
+ */
+export function deliveryText(a, ans, { followUp = false, channel, ownerName = OWNER_NAME, remaining = [], standing = null } = {}) {
   const via = channel ?? ans.channel ?? String(ans.source ?? '').split(':')[1] ?? 'text';
+  const again = (x) => (standing?.has(x.q) ? ` (follow-up: question ${x.q + 1} was answered ${answerWords(a.questions[x.q], standing.get(x.q))} first; that answer stands)` : '');
   const parts = a.questions.length === 1
     ? [answerWords(a.questions[0], ans.answers[0] ?? {})]
-    : ans.answers.map((x) => `${x.q + 1}: ${answerWords(a.questions[x.q], x)}`);
+    : ans.answers.map((x) => `${x.q + 1}: ${answerWords(a.questions[x.q], x)}${again(x)}`);
   const head = `[${ownerName} via ${via}, verified${followUp ? ', follow-up' : ''}] ${a.code ?? 'ask'} → ${parts.join(' · ')}`;
   const q = a.questions.length === 1 ? `Question: ${clip(a.questions[0].question, 300)}` : `Questions: ${a.questions.map((x, i) => `${i + 1}) ${clip(x.question, 120)}`).join(' ')}`;
   const still = remaining.length ? `\nStill open: ${remaining.map((i) => `${i + 1}) ${clip(a.questions[i]?.question ?? '', 80)}`).join(' ')}` : '';

@@ -294,10 +294,11 @@ export class Router {
     // lock is let go).
     report.redeliver = [];
     report.renotify = [];
+    // The hub's own asks too: there ask.mark records each try in this same truth file.
     for (const a of st.asks.values()) {
-      if (a.status !== 'expired' || targetOf(a) === 'local') continue;
+      if (a.status !== 'expired') continue;
       const ds = a.deliveries.filter((d) => d.kind === 'expired');
-      if (ds.length && !ds.some((d) => d.ok) && retryDue(ds.length, ds.at(-1).ts, now)) report.renotify.push(a);
+      if (ds.length && !ds.some((d) => d.ok || d.final) && retryDue(ds.length, ds.at(-1).ts, now)) report.renotify.push(a);
     }
     for (const a of st.asks.values()) {
       for (const ans of [...a.answers, ...a.followUps]) {
@@ -331,14 +332,16 @@ export class Router {
   /** Tell the asking session its ask closed without an answer (expired). Best effort. */
   async tellAsker(a, why) {
     const origin = targetOf(a);
-    let ok = true, error = null;
+    let ok = true, final = false, error = null;
     try {
       const mark = { askId: a.askId, phase: 'expired', code: a.code, hub: _deps.hostName(), why };
-      await _deps.call(origin, 'ask.mark', origin === 'local' ? mark : { ...mark, sig: await hubkey.signCall('ask.mark', mark) }, { timeoutMs: PULL_TIMEOUT_MS });
+      const r = await _deps.call(origin, 'ask.mark', origin === 'local' ? mark : { ...mark, sig: await hubkey.signCall('ask.mark', mark) }, { timeoutMs: PULL_TIMEOUT_MS });
+      // The asking host was reached but its session not told: a failure, retried unless the session is gone (final).
+      if (r?.ok === false) { ok = false; final = r.final === true; error = clip(String(r.error ?? 'the session was not told'), 300); }
     }
     catch (e) { ok = false; error = clip(e.message, 300); _deps.log('ask.mark expired', origin, e.message); }
     // The hub's own asks: ask.mark here recorded it. Another host's: recorded here, and retried while it fails.
-    if (origin !== 'local') await _deps.append({ type: 'ask', phase: 'delivered', askId: a.askId, ok, kind: 'expired', to: { host: origin, sessionId: a.sessionId ?? null }, ...(error ? { error } : {}) });
+    if (origin !== 'local') await _deps.append({ type: 'ask', phase: 'delivered', askId: a.askId, ok, ...(final ? { final } : {}), kind: 'expired', to: { host: origin, sessionId: a.sessionId ?? null }, ...(error ? { error } : {}) });
   }
 
   /** Record a verified answer, deliver it, rewrite the message it answered, and return what to tell the owner. */
@@ -351,9 +354,11 @@ export class Router {
   async #answer(a, answers, msg, { followUp, ans = null }) {
     ans ??= await this.#record(a, answers, msg);
     const d = await this.deliver(a, ans, { followUp });
-    const words = a.questions.length === 1 ? answerWords(a.questions[0], answers[0]) : answers.map((x) => `${x.q + 1}: ${answerWords(a.questions[x.q], x)}`).join(' · ');
     // A multi-question ask stays open (its buttons too) until every question has an answer.
     const after = (await this.state()).asks.get(a.askId) ?? a;
+    // A question another message answered first keeps that answer: the owner hears which one stands.
+    const first = (x) => { const m = after.merged?.[x.q]; return m && m.providerMessageId !== msg.providerMessageId ? m : null; };
+    const words = a.questions.length === 1 ? answerWords(a.questions[0], answers[0]) : answers.map((x) => `${x.q + 1}: ${answerWords(a.questions[x.q], x)}${first(x) ? ` (already ${answerWords(a.questions[x.q], first(x))}: that stands)` : ''}`).join(' · ');
     const left = after.questions.length - after.answeredQs.size;
     if (!followUp && after.status !== 'open') await this.markMessages(after, `✓ Answered: ${after.questions.length === 1 ? words : after.merged.map((x, i) => `${i + 1}: ${answerWords(after.questions[i], x)}`).join(' · ')}`);
     const where = whoLabel(a);
@@ -388,6 +393,9 @@ export class Router {
       await _deps.append({ type: 'ask', phase: 'inbound', channel: msg.channel, untrusted: false, sender: msg.sender, reason: 'no words to read (media or a reaction)', providerMessageId: msg.providerMessageId ?? null, text: clip(oneLine(msg.text), 200) });
       return { ignored: 'no words' };
     }
+    // The carrier's opt-out over SMS (END, CANCEL, QUIT, or Advanced Opt-Out's OptOutType=STOP): Twilio now refuses our
+    // texts to the owner whatever Drover reads, so it is a stop, never an answer to the one open ask.
+    if (msg.channel === 'sms' && msg.optOut === 'stop') return this.#command({ command: 'stop' }, msg, st);
     // An edit changes a message the owner already sent: it is read only against the asks that message answered, as a
     // follow-up there, never against whatever is open now. An edit of a message that answered nothing is not read.
     let editAsks = null;

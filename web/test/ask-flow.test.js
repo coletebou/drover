@@ -20,7 +20,7 @@ Object.assign(process.env, {
   DROVER_PLUGINS: '', CLAUDE_CONFIG_DIR: path.join(tmp, 'claude'), CODEX_HOME: path.join(tmp, 'codex'), DROVER_PAIR_NOTIFY: 'off',
   DROVER_HOST: 'hub', DROVER_ASK_HUB: 'hub', DROVER_ASK_QUIET: 'off', DROVER_ASK_RATE: '120', DROVER_WORK_CONTEXT: 'none', DROVER_OWNER: 'owner', DROVER_OWNER_NAME: 'Owner',
   DROVER_ASK_TELEGRAM_TOKEN: '999:fake-token', DROVER_ASK_TELEGRAM_CHAT: OWNER_CHAT, DROVER_ASK_TELEGRAM_INBOUND: 'webhook',
-  DROVER_ASK_TWILIO_ACCOUNT_SID: SID, DROVER_ASK_TWILIO_AUTH_TOKEN: 'fake-auth-token', DROVER_ASK_SMS_FROM: FROM, DROVER_ASK_SMS_TO: OWNER_PHONE,
+  DROVER_ASK_TWILIO_ACCOUNT_SID: SID, DROVER_ASK_TWILIO_AUTH_TOKEN: 'fake-auth-token', DROVER_ASK_SMS_FROM: FROM, DROVER_ASK_SMS_TO: OWNER_PHONE, DROVER_ASK_SMS_INBOUND: 'webhook',
   DROVER_ASK_CHANNELS: 'telegram,sms', DROVER_FLEET_CATALOG: path.join(tmp, 'no-catalog.json'),
 });
 delete process.env.DF_IDENTITY;
@@ -66,7 +66,11 @@ function fakeTwilio(req, res) {
     }
     if (req.method === 'GET' && req.url.startsWith(`/2010-04-01/Accounts/${SID}/Messages.json?`)) {
       const q = new URL(req.url, 'http://x').searchParams; tw.queries.push(q);
-      return json(200, { messages: tw.log.filter((m) => m.from === q.get('From') && m.to === q.get('To')).slice(0, Number(q.get('PageSize') ?? 50)) });
+      // Newest first, a page at a time, as Twilio lists: next_page_uri is the next (older) page, filters kept.
+      const all = tw.log.filter((m) => m.from === q.get('From') && m.to === q.get('To'));
+      const size = Number(q.get('PageSize') ?? 50), pageNo = Number(q.get('Page') ?? 0);
+      const next = new URLSearchParams(q); next.set('Page', String(pageNo + 1)); next.set('PageToken', `PA${pageNo + 1}`);
+      return json(200, { messages: all.slice(pageNo * size, (pageNo + 1) * size), page: pageNo, page_size: size, next_page_uri: (pageNo + 1) * size < all.length ? `/2010-04-01/Accounts/${SID}/Messages.json?${next}` : null });
     }
     if (req.method === 'GET' && req.url.startsWith(`/2010-04-01/Accounts/${SID}/IncomingPhoneNumbers.json`)) return json(200, { incoming_phone_numbers: [{ phone_number: FROM, capabilities: { sms: true }, sms_url: null }] });
     return json(404, { message: 'not found' });
@@ -333,6 +337,22 @@ describe('answers by Telegram', () => {
     assert.equal((await dispatch('ask.get', { askId: m.askId })).status, 'open');
     assert.match(sentTexts().at(-1).args.text, /^An edited message is not read as a new answer/);
   });
+  test('R3-8: a reply answering a question again is a follow-up there: the session never takes it for the decision', async () => {
+    const r = await ask({ questions: [{ question: 'Ship?', options: ['yes', 'no'] }, { question: 'Tell the team?', options: ['now', 'later'] }] });
+    const tg = (text, id) => tgUpdate({ update_id: id, message: { message_id: id, from: { id: Number(OWNER_CHAT) }, chat: { id: Number(OWNER_CHAT), type: 'private' }, text } }, secret);
+    await tg(`${r.code} 1a`, 785); await settle();
+    assert.match(inbox.at(-1), new RegExp(`${r.code} → 1: a \\(yes\\)`));
+    // Question 1 again, alone: the ask is still open (question 2 waits), and still this is only a follow-up.
+    await tg('1b', 786); await settle();
+    assert.match(inbox.at(-1), new RegExp(`^\\[Owner via telegram, verified, follow-up\\] ${r.code} → 1: b \\(no\\)`), inbox.at(-1));
+    // Question 1 again with question 2 fresh: 2 is the decision, 1 is labelled, and the first answer stands.
+    await tg('1b 2a', 787); await settle();
+    const last = inbox.at(-1);
+    assert.match(last, new RegExp(`^\\[Owner via telegram, verified\\] ${r.code} → 1: b \\(no\\) \\(follow-up: question 1 was answered a \\(yes\\) first; that answer stands\\) · 2: a \\(now\\)`), last);
+    const got = await dispatch('ask.get', { askId: r.askId });
+    assert.equal(got.status, 'answered');
+    assert.match(sentTexts().at(-1).args.text, /1: b \(no\) \(already a \(yes\): that stands\) · 2: a \(now\)/, 'the owner hears which answer stands');
+  });
   test('ids are the bot\'s: a replaced bot\'s messages are never taken for the old one\'s, and it keeps its own update offset', async () => {
     const a = await ask({ question: 'Old bot asks?', options: ['yes', 'no'] });
     await tgUpdate({ update_id: 714, message: { message_id: 992, from: { id: Number(OWNER_CHAT) }, chat: { id: Number(OWNER_CHAT), type: 'private' }, text: `${a.code} a` } }, secret);
@@ -340,7 +360,8 @@ describe('answers by Telegram', () => {
     process.env.DROVER_ASK_TELEGRAM_TOKEN = '1000:new-token';   // the bot is replaced: its numbering starts again
     try {
       const b = await ask({ question: 'New bot asks?', options: ['yes', 'no'] });
-      await tgUpdate({ update_id: 715, message: { message_id: 992, from: { id: Number(OWNER_CHAT) }, chat: { id: Number(OWNER_CHAT), type: 'private' }, text: `${b.code} b` } }, secret);
+      const newSecret = await telegram.webhookSecret();   // the new bot's webhook is registered with its own secret
+      await tgUpdate({ update_id: 715, message: { message_id: 992, from: { id: Number(OWNER_CHAT) }, chat: { id: Number(OWNER_CHAT), type: 'private' }, text: `${b.code} b` } }, newSecret);
       await settle();
       assert.equal((await dispatch('ask.get', { askId: b.askId })).status, 'answered', 'not a duplicate of the old bot\'s message 992');
       // Polling: the old bot's offset is the old bot's.
@@ -356,6 +377,24 @@ describe('answers by Telegram', () => {
       stop();
       assert.equal(tg.offsets.find((o) => o.bot === '1000').offset, 0, 'the new bot starts from its own offset, not the old bot\'s 901');
     } finally { process.env.DROVER_ASK_TELEGRAM_TOKEN = '999:fake-token'; }
+  });
+  test('R3-7: the webhook secret is the bot\'s: a replaced bot\'s webhook, still registered with the old secret, is refused', async () => {
+    const a = await ask({ question: 'Which bot?', options: ['yes', 'no'] });
+    process.env.DROVER_ASK_TELEGRAM_TOKEN = '1001:replacement-token';   // replaced; the state directory kept
+    try {
+      const mine = await telegram.webhookSecret();
+      assert.notEqual(mine, secret, 'a new bot, a new secret');
+      // The old bot's webhook posts its own update with the old secret: never the new bot's, never an answer.
+      const old = await tgUpdate({ update_id: 716, message: { message_id: 994, from: { id: Number(OWNER_CHAT) }, chat: { id: Number(OWNER_CHAT), type: 'private' }, text: `${a.code} a` } }, secret);
+      assert.equal(old.status, 401);
+      await settle();
+      assert.equal((await dispatch('ask.get', { askId: a.askId })).status, 'open');
+      const ok = await tgUpdate({ update_id: 717, message: { message_id: 995, from: { id: Number(OWNER_CHAT) }, chat: { id: Number(OWNER_CHAT), type: 'private' }, text: `${a.code} b` } }, mine);
+      assert.equal(ok.status, 200, 'the new bot\'s own secret is taken');
+      await settle();
+      assert.equal((await dispatch('ask.get', { askId: a.askId })).status, 'answered', 'and its update answers');
+    } finally { process.env.DROVER_ASK_TELEGRAM_TOKEN = '999:fake-token'; }
+    assert.equal(await telegram.webhookSecret({ create: false }), secret, 'the first bot\'s secret is still its own');
   });
   test('anyone else is recorded as untrusted and never answers; a wrong secret is refused outright', async () => {
     const r = await ask({ question: 'Rotate the key?', options: ['yes', 'no'] });
@@ -436,7 +475,22 @@ describe('answers by SMS', () => {
       await settle();
       assert.equal((await allEvents()).length, before, 'nothing recorded');
       assert.equal((await dispatch('ask.get', { askId: r.askId })).status, 'open');
-    } finally { process.env.DROVER_ASK_TELEGRAM_INBOUND = 'webhook'; delete process.env.DROVER_ASK_SMS_INBOUND; }
+    } finally { process.env.DROVER_ASK_TELEGRAM_INBOUND = 'webhook'; process.env.DROVER_ASK_SMS_INBOUND = 'webhook'; }
+  });
+  test('R3-3: SMS takes replies by poll unless webhook is set: with a public URL and no setting, a signed post is 404', async () => {
+    assert.equal(sms.inboundMode({ publicBase: 'https://box.example.ts.net:10000', env: {} }), 'poll', 'a public URL alone is no opt-in');
+    assert.equal(sms.inboundMode({ publicBase: 'https://box.example.ts.net:10000', env: { DROVER_ASK_SMS_INBOUND: 'webhook' } }), 'webhook');
+    assert.equal(sms.inboundMode({ publicBase: null, env: { DROVER_ASK_SMS_INBOUND: 'webhook' } }), 'poll', 'no public URL, no webhook');
+    const r = await ask({ question: 'Default hub?', options: ['yes', 'no'], channels: ['sms'] });
+    const before = (await allEvents()).length;
+    delete process.env.DROVER_ASK_SMS_INBOUND;   // a hub's settings with no SMS mode in them
+    try {
+      // Signed with the auth token, as every holder of it can sign: no real reply comes this way on a default hub.
+      assert.equal((await smsReply({ AccountSid: SID, From: OWNER_PHONE, To: FROM, Body: `${r.code} a`, MessageSid: 'SMdefault1' })).status, 404);
+      await settle();
+      assert.equal((await allEvents()).length, before, 'nothing recorded');
+      assert.equal((await dispatch('ask.get', { askId: r.askId })).status, 'open');
+    } finally { process.env.DROVER_ASK_SMS_INBOUND = 'webhook'; }
   });
   test('a bad signature is refused; another phone or another account is untrusted', async () => {
     const r = await ask({ question: 'Close the shop?', options: ['yes', 'no'], channels: ['sms'] });
@@ -467,6 +521,25 @@ describe('SMS replies read from the account\'s log (poll, for a hub without a we
       assert.equal(inbox.filter((m) => m.includes(`${r.code} → b`)).length, 1, 'once');
       assert.equal(inbox.some((m) => m.includes('an old message')), false, 'the baseline is never replayed');
       assert.ok(tw.queries.every((q) => q.get('From') === OWNER_PHONE && q.get('To') === FROM));
+    } finally { stop(); }
+  });
+  test('R3-4: after downtime, more new messages than one page are all read, oldest first: the oldest answer is not lost', async () => {
+    let stop = sms.startPolling((m) => router.inbound(m), { everyMs: 40, pageSize: 10 });
+    const q0 = tw.queries.length;
+    assert.ok(await until(() => tw.queries.length >= q0 + 2), 'polling: the checkpoint is on disk');
+    stop();   // the hub is down
+    await new Promise((res) => setTimeout(res, 100));
+    const r = await ask({ question: 'Down a while?', options: ['yes', 'no'], channels: ['sms'] });
+    // The answer first, then 24 newer messages: more than a page (10 here; 20 before the fix) above it.
+    tw.log.unshift({ sid: 'SMdownAnswer', direction: 'inbound', from: OWNER_PHONE, to: FROM, body: `${r.code} a`, account_sid: SID });
+    for (let i = 0; i < 24; i++) tw.log.unshift({ sid: `SMdownMedia${i}`, direction: 'inbound', from: OWNER_PHONE, to: FROM, body: '', account_sid: SID });
+    stop = sms.startPolling((m) => router.inbound(m), { everyMs: 40, pageSize: 10 });   // back up, from the checkpoint
+    try {
+      assert.ok(await until(() => inbox.some((m) => m.includes(`${r.code} → a (yes)`))), 'the oldest new message, an answer, was read');
+      const media = async () => (await askEvents('inbound')).filter((e) => /^sms:SMdownMedia/.test(e.providerMessageId ?? '')).length;
+      assert.ok(await until(async () => (await media()) === 24), 'every newer one read too, after it');
+      await new Promise((res) => setTimeout(res, 200));
+      assert.equal(inbox.filter((m) => m.includes(`${r.code} → a`)).length, 1, 'once');
     } finally { stop(); }
   });
 });
@@ -631,6 +704,52 @@ describe('the owner\'s carrier opt-out on SMS', () => {
     await smsReply({ AccountSid: SID, From: OWNER_PHONE, To: FROM, Body: 'START', MessageSid: 'SMstart3' });
     await settle();
     assert.equal(router.disabled.has('sms'), false);
+  });
+  test('R3-6: Twilio\'s other opt-out words by SMS (END, CANCEL, QUIT) and OptOutType=STOP are a stop, never an answer', async () => {
+    const { pauseState } = await import('../core/ask/policy.js');
+    for (const [i, Body, extra] of [[1, 'END'], [2, 'cancel'], [3, 'Quit.'], [4, 'nope', { OptOutType: 'STOP' }]]) {
+      const r = await ask({ question: `Opt out ${i}?`, channels: ['sms'] });   // the one open ask: free text would answer it
+      const before = tw.sends.length;
+      await smsReply({ AccountSid: SID, From: OWNER_PHONE, To: FROM, Body, MessageSid: `SMout${i}`, ...(extra ?? {}) });
+      await settle();
+      assert.equal((await dispatch('ask.get', { askId: r.askId })).status, 'open', `${Body}: not an answer`);
+      assert.ok((await askEvents('control')).some((e) => e.command === 'stop' && e.providerMessageId === `sms:SMout${i}`), `${Body}: a stop`);
+      assert.ok(router.disabled.has('sms'), `${Body}: SMS out of rotation`);
+      assert.equal(tw.sends.length, before, `${Body}: no reply of ours (Twilio confirms an opt-out)`);
+      await smsReply({ AccountSid: SID, From: OWNER_PHONE, To: FROM, Body: 'START', MessageSid: `SMin${i}` });   // the carrier's opt-in
+      await settle();
+      assert.equal(pauseState((await router.state()).controls, Date.now()).stopped, false, `${Body}: START resumed`);
+      await dispatch('ask.cancel', { askId: r.askId, actor: 'test' });   // one open ask at a time
+    }
+    // Over Telegram the same word is just words: "cancel" may well answer "cancel or keep the order?".
+    const t = await ask({ question: 'Cancel or keep?', channels: ['telegram'] });
+    await tgUpdate({ update_id: 783, message: { message_id: 783, from: { id: Number(OWNER_CHAT) }, chat: { id: Number(OWNER_CHAT), type: 'private' }, text: 'cancel' } }, secret);
+    await settle();
+    assert.equal((await dispatch('ask.get', { askId: t.askId })).status, 'answered');
+  });
+  test('R3-2: an SMS opt-in is recorded in the truth file: the held asks go at once, and a replay never resumes a later stop', async () => {
+    tw.optedOut = true;
+    const r = await ask({ question: 'Opt-in recorded?', channels: ['sms'] });
+    assert.ok(router.disabled.has('sms'), 'out on a 21610');
+    tw.optedOut = false;
+    const before = tw.sends.length;
+    await smsReply({ AccountSid: SID, From: OWNER_PHONE, To: FROM, Body: 'START', MessageSid: 'SMoptin1' });
+    await settle();
+    const rec = (await askEvents('control')).find((e) => e.providerMessageId === 'sms:SMoptin1');
+    assert.equal(rec?.command, 'optin', 'the opt-in is in the truth file');
+    await new Promise((res) => setTimeout(res, 60)); await router.exclusive(() => {});   // its own tick: none by hand
+    assert.ok(tw.sends.slice(before).some((f) => f.Body.includes(`Drover ask ${r.code}`)), 'the held SMS-only ask went out at once');
+    // Stopped on Telegram since: the same START read again after a restart is a duplicate, never a resume.
+    const tg = (text, id) => tgUpdate({ update_id: id, message: { message_id: id, from: { id: Number(OWNER_CHAT) }, chat: { id: Number(OWNER_CHAT), type: 'private' }, text } }, secret);
+    await tg('stop', 781); await settle();
+    try {
+      router.seen.clear();   // as after a restart
+      const again = await smsReply({ AccountSid: SID, From: OWNER_PHONE, To: FROM, Body: 'START', MessageSid: 'SMoptin1' });
+      assert.equal(again.status, 200);
+      await settle();
+      const { pauseState } = await import('../core/ask/policy.js');
+      assert.equal(pauseState((await router.state()).controls, Date.now()).stopped, true, 'the replayed START resumed nothing');
+    } finally { await tg('resume', 782); await settle(); }
   });
 });
 
@@ -815,6 +934,57 @@ describe('asks from another host', () => {
       assert.equal(marks.length, 1, 'and only once');
     } finally { routerDeps.askHosts = realHosts; routerDeps.call = realCall; routerDeps.now = realNow; }
   });
+  test('R3-5: the asking host reports an expiry notice its session could not take, and tells it on the next try, once', async () => {
+    const askOps = await import('../core/ask/ops.js');
+    const { local } = await import('../core/api.js');
+    const r = await ask({ question: 'Expire here?', channels: ['sms'] });
+    const realDispatch = askOps._deps.dispatch; let fail = 1; const told = [];
+    askOps._deps.dispatch = async (op, args) => {
+      if (op === 'sessions.message' && args.actor === 'ask') { if (fail-- > 0) throw new Error('the session is busy; try again'); told.push(args.text); return { ok: true }; }
+      return realDispatch(op, args);
+    };
+    const mark = { askId: r.askId, phase: 'expired', code: r.code, hub: 'hub', why: 'nobody answered in time' };
+    try {
+      const first = await local['ask.mark'](mark);
+      assert.equal(first.ok, false, 'the failure goes back to the hub'); assert.equal(first.final, false);
+      assert.equal((await local['ask.mark'](mark)).ok, true);
+      assert.equal(told.length, 1, 'told on the next try');
+      await local['ask.mark'](mark);
+      assert.equal(told.length, 1, 'and only once');
+      assert.equal((await local['ask.mark']({ ...mark, askId: '0199-no-such-ask' })).final, true, 'an ask this host never had: final');
+    } finally { askOps._deps.dispatch = realDispatch; }
+  });
+  test('R3-5: the hub retries an expiry notice the asking host answered ok:false, and not one it says is final', async () => {
+    const mk = (askId, sessionId) => ({ askId, status: 'open', origin: 'box-e', sessionId, sessionName: 'w5', questions: [{ question: `${askId}?`, options: [] }], urgency: 'normal', expiresAt: new Date(Date.now() + 120_000).toISOString(), createdAt: new Date().toISOString() });
+    const busy = mk('0199-remote-busy', 'rs5'), gone = mk('0199-remote-gone', 'rs6');
+    const marks = []; let busyLeft = 1;
+    const realHosts = routerDeps.askHosts, realCall = routerDeps.call, realNow = routerDeps.now;
+    routerDeps.askHosts = async () => ['box-e'];
+    routerDeps.call = async (host, op, args, opts) => {
+      if (host !== 'box-e') return realCall(host, op, args, opts);
+      if (op === 'ask.list') return { asks: [busy, gone].filter((x) => !marks.includes(x.askId)) };
+      if (op === 'ask.mark' && args.phase === 'expired') {
+        marks.push(args.askId);
+        if (args.askId === gone.askId) return { ok: false, final: true, error: 'session rs6 not found' };
+        return busyLeft-- > 0 ? { ok: false, final: false, error: 'the session is busy; try again' } : { ok: true };
+      }
+      return { ok: true };
+    };
+    const count = (id) => marks.filter((x) => x === id).length;
+    try {
+      await router.tick();
+      routerDeps.now = () => Date.now() + 3 * 60_000;
+      assert.equal((await router.tick()).expired.length, 2);
+      routerDeps.now = () => Date.now() + 6 * 60_000;
+      await router.tick();
+      assert.equal(count(busy.askId), 2, 'reached but not told: tried again');
+      assert.equal(count(gone.askId), 1, 'the session is gone: never again');
+      routerDeps.now = () => Date.now() + 60 * 60_000;
+      await router.tick();
+      assert.equal(count(busy.askId), 2, 'told: no more tries');
+      assert.equal(count(gone.askId), 1);
+    } finally { routerDeps.askHosts = realHosts; routerDeps.call = realCall; routerDeps.now = realNow; }
+  });
   test('a host that cannot be reached keeps the answer; the next ticks retry the delivery', async () => {
     const remote = { askId: '0199-remote-2', status: 'open', origin: 'box-c', sessionId: 'rs2', sessionName: 'w2', questions: [{ question: 'Retry me?', options: ['yes', 'no'] }], urgency: 'normal', createdAt: new Date().toISOString() };
     let up = false;
@@ -951,6 +1121,32 @@ describe('the asking host\'s side', () => {
     await settle();
     assert.ok((await askEvents('answered')).some((e) => e.providerMessageId === 'tg:tailscale'), 'the answer is recorded');
     assert.equal((await dispatch('ask.get', { askId: r.askId })).status, 'answered');
+  });
+  test('R3-9: the hub\'s signed delivery reaches another host\'s drover rpc through the real remote call, its signature unchanged', async () => {
+    const remoteMod = await import('../core/remote.js');
+    const hubkey = await import('../core/ask/hubkey.js');
+    const { spawn } = await import('node:child_process');
+    const fleet = path.join(tmp, 'dotfiles', 'claude', 'fleet-hosts.txt');
+    await mkdir(path.dirname(fleet), { recursive: true });
+    await writeFile(fleet, 'box-sig\n');
+    const drover = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'bin', 'drover');
+    const hubPub = await hubkey.publicKeyString();
+    const realSpawn = remoteMod._deps.spawn; const spawned = [];
+    // Only the ssh hop is replaced: `ssh box-sig ... drover rpc` becomes a drover rpc here that trusts the hub's key.
+    // Everything else is real: the router signs, callOn and the remote peer carry the call, ask.deliver verifies it.
+    remoteMod._deps.spawn = (cmd, argv, opts) => {
+      if (cmd === 'ssh' && argv.includes('box-sig')) { spawned.push(argv); return spawn(process.execPath, [drover, 'rpc'], { ...opts, env: { ...process.env, DROVER_ASK_HUB_KEY: hubPub } }); }
+      return realSpawn(cmd, argv, opts);
+    };
+    const r = await dispatch('ask.create', { question: 'Signed through?', options: ['yes', 'no'], sessionId: SESSION, actor: 'test', channels: ['sms'] });
+    const a = { ...(await router.state()).asks.get(r.askId), origin: 'box-sig', deliverTo: 'box-sig' };
+    try {
+      const d = await router.deliver(a, { answers: [{ q: 0, option: 0, text: '' }], source: 'owner:telegram', channel: 'telegram', providerMessageId: 'tg:via-callOn', sender: 'tg:1', raw: 'a' });
+      assert.equal(spawned.length, 1, 'carried by the remote peer, not the local dispatcher');
+      assert.equal(d.ok, true, JSON.stringify(d));
+      const e = (await askEvents('answered')).find((x) => x.providerMessageId === 'tg:via-callOn');
+      assert.equal(e?.signedBy, hubkey.fingerprint(hubkey.parseKey(hubPub)), 'checked there against the hub\'s key');
+    } finally { remoteMod._deps.spawn = realSpawn; remoteMod.stopAll(); await rm(fleet, { force: true }); }
   });
   test('the hub-only ops are refused through the HTTP API and drover op, served over rpc', async () => {
     const { cliOp } = await import('../core/cli-op.js');

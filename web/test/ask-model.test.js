@@ -261,6 +261,19 @@ describe('the reply grammar', () => {
     const m8c = ask({ askId: 'm8c2', code: 'M8', status: 'answered', closedAt: iso(T0), questions: [{ question: 'Name?', options: ['a1', 'b1'] }] });
     assert.deepEqual(one(parseReply('8 b', { asks: [k7, m8c] })), [['M8', [[0, 1, '']]]]);
   });
+  test('R3-1: after an option a bare number is the answer\'s words, never another ask; "2 a week" never picks ask 2\'s option a', () => {
+    const b2 = ask({ askId: 'b2open', code: 'B2', status: 'open', questions: [{ question: 'How often?', options: ['daily', 'weekly'] }] });
+    assert.deepEqual(one(parseReply('K7 b 2 a week', { asks: [k7, b2] })), [['K7', [[0, 1, '2 a week']]]], 'K7 b with its words; B2 untouched');
+    assert.deepEqual(one(parseReply('K7 b 2 tomorrow', { asks: [k7, b2] })), [['K7', [[0, 1, '2 tomorrow']]]], 'a bare number after an option names no ask');
+    assert.equal(parseReply('2 a week', { asks: [k7, b2] }).ambiguous?.why, '2 asks are open; say which one', 'words at the start too: with two open, unclear');
+    // Another ask after an option still goes by its number with a letter, glued or spaced at a reference position, or its code.
+    assert.deepEqual(one(parseReply('K7 b 2a', { asks: [k7, b2] })), [['K7', [[0, 1, '']]], ['B2', [[0, 0, '']]]]);
+    assert.deepEqual(one(parseReply('K7 b 2 a', { asks: [k7, b2] })), [['K7', [[0, 1, '']]], ['B2', [[0, 0, '']]]]);
+    assert.deepEqual(one(parseReply('K7 b B2 a', { asks: [k7, b2] })), [['K7', [[0, 1, '']]], ['B2', [[0, 0, '']]]]);
+    assert.deepEqual(one(parseReply('K7 b; 2 tomorrow', { asks: [k7, b2] })), [['K7', [[0, 1, '']]], ['B2', [[0, null, 'tomorrow']]]], 'after a separator, a fresh reference');
+    assert.deepEqual(one(parseReply('K7 b, 2 tomorrow', { asks: [k7, b2] })), [['K7', [[0, 1, '']]], ['B2', [[0, null, 'tomorrow']]]], 'a comma after the option ends it, as in 7a, 8 Drover');
+    assert.deepEqual(one(parseReply('K7 b, 2 a week', { asks: [k7, b2] })), [['K7', [[0, 1, '2 a week']]]], '"2 a week" is words even after a comma');
+  });
   test('bound to an ask\'s message, a bare number or a code naming no ask is that ask\'s words; one naming another ask is unclear', () => {
     const m3 = ask({ askId: 'm3open', code: 'M3', status: 'open', questions: [{ question: 'Pick?', options: ['x', 'y'] }] });
     assert.deepEqual(one(parseReply('3', { asks: [k7, m3], target: k7.askId })), [['K7', [[0, null, '3']]]], 'how many? 3: whichever ask holds 3');

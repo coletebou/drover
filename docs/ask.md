@@ -13,14 +13,19 @@ the **hub** (`DROVER_ASK_HUB`, a host alias), sends every text and reads every r
 
 The answer arrives in the asking session as a message: `[Owner via telegram, verified] K7 → b (no)`, the question,
 and the `askId` to check with `ask.get`. The owner replies `K7 b`, `7b`, `b` (one ask open), free text, `1a 2b 3 yes`
-(several questions), taps a Telegram button, or sends `stop`, `resume`, `pause asks 2h`, `status`.
+(several questions), taps a Telegram button, or sends `stop`, `resume`, `pause asks 2h`, `status`. Several asks in one
+reply go by code or number with a letter (`K7 b M8 a`, `7b 8a`); after an option a bare number is that answer's words
+(`K7 b 2 a week`) unless a comma ends the option (`7a, 8 Drover`). Over SMS, Twilio's opt-out words alone (STOP, END,
+CANCEL, QUIT, STOPALL, UNSUBSCRIBE) are a stop, never an answer: the carrier blocks Drover's texts after them anyway.
 
 ## State: the truth file, no new store
 
 One event type, `ask`, with a `phase`: `created` (on the asking host), `routed` (the hub's code, with a copy of the ask),
 `sent`, `answered`, `delivered`, `cancelled`, `expired`, `inbound` (a reply that answered nothing), `control` (the
-owner's pause, stop, resume). The fold is order-tolerant (dotsync merges the asking host's file with the hub's): the
-first answer, cancel or expiry wins, later replies are follow-ups, one provider message counts once. `events.append`
+owner's pause, stop, resume, and an SMS opt-in). The fold is order-tolerant (dotsync merges the asking host's file with
+the hub's): the first answer, cancel or expiry wins, later replies are follow-ups (so is the part of a reply that
+answers a question already answered: the session gets it labelled, the first answer standing), one provider message
+counts once. `events.append`
 refuses `type: ask`.
 
 ## Routing
@@ -33,14 +38,15 @@ refuses `type: ask`.
 - Normal asks wait out quiet hours (`DROVER_ASK_QUIET` 22:00-08:00, `DROVER_ASK_TZ` America/New_York), a pause and the
   rate limit (`DROVER_ASK_RATE` 6 texts an hour), then held asks go out together in one text. Urgent asks skip those,
   escalate to the next channel after 5 minutes unanswered; nothing skips `stop`. One reminder before expiry; at expiry
-  the session is told. A delivery the asking host could not take is retried (2 min backoff, doubling to 30).
+  the session is told. A delivery or expiry notice the asking host could not take is retried (2 min backoff, doubling
+  to 30) until it lands or the session is gone for good.
 
 ## Channels (each: send, verify inbound, health)
 
 | Channel | Out | In, and what makes it the owner's |
 |---|---|---|
-| Telegram (`DROVER_ASK_TELEGRAM_TOKEN`, `_CHAT` = the owner's user id) | `sendMessage` with buttons | Long polling (`getUpdates`, no inbound port), or a webhook `/hooks/telegram` on the bot gateway's public origin when that origin's port is one Telegram calls (443, 80, 88, 8443), believed only with the secret header given at `setWebhook` (random, 0600 in the state dir); until Telegram has taken it, nothing goes out on Telegram (registration is retried). Sender and private chat must be the owner's id. Ids and the polling offset carry the bot's own id, so a replaced bot is never read as the old one. An edited message is read only as a follow-up of the ask its original message answered. |
-| SMS via Twilio (`DROVER_ASK_TWILIO_ACCOUNT_SID`, `_AUTH_TOKEN`, `DROVER_ASK_SMS_FROM` a 10DLC number, `_SMS_TO`) | Messages API, in the GSM alphabet when the text fits it (an accent GSM lacks loses only its mark); text with no GSM form (Chinese, emoji) goes as written, in UCS-2 | Webhook `/hooks/twilio/sms`, believed only with a valid `X-Twilio-Signature` for the public URL; AccountSid, To and From must be ours and the owner's. `DROVER_ASK_SMS_INBOUND=poll` (also the default with no public endpoint) reads the account's message log every 15 s instead, filtered by Twilio to the owner's number: no webhook and no Messaging Service change needed. Each webhook is served only in its channel's webhook mode. STOP and START are the carrier's opt-out and opt-in: Twilio answers them, and START brings SMS back whatever Drover's own stop says. |
+| Telegram (`DROVER_ASK_TELEGRAM_TOKEN`, `_CHAT` = the owner's user id) | `sendMessage` with buttons | Long polling (`getUpdates`, no inbound port), or a webhook `/hooks/telegram` on the bot gateway's public origin when that origin's port is one Telegram calls (443, 80, 88, 8443), believed only with the secret header given at `setWebhook` (random, one per bot, 0600 in the state dir: a replaced bot's webhook, still registered with Telegram, is refused); until Telegram has taken it, nothing goes out on Telegram (registration is retried). Sender and private chat must be the owner's id. Ids and the polling offset carry the bot's own id, so a replaced bot is never read as the old one. An edited message is read only as a follow-up of the ask its original message answered. |
+| SMS via Twilio (`DROVER_ASK_TWILIO_ACCOUNT_SID`, `_AUTH_TOKEN`, `DROVER_ASK_SMS_FROM` a 10DLC number, `_SMS_TO`) | Messages API, in the GSM alphabet when the text fits it (an accent GSM lacks loses only its mark); text with no GSM form (Chinese, emoji) goes as written, in UCS-2 | Webhook `/hooks/twilio/sms`, believed only with a valid `X-Twilio-Signature` for the public URL; AccountSid, To and From must be ours and the owner's. By default the hub reads the account's message log every 15 s instead, filtered by Twilio to the owner's number: no webhook and no Messaging Service change needed; the webhook is served only with `DROVER_ASK_SMS_INBOUND=webhook`, since its signature proves only that the sender holds the auth token. Each webhook is served only in its channel's webhook mode. The log is read page by page back to the last message seen, so a backlog after downtime is read whole, oldest first. STOP (and END, CANCEL, QUIT, STOPALL, UNSUBSCRIBE, or a webhook's `OptOutType=STOP`) and START are the carrier's opt-out and opt-in: Twilio answers them, and START brings SMS back whatever Drover's own stop says. |
 | iMessage (`DROVER_ASK_IMESSAGE_TO`, `DROVER_ASK_IMSG`; a Mac) | `imsg rpc` `send`, AppleScript transport | The same child's `watch.subscribe`, read only for the one-to-one chat with the owner's handle (every other chat is never passed on or recorded), not from this account. Checked at start: an account that is the owner's own Apple ID (a note to self) or signed out keeps the channel off. |
 
 ## Provenance rules

@@ -5,10 +5,10 @@
 //   DROVER_ASK_SMS_FROM         the sending number, E.164 (+18065550123)
 //   DROVER_ASK_SMS_TO           the owner's phone, E.164: the only sender whose replies count
 //   DROVER_ASK_TWILIO_API       the API origin (tests point it at a fake)
-//   DROVER_ASK_SMS_INBOUND      webhook (default when the bot gateway has a public URL) or poll: read the owner's
-//                               replies from the account's message log every 15 s (filtered to the owner's number by
-//                               Twilio, so no one else's message is ever fetched), for a hub with no public endpoint
-//                               or a number whose Messaging Service sends no webhook
+//   DROVER_ASK_SMS_INBOUND      poll (the default): read the owner's replies from the account's message log every 15 s
+//                               (filtered to the owner's number by Twilio, so no one else's message is ever fetched); or
+//                               webhook, only when set so and the bot gateway has a public URL. Twilio signs a webhook
+//                               with the auth token, so webhook mode believes anyone who holds it: opt in knowingly
 //
 // An inbound webhook is believed only with a valid X-Twilio-Signature (HMAC-SHA1 of the URL Twilio called and the
 // sorted form fields, keyed by the auth token, compared in constant time), the account's own AccountSid, To our
@@ -24,6 +24,8 @@ import { clip } from '../model.js';
 export const NAME = 'sms';
 export const _deps = { fetch: (...a) => fetch(...a), env: process.env, stateDir: () => stateDir() };
 export const POLL_MS = 15_000;
+export const PAGE_SIZE = 50;
+export const MAX_PAGES = 20;   // a backlog past 1000 new messages: the oldest of it is not read (logged)
 
 /** +1 (704) 555-0123 -> +17045550123; a 10-digit US number gets +1. Anything else: as given, trimmed. */
 export function e164(s) {
@@ -43,8 +45,8 @@ const cfg = (env = _deps.env) => ({
   api: (envvar('ASK_TWILIO_API', env) ?? 'https://api.twilio.com').replace(/\/+$/, ''),
   inbound: String(envvar('ASK_SMS_INBOUND', env) ?? '').trim().toLowerCase(),
 });
-/** webhook or poll: poll when asked for, or when there is no public URL to take a webhook. */
-export const inboundMode = ({ publicBase, env = _deps.env } = {}) => (cfg(env).inbound === 'poll' || !publicBase ? 'poll' : 'webhook');
+/** poll, unless webhook is asked for and there is a public URL to take it (a signed webhook proves only the token). */
+export const inboundMode = ({ publicBase, env = _deps.env } = {}) => (cfg(env).inbound === 'webhook' && publicBase ? 'webhook' : 'poll');
 
 export function missing(env = _deps.env) {
   const c = cfg(env);
@@ -99,20 +101,28 @@ export function authentic(url, params, header, { env = _deps.env } = {}) {
   return urlForms(url).some((form) => { const a = Buffer.from(signature(c.token, form, params)); return a.length === b.length && timingSafeEqual(a, b); });
 }
 
+// Twilio's standard opt-out keywords: a message of one of them alone opts the phone out at the carrier, whatever Drover
+// reads (Twilio confirms it and refuses our texts with 21610 until START). Advanced Opt-Out also names the class in the
+// webhook's OptOutType, custom keywords included; polling reads the message log, which carries no class, so the words.
+export const OPT_OUT_WORDS = new Set(['stop', 'stopall', 'unsubscribe', 'cancel', 'end', 'quit']);
+
 /** An inbound SMS as the router reads it. Verified only for our account, our number, and the owner's phone. */
 export function readInbound(params, { env = _deps.env } = {}) {
   const c = cfg(env);
   const from = e164(params.From), to = e164(params.To);
   const why = params.AccountSid !== c.sid ? 'another Twilio account' : to !== c.from ? 'sent to another number' : from !== c.to ? 'not the owner\'s phone' : null;
-  return { channel: NAME, verified: !why, reason: why, sender: `sms:${from}`, text: String(params.Body ?? ''), providerMessageId: `sms:${params.MessageSid ?? params.SmsSid ?? ''}`, replyTo: null, button: null };
+  const text = String(params.Body ?? '');
+  const optOut = String(params.OptOutType ?? '').toUpperCase() === 'STOP' || OPT_OUT_WORDS.has(text.trim().toLowerCase().replace(/[.!]+$/, ''));
+  return { channel: NAME, verified: !why, reason: why, sender: `sms:${from}`, text, providerMessageId: `sms:${params.MessageSid ?? params.SmsSid ?? ''}`, replyTo: null, button: null, ...(optOut ? { optOut: 'stop' } : {}) };
 }
 
 /**
  * Polling, for a hub that takes no webhook: the owner's messages to our number from the account's log (Twilio filters
- * by From and To), newest first, each handed on once. What was there at the first look is the baseline, never
- * replayed; the message ids seen are kept on disk across restarts. Returns stop().
+ * by From and To), newest first, each handed on once, oldest first. Twilio lists a page at a time: after downtime more
+ * than a page may be new, so pages are read back to the newest message already seen. What was there at the first look
+ * is the baseline, never replayed; the message ids seen are kept on disk across restarts. Returns stop().
  */
-export function startPolling(onInbound, { log = () => {}, env = _deps.env, everyMs = POLL_MS } = {}) {
+export function startPolling(onInbound, { log = () => {}, env = _deps.env, everyMs = POLL_MS, pageSize = PAGE_SIZE } = {}) {
   const c = cfg(env);
   const file = path.join(_deps.stateDir(), 'ask', 'sms-seen.json');
   let stopped = false, timer = null, seen = null;
@@ -122,15 +132,28 @@ export function startPolling(onInbound, { log = () => {}, env = _deps.env, every
     await writeFile(tmp, JSON.stringify({ sids: [...seen].slice(-300) }) + '\n', { mode: 0o600 });
     await rename(tmp, file);
   };
+  const list = `/2010-04-01/Accounts/${c.sid}/Messages.json?`;
+  const page = (uri) => api('GET', uri, null, { env, timeoutMs: 15_000 });
   const look = async () => {
-    const q = new URLSearchParams({ To: c.from, From: c.to, PageSize: '20' });
-    const r = await api('GET', `/2010-04-01/Accounts/${c.sid}/Messages.json?${q}`, null, { env, timeoutMs: 15_000 });
-    const msgs = (r.messages ?? []).filter((m) => m.direction === 'inbound' && m.sid);
+    let uri = `${list}${new URLSearchParams({ To: c.from, From: c.to, PageSize: String(pageSize) })}`;
     if (seen === null) {
       try { seen = new Set(JSON.parse(await readFile(file, 'utf8')).sids ?? []); }
-      catch { seen = new Set(msgs.map((m) => m.sid)); await save(); return; }   // first look ever: the baseline
+      catch { seen = new Set(((await page(uri)).messages ?? []).filter((m) => m.sid).map((m) => m.sid)); await save(); return; }   // first look ever: the baseline
     }
-    const fresh = msgs.filter((m) => !seen.has(m.sid)).reverse();   // oldest first
+    const newer = [];   // newest first, down to the first message already seen
+    let reached = false;
+    for (let n = 0; uri && n < MAX_PAGES && !reached; n++) {
+      const r = await page(uri);
+      for (const m of r.messages ?? []) {
+        if (!m.sid) continue;
+        if (seen.has(m.sid)) { reached = true; break; }
+        if (m.direction === 'inbound') newer.push(m);
+      }
+      // The next page, older: only ever the account's own message list (the request carries the auth token).
+      uri = typeof r.next_page_uri === 'string' && r.next_page_uri.startsWith(list) ? r.next_page_uri : null;
+    }
+    if (!reached && uri) log('sms poll', `over ${MAX_PAGES * pageSize} new messages: the older ones are not read`);
+    const fresh = newer.reverse();   // oldest first
     for (const m of fresh) {
       seen.add(m.sid);
       try { await onInbound(readInbound({ AccountSid: m.account_sid, From: m.from, To: m.to, Body: m.body, MessageSid: m.sid }, { env })); }

@@ -255,11 +255,15 @@ export const ops = {
     if (!again) await _deps.append({ type: 'ask', phase: 'answered', askId, answers, source, channel, providerMessageId, sender, raw: clip(String(raw ?? ''), 2000), untrusted: false, relayedBy: hub ?? null, ...(signedBy ? { signedBy } : {}) }, 'ask');
     if (a.deliveries.some((d) => d.ok && d.providerMessageId === providerMessageId)) return { ok: true, deduped: true };
     if (!a.sessionId) return { ok: true, delivered: false, note: 'the ask names no session; the answer is recorded for ask.get' };
-    // Late: the hub says so, or this host had every one of these questions answered by other messages already.
-    const late = followUp || (a.status !== 'open' && !a.answers.some((x) => x.providerMessageId === providerMessageId)) || (!again && a.status === 'open' && answers.every((x) => a.answeredQs.has(x.q)));
     const after = (await state()).asks.get(askId) ?? a;
+    // A part whose question another message answered first is a follow-up: that first answer stands (the fold keeps it),
+    // so the session must not take this part for the decision. Read from the fold after this message is in it, the same
+    // whether the hub recorded it already (its own asks: one truth file) or this call did.
+    const standing = new Map(answers.flatMap((x) => { const m = after.merged?.[x.q]; return m && m.providerMessageId !== providerMessageId ? [[x.q, m]] : []; }));
+    // Late: the hub says so, the ask closed before this message, or every part answers a question answered before.
+    const late = followUp || (a.status !== 'open' && !a.answers.some((x) => x.providerMessageId === providerMessageId)) || standing.size === answers.length;
     const remaining = late ? [] : after.questions.map((_q, i) => i).filter((i) => !after.answeredQs.has(i));
-    const text = deliveryText({ ...a, code: a.code ?? code ?? null }, { answers, source, channel }, { followUp: late, remaining });
+    const text = deliveryText({ ...a, code: a.code ?? code ?? null }, { answers, source, channel }, { followUp: late, remaining, standing: late ? null : standing });
     try {
       const r = await _deps.dispatch('sessions.message', { id: a.sessionId, text, actor: source });
       await _deps.append({ type: 'ask', phase: 'delivered', askId, ok: true, providerMessageId, to: { sessionId: a.sessionId, resolvedTo: r?.resolvedTo?.id ?? null }, kind: late ? 'follow-up' : 'answer' }, 'ask');
@@ -277,19 +281,24 @@ export const ops = {
     const { askId, phase, code, hub, why } = args;
     const st = await state();
     const a = st.asks.get(askId);
-    if (!a) return { ok: false, error: 'this host has no such ask' };
+    if (!a) return { ok: false, final: true, error: 'this host has no such ask' };
     if (phase === 'routed') {
       if (!a.code) await _deps.append({ type: 'ask', phase: 'routed', askId, code, hub: hub ?? null }, 'ask');
       return { ok: true };
     }
     if (phase === 'expired') {
       if (a.status === 'open') await _deps.append({ type: 'ask', phase: 'expired', askId, reason: clip(String(why ?? 'expired'), 200) }, 'ask');
-      // Told once, whether the hub's own expiry (on the hub, the same truth file) or this call wrote it.
-      if (a.sessionId && a.status !== 'answered' && !a.deliveries.some((d) => d.kind === 'expired')) {
-        let ok = true, error = null;
+      // Told once, whether the hub's own expiry (on the hub, the same truth file) or this call wrote it. A notice the
+      // session could not take is no notice: the failure goes back to the hub, which tries again, unless the session is
+      // gone for good (final).
+      if (a.sessionId && a.status !== 'answered' && !a.deliveries.some((d) => d.kind === 'expired' && (d.ok || d.final))) {
         try { await _deps.dispatch('sessions.message', { id: a.sessionId, text: closedText({ ...a, code: a.code ?? code }, `${why ?? 'expired without an answer'}; ask again if you still need it`), actor: 'ask' }); }
-        catch (e) { ok = false; error = clip(e.message, 300); }
-        await _deps.append({ type: 'ask', phase: 'delivered', askId, ok, kind: 'expired', to: { sessionId: a.sessionId }, ...(error ? { error } : {}) }, 'ask');
+        catch (e) {
+          const final = /not found|not live|no messaging socket|process not alive/i.test(e.message);
+          await _deps.append({ type: 'ask', phase: 'delivered', askId, ok: false, final, kind: 'expired', to: { sessionId: a.sessionId }, error: clip(e.message, 300) }, 'ask');
+          return { ok: false, final, error: e.message };
+        }
+        await _deps.append({ type: 'ask', phase: 'delivered', askId, ok: true, kind: 'expired', to: { sessionId: a.sessionId } }, 'ask');
       }
       return { ok: true };
     }
