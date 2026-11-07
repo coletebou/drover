@@ -15,9 +15,9 @@
 //
 // One in-process mutex orders every change (a tick, a reply, a create, a cancel), so an ask is never coded, sent or
 // answered twice by this daemon. Network pulls run outside it.
-import { foldAsks, nextCode, askText, batchText, answerWords, whoLabel, forChannel, clip, oneLine, TERMINAL } from './model.js';
+import { foldAsks, normalizeQuestions, nextCode, askText, batchText, answerWords, whoLabel, forChannel, clip, oneLine, TERMINAL, TEXT_LIMITS } from './model.js';
 import { parseReply } from './parse.js';
-import { readConfig, mayText, channelOrder, reminderAt, pauseState } from './policy.js';
+import { readConfig, mayText, channelOrder, reminderAt, pauseState, rateState } from './policy.js';
 import { ADAPTERS, usableChannels } from './channels/index.js';
 import { OWNER } from '../owner.js';
 
@@ -64,7 +64,8 @@ export class Router {
     this.untrusted = new Map();       // channel -> [ts] of recorded untrusted inbounds (an hour)
     this.hostBackoff = new Map();     // host -> ms before which it is not pulled again
     this.running = false;
-    this.disabled = new Map();        // channel -> why the hub will not use it (a failed safety check at start)
+    this.disabled = new Map();        // channel -> why the hub will not use it (a failed safety check, the owner's carrier opt-out)
+    this.tickSends = [];              // texts sent since the last fold was read: they count against the rate limit at once
   }
 
   /** Run fn with the router's lock held; returns its result. */
@@ -76,7 +77,9 @@ export class Router {
 
   config() { return readConfig(_deps.env); }
   usable(cfg = this.config()) { return usableChannels(cfg.order.concat(['telegram', 'imessage', 'sms'].filter((c) => !cfg.order.includes(c))), _deps.channels, _deps.env).filter((c) => !this.disabled.has(c)); }
-  async state() { return foldAsks(await _deps.readEvents()); }
+  async state() { this.tickSends = []; return foldAsks(await _deps.readEvents()); }
+  /** The sends the rate limit counts: the fold's, and those since (a tick sends several texts off one fold). */
+  sendsSoFar(st) { return [...st.sends, ...this.tickSends]; }
 
   // ------------------------------------------------------------ taking and texting
   /** Give an ask its code (it is the hub's now) and try to text it. origin: the host alias to deliver back to. */
@@ -86,9 +89,12 @@ export class Router {
     const known = st.asks.get(ask.askId);
     if (known?.code) return known;
     const now = _deps.now();
+    // Another host's ask is that host's data: checked like a new one, so a malformed one is skipped, not every tick broken.
+    let questions;
+    try { questions = normalizeQuestions({ questions: ask.questions }); } catch (e) { _deps.log('skipping an ask from', alias ?? 'here', ask.askId, e.message); return null; }
     const code = nextCode([...st.asks.values()], now);
     if (!code) { _deps.log('no free code: 99 asks are open'); return null; }
-    const copy = { origin, sessionId: ask.sessionId ?? null, sessionName: ask.sessionName ?? null, cwd: ask.cwd ?? null, questions: ask.questions, urgency: ask.urgency ?? 'normal', expiresAt: ask.expiresAt ?? null, channels: ask.channels ?? null, createdAt: ask.createdAt ?? null, createdBy: ask.createdBy ?? null };
+    const copy = { origin, sessionId: ask.sessionId ?? null, sessionName: ask.sessionName ?? null, cwd: ask.cwd ?? null, questions, urgency: ask.urgency ?? 'normal', expiresAt: ask.expiresAt ?? null, channels: ask.channels ?? null, createdAt: ask.createdAt ?? null, createdBy: ask.createdBy ?? null };
     await _deps.append({ type: 'ask', phase: 'routed', askId: ask.askId, code, origin, hub: _deps.hostName(), ask: copy });
     if (alias && !sameHost(alias, _deps.hostName())) {
       _deps.call(alias, 'ask.mark', { askId: ask.askId, phase: 'routed', code, hub: _deps.hostName() }, { timeoutMs: PULL_TIMEOUT_MS }).catch((e) => _deps.log('ask.mark routed', origin, e.message));
@@ -104,8 +110,10 @@ export class Router {
     const usable = this.usable(cfg);
     const groups = new Map();   // first channel -> asks
     const held = [];
+    // Quiet hours, pauses and stops per ask here; the rate limit per text below, as each one goes.
+    const unlimited = { ...cfg, ratePerHour: Infinity };
     for (const a of list) {
-      const may = mayText(a, { now, config: cfg, sends: st.sends, controls: st.controls });
+      const may = mayText(a, { now, config: unlimited, sends: [], controls: st.controls });
       if (!may.send) { held.push({ askId: a.askId, code: a.code, why: may.why, until: may.until }); continue; }
       const chans = channelOrder(a, { order: cfg.order, usable });
       if (!chans.length) { held.push({ askId: a.askId, code: a.code, why: 'no channel is configured on the hub', until: null }); continue; }
@@ -114,14 +122,26 @@ export class Router {
       groups.get(k).push(a);
     }
     const sent = [];
-    for (const [k, asks] of groups) {
+    for (const [k, group] of groups) {
       const chans = k.split(',');
-      let done = false;
-      for (const ch of chans) {
-        const r = await this.sendOn(ch, asks, { kind: kind ?? (asks.length > 1 ? 'batch' : 'ask') });
-        if (r.ok) { sent.push({ channel: ch, codes: asks.map((a) => a.code), providerId: r.providerId }); done = true; break; }
+      // Batches split to fit the smallest text the group's channels take.
+      const limit = Math.min(...chans.map((c) => TEXT_LIMITS[c] ?? 1600));
+      const chunks = [];
+      for (const a of group) {
+        const last = chunks.at(-1);
+        if (last && batchText([...last, a], { channel: 'sms' }).length <= limit) last.push(a); else chunks.push([a]);
       }
-      if (!done) for (const a of asks) held.push({ askId: a.askId, code: a.code, why: 'every channel failed', until: now + RETRY_MS });
+      for (const asks of chunks) {
+        const urgent = asks.every((a) => a.urgency === 'urgent');
+        const rate = rateState(this.sendsSoFar(st), now, cfg);
+        if (!urgent && !rate.allowed) { for (const a of asks) held.push({ askId: a.askId, code: a.code, why: 'rate limit', until: rate.nextAt }); continue; }
+        let done = false;
+        for (const ch of chans.filter((c) => !this.disabled.has(c))) {
+          const r = await this.sendOn(ch, asks, { kind: kind ?? (asks.length > 1 ? 'batch' : 'ask') });
+          if (r.ok) { sent.push({ channel: ch, codes: asks.map((a) => a.code), providerId: r.providerId }); done = true; break; }
+        }
+        if (!done) for (const a of asks) held.push({ askId: a.askId, code: a.code, why: 'every channel failed', until: now + RETRY_MS });
+      }
     }
     return { sent, held };
   }
@@ -134,9 +154,12 @@ export class Router {
     try {
       const r = await adapter.send({ text: body, asks: kind === 'ack' || kind === 'notice' ? [] : asks }, { env: _deps.env });
       await _deps.append({ type: 'ask', phase: 'sent', askIds: asks.map((a) => a.askId), ...(asks.length === 1 ? { askId: asks[0].askId } : {}), channel, kind, ok: true, providerId: r.providerId ?? null, messageIds: r.messageIds ?? [], text: clip(body, 1500) });
+      this.tickSends.push({ ts: new Date(_deps.now()).toISOString(), kind, ok: true });
       return { ok: true, providerId: r.providerId };
     } catch (e) {
       _deps.log(`send ${channel} failed`, e.message);
+      // Twilio 21610: the owner texted STOP, and the carrier opt-out blocks every text until they text START.
+      if (channel === 'sms' && Number(e.code) === 21610) this.disabled.set('sms', 'the owner texted STOP to the SMS number: Twilio sends nothing until they text START');
       await _deps.append({ type: 'ask', phase: 'sent', askIds: asks.map((a) => a.askId), ...(asks.length === 1 ? { askId: asks[0].askId } : {}), channel, kind, ok: false, error: clip(e.message, 300) });
       return { ok: false, error: e.message };
     }
@@ -190,7 +213,8 @@ export class Router {
       const r = await this.deliver(a, ans, { followUp });
       report.delivered.push(`${a.code}:${r.ok ? 'ok' : r.final ? 'final' : 'failed'}`);
     }
-    delete report.redeliver;
+    for (const a of report.renotify.splice(0)) await this.tellAsker(a, 'expired without an answer');
+    delete report.redeliver; delete report.renotify;
     return report;
   }
 
@@ -237,7 +261,7 @@ export class Router {
       if (!ok.length) continue;
       const remindAt = reminderAt(a);
       if (remindAt && remindAt <= now && !a.sends.some((s) => s.kind === 'reminder')) {
-        const may = mayText(a, { now, config: cfg, sends: st.sends, controls: st.controls });
+        const may = mayText(a, { now, config: cfg, sends: this.sendsSoFar(st), controls: st.controls });
         if (may.send) { const ch = ok[0].channel; const r = await this.sendOn(ch, [a], { kind: 'reminder' }); if (r.ok) report.reminded.push(a.code); }
       }
       if (a.urgency === 'urgent') {
@@ -247,8 +271,15 @@ export class Router {
         if (nextCh && now - last >= cfg.escalateMs && !pauseState(st.controls, now).stopped) { const r = await this.sendOn(nextCh, [a], { kind: 'escalation' }); if (r.ok) report.escalated.push(`${a.code}:${nextCh}`); }
       }
     }
-    // 3. answers recorded here that did not reach the asking host yet (delivered after the lock is let go).
+    // 3. answers recorded here that did not reach the asking host yet, and expiry notices that did not (sent after the
+    // lock is let go).
     report.redeliver = [];
+    report.renotify = [];
+    for (const a of st.asks.values()) {
+      if (a.status !== 'expired' || targetOf(a) === 'local') continue;
+      const ds = a.deliveries.filter((d) => d.kind === 'expired');
+      if (ds.length && !ds.some((d) => d.ok) && retryDue(ds.length, ds.at(-1).ts, now)) report.renotify.push(a);
+    }
     for (const a of st.asks.values()) {
       for (const ans of [...a.answers, ...a.followUps]) {
         if (!ans.providerMessageId) continue;
@@ -280,8 +311,11 @@ export class Router {
   /** Tell the asking session its ask closed without an answer (expired). Best effort. */
   async tellAsker(a, why) {
     const origin = targetOf(a);
+    let ok = true, error = null;
     try { await _deps.call(origin, 'ask.mark', { askId: a.askId, phase: 'expired', code: a.code, hub: _deps.hostName(), why }, { timeoutMs: PULL_TIMEOUT_MS }); }
-    catch (e) { _deps.log('ask.mark expired', origin, e.message); }
+    catch (e) { ok = false; error = clip(e.message, 300); _deps.log('ask.mark expired', origin, e.message); }
+    // The hub's own asks: ask.mark here recorded it. Another host's: recorded here, and retried while it fails.
+    if (origin !== 'local') await _deps.append({ type: 'ask', phase: 'delivered', askId: a.askId, ok, kind: 'expired', to: { host: origin, sessionId: a.sessionId ?? null }, ...(error ? { error } : {}) });
   }
 
   /** Record a verified answer, deliver it, rewrite the message it answered, and return what to tell the owner. */
@@ -373,7 +407,7 @@ export class Router {
     // start resumes only after a stop (SMS START, the carrier's word for it); otherwise it is hello.
     const c = c0.command === 'start' ? (pauseState(st.controls, now).stopped ? { command: 'resume' } : { command: 'help' }) : c0;
     if (c.command === 'help') {
-      await this.ack(msg.channel, `Drover texts you agents' questions here, each with a code like K7. Answer with the code and a letter (K7 b, or 7b), any words (K7 after lunch), several at once (1a 2b 3 yes), or a button. Also: status, pause asks 2h, stop, resume.${open.length ? ` ${open.length} open now: reply status.` : ''}`);
+      await this.ack(msg.channel, `Drover texts you agents' questions here, each with a code like K7. Answer with the code and a letter (K7 b, or 7b), any words (K7 after lunch), several at once (1a 2b 3 yes), or a button. Also: status, pause asks 2h, stop, resume${msg.channel === 'sms' ? ' (after STOP on SMS: START)' : ''}.${open.length ? ` ${open.length} open now: reply status.` : ''}`);
       return { command: 'help' };
     }
     if (c.command === 'status') {
@@ -383,8 +417,12 @@ export class Router {
       return { command: 'status' };
     }
     const until = c.command === 'pause' ? new Date(now + c.ms).toISOString() : null;
+    if (msg.channel === 'sms' && c.command === 'stop') this.disabled.set('sms', 'the owner texted STOP to the SMS number: Twilio sends nothing until they text START');
+    if (msg.channel === 'sms' && c.command === 'resume' && /^(start|unstop)$/i.test(String(msg.text).trim())) this.disabled.delete('sms');
     await _deps.append({ type: 'ask', phase: 'control', command: c.command, ...(c.ms ? { ms: c.ms, until } : {}), source: sourceFor(msg.channel), sender: msg.sender, providerMessageId: msg.providerMessageId ?? null });
-    const text = c.command === 'stop' ? `Stopped: no texts until you reply resume. ${open.length} ask${open.length === 1 ? '' : 's'} stay open.`
+    // Over SMS, STOP is also the carrier's opt-out: Twilio confirms it and blocks our texts until START.
+    if (msg.channel === 'sms' && c.command === 'stop') return { command: 'stop' };
+    const text = c.command === 'stop' ? `Stopped: no texts until you reply resume (on SMS: START). ${open.length} ask${open.length === 1 ? '' : 's'} stay open.`
       : c.command === 'resume' ? `Resumed. ${open.length} open ask${open.length === 1 ? '' : 's'}.`
       : `Paused normal asks until ${until.slice(11, 16)}Z (urgent ones still come).`;
     await this.ack(msg.channel, text);

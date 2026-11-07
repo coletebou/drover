@@ -19,7 +19,9 @@ export const URGENCY = ['normal', 'urgent'];
 export const SEND_KINDS = ['ask', 'batch', 'reminder', 'escalation', 'ack', 'notice'];
 export const CONTROL = ['pause', 'resume', 'stop'];
 export const TERMINAL = new Set(['answered', 'cancelled', 'expired']);
-export const LIMITS = Object.freeze({ questions: 9, options: 9, question: 600, option: 80, raw: 2000, answer: 2000 });
+export const LIMITS = Object.freeze({ questions: 9, options: 9, question: 600, option: 80, raw: 2000, answer: 2000, total: 1200 });
+// What one text may hold on each channel (Twilio refuses a body over 1600 characters, Telegram a message over 4096).
+export const TEXT_LIMITS = Object.freeze({ sms: 1600, telegram: 4096, imessage: 4000 });
 
 // Codes are one letter and a number: K7. The letter rotates so a code is not reused for 24 asks; the number is the
 // smallest one no open ask holds and no ask closed in the last REUSE_MS held, so "7b" (number only) cannot land on a
@@ -56,6 +58,11 @@ export function normalizeQuestions({ question, options, questions } = {}) {
     if (opts.some((o) => o.length > LIMITS.option)) throw new Error(`an option is over ${LIMITS.option} characters`);
     if (opts.length === 1) throw new Error(`question ${i + 1} has one option; give two or more, or none for a free answer`);
     return { question: text, options: opts };
+  }).map((q, _i, all) => {
+    // One ask must fit one text message, the smallest channel's (SMS), with its header and reply line.
+    const total = all.reduce((n, x) => n + x.question.length + x.options.reduce((m, o) => m + o.length + 4, 0), 0);
+    if (total > LIMITS.total) throw new Error(`too long for one text message: ${total} characters across questions and options, at most ${LIMITS.total}`);
+    return q;
   });
 }
 

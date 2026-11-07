@@ -58,7 +58,10 @@ function fakeTwilio(req, res) {
   req.on('end', () => {
     const json = (code, o) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)); };
     if (req.headers.authorization !== `Basic ${Buffer.from(`${SID}:fake-auth-token`).toString('base64')}`) return json(401, { code: 20003, message: 'Authenticate' });
-    if (req.method === 'POST' && req.url === `/2010-04-01/Accounts/${SID}/Messages.json`) { const f = Object.fromEntries(new URLSearchParams(body)); tw.sends.push(f); return json(201, { sid: `SM${String(tw.sends.length).padStart(32, '0')}` }); }
+    if (req.method === 'POST' && req.url === `/2010-04-01/Accounts/${SID}/Messages.json`) {
+      if (tw.optedOut) return json(400, { code: 21610, message: 'Attempt to send to unsubscribed recipient' });
+      const f = Object.fromEntries(new URLSearchParams(body)); tw.sends.push(f); return json(201, { sid: `SM${String(tw.sends.length).padStart(32, '0')}` });
+    }
     if (req.method === 'GET' && req.url.startsWith(`/2010-04-01/Accounts/${SID}/Messages.json?`)) {
       const q = new URL(req.url, 'http://x').searchParams; tw.queries.push(q);
       return json(200, { messages: tw.log.filter((m) => m.from === q.get('From') && m.to === q.get('To')).slice(0, Number(q.get('PageSize') ?? 50)) });
@@ -363,6 +366,60 @@ describe('the owner\'s commands, quiet hours and the rate limit', () => {
   });
 });
 
+describe('limits: one text per send counted, batches split to fit, one ask fits one text', () => {
+  const say = (text, id) => tgUpdate({ update_id: id, message: { message_id: id, from: { id: Number(OWNER_CHAT) }, chat: { id: Number(OWNER_CHAT), type: 'private' }, text } }, secret);
+  test('an ask too long for one SMS is refused at once', async () => {
+    await assert.rejects(ask({ questions: [{ question: 'x'.repeat(600) }, { question: 'y'.repeat(600) }, { question: 'z'.repeat(100) }] }), /too long for one text message/);
+  });
+  test('held asks released together split into texts within the SMS limit, each counted against the rate', async () => {
+    await say('pause asks 1h', 701); await settle();
+    const made = [];
+    for (let i = 0; i < 4; i++) made.push(await ask({ question: `${'Long question '.repeat(30)}${i}?`, channels: ['sms'] }));
+    const before = tw.sends.length;
+    await say('resume', 702); await settle(); await router.tick();
+    const out = tw.sends.slice(before).filter((m) => m.Body.startsWith('Drover'));
+    assert.ok(out.length >= 2, `split into ${out.length}`);
+    assert.ok(out.every((m) => m.Body.length <= 1600), out.map((m) => m.Body.length).join(','));
+    for (const a of made) { const code = (await dispatch('ask.get', { askId: a.askId })).code; assert.ok(out.some((m) => m.Body.includes(`${code} - `)), `${code} went out`); }
+  });
+  test('two texts due in one tick and one left under the limit: one goes, one waits', async () => {
+    await say('pause asks 1h', 703); await settle();
+    const a = await ask({ question: 'Rate one?', channels: ['telegram'] });
+    const b = await ask({ question: 'Rate two?', channels: ['sms'] });
+    const { rateState } = await import('../core/ask/policy.js');
+    const st = await router.state();
+    process.env.DROVER_ASK_RATE = String(rateState(st.sends, Date.now(), { ratePerHour: 1e9 }).used + 1);
+    try {
+      await say('resume', 704); await settle();
+      await new Promise((r) => setTimeout(r, 60)); await router.exclusive(() => {});   // resume runs its own tick
+      await router.tick();
+      const texted = await Promise.all([a, b].map(async (x) => (await dispatch('ask.get', { askId: x.askId })).texted.length));
+      assert.deepEqual(texted.sort(), [0, 1], 'one went, one waits for the rate limit');
+    } finally { process.env.DROVER_ASK_RATE = '120'; }
+  });
+});
+
+describe('the owner\'s carrier opt-out on SMS', () => {
+  test('STOP by SMS: no reply of ours (Twilio confirms it); a 21610 takes SMS out of rotation; START brings it back', async () => {
+    const before = tw.sends.length;
+    await smsReply({ AccountSid: SID, From: OWNER_PHONE, To: FROM, Body: 'STOP', MessageSid: 'SMstop1' });
+    await settle();
+    assert.equal(tw.sends.length, before, 'Twilio answers a STOP itself');
+    assert.match(router.disabled.get('sms'), /texted STOP/);
+    await smsReply({ AccountSid: SID, From: OWNER_PHONE, To: FROM, Body: 'START', MessageSid: 'SMstart1' });
+    await settle();
+    assert.equal(router.disabled.has('sms'), false);
+    assert.match(tw.sends.at(-1).Body, /^Resumed/);
+    // Later Twilio refuses again (an opt-out we did not see): the send fails with 21610, SMS goes out of rotation, the
+    // ask falls over to Telegram.
+    tw.optedOut = true;
+    const r = await ask({ question: 'Opted out?', channels: ['sms', 'telegram'] });
+    assert.match(r.note, /texted as .* on telegram/);
+    assert.match(router.disabled.get('sms'), /START/);
+    tw.optedOut = false; router.disabled.delete('sms');
+  });
+});
+
 describe('expiry and withdrawal', () => {
   test('an ask nobody answers expires: its message says so and the session hears it', async () => {
     const r = await ask({ question: 'Will anyone answer?', options: ['yes', 'no'], ttlMinutes: 2 });
@@ -418,6 +475,30 @@ describe('asks from another host', () => {
       // A second tick does not take it again.
       assert.deepEqual((await router.tick()).taken, []);
     } finally { routerDeps.askHosts = realHosts; routerDeps.call = realCall; }
+  });
+  test('an expiry notice the asking host could not take is retried until it lands', async () => {
+    const remote = { askId: '0199-remote-exp', status: 'open', origin: 'box-d', sessionId: 'rs3', sessionName: 'w3', questions: [{ question: 'Expire me?', options: [] }], urgency: 'normal', expiresAt: new Date(Date.now() + 120_000).toISOString(), createdAt: new Date().toISOString() };
+    let up = false; const marks = [];
+    const realHosts = routerDeps.askHosts, realCall = routerDeps.call, realNow = routerDeps.now;
+    routerDeps.askHosts = async () => ['box-d'];
+    routerDeps.call = async (host, op, args, opts) => {
+      if (host !== 'box-d') return realCall(host, op, args, opts);
+      if (op === 'ask.list') return { asks: marks.length ? [] : [remote] };
+      if (op === 'ask.mark' && args.phase === 'expired') { if (!up) throw new Error('ssh: connect to host box-d: Connection refused'); marks.push(args); return { ok: true }; }
+      return { ok: true };
+    };
+    try {
+      await router.tick();
+      routerDeps.now = () => Date.now() + 3 * 60_000;
+      assert.equal((await router.tick()).expired.length, 1);
+      up = true;
+      routerDeps.now = () => Date.now() + 6 * 60_000;
+      await router.tick();
+      assert.equal(marks.length, 1, 'retried once the host answered');
+      routerDeps.now = () => Date.now() + 60 * 60_000;
+      await router.tick();
+      assert.equal(marks.length, 1, 'and only once');
+    } finally { routerDeps.askHosts = realHosts; routerDeps.call = realCall; routerDeps.now = realNow; }
   });
   test('a host that cannot be reached keeps the answer; the next ticks retry the delivery', async () => {
     const remote = { askId: '0199-remote-2', status: 'open', origin: 'box-c', sessionId: 'rs2', sessionName: 'w2', questions: [{ question: 'Retry me?', options: ['yes', 'no'] }], urgency: 'normal', createdAt: new Date().toISOString() };
