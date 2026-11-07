@@ -222,6 +222,13 @@ accepting the dialog would (`core/trust.js`), and the agent starts at its prompt
 `drover_launch`) leaves the config alone. Headless launches skip it: `claude -p` never shows the dialog, and a
 headless Codex thread runs on the app-server.
 
+A Claude Code config that never finished first-run onboarding (a new host, a fresh `CLAUDE_CONFIG_DIR`) shows two
+more screens before that dialog, a theme picker and a security notice, and on 2026-11-07 the first fan-out on a new
+Linux host sat at them. A tmux Claude launch therefore also sets top-level `hasCompletedOnboarding: true`, the key
+finishing onboarding writes (`onboardClaude`; in 2.1.319 that key alone skips both screens), under the same lock and
+with the same rules as trust: nothing else changes, a file that does not parse is left as it is. The result and the
+launch event carry `onboarding` only when it wrote something. `trust: false` skips this too.
+
 | engine | written | key |
 |---|---|---|
 | claude | `projects[<key>].hasTrustDialogAccepted = true` in `~/.claude.json` (`$CLAUDE_CONFIG_DIR/.claude.json`, or the legacy `.config.json` while in use) | the folder's real path (Claude Code keys its physical cwd: a symlinked cwd counts as its target), NFC; inside git the checkout root, and for a linked worktree its main checkout, plus the worktree's own root |

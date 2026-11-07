@@ -56,6 +56,34 @@ const modeOf = async (f) => (await stat(f)).mode & 0o777;
 
 after(async () => { codex.sharedClient().stop(); remote.stopAll(); await rm(T, { recursive: true, force: true }); });   // nothing may keep this process alive
 
+describe('Claude Code: first-run onboarding, ~/.claude.json hasCompletedOnboarding', () => {
+  test('the key is added; every other key and the file mode stay; a second call rewrites nothing', async () => {
+    const original = { numStartups: 1, projects: { '/x': { hasTrustDialogAccepted: true } }, theme: 'dark' };
+    await writeFile(CLAUDE, JSON.stringify(original, null, 2), { mode: 0o640 }); await chmod(CLAUDE, 0o640);
+    assert.deepEqual(await trust.onboardClaude({ env: NO_ENV }), { file: '~/.claude.json', changed: true });
+    assert.equal(await readFile(CLAUDE, 'utf8'), JSON.stringify({ ...original, hasCompletedOnboarding: true }, null, 2));
+    assert.equal(await modeOf(CLAUDE), 0o640);
+    assert.ok(!existsSync(`${CLAUDE}.lock`), 'the lock is released');
+    const s1 = await stat(CLAUDE);
+    assert.deepEqual(await trust.onboardClaude({ env: NO_ENV }), { file: '~/.claude.json', changed: false });
+    const s2 = await stat(CLAUDE);
+    assert.deepEqual([s2.ino, s2.mtimeMs], [s1.ino, s1.mtimeMs], 'already onboarded: the file is not touched');
+  });
+
+  test('a missing file is created 0600 with only the key; one that does not parse, or is not an object, is left byte for byte', async () => {
+    await rm(CLAUDE, { force: true });
+    assert.equal((await trust.onboardClaude({ env: NO_ENV })).changed, true);
+    assert.deepEqual(await readJson(CLAUDE), { hasCompletedOnboarding: true });
+    assert.equal(await modeOf(CLAUDE), 0o600);
+    for (const text of ['{"projects": ', '[]', 'null']) {
+      await writeFile(CLAUDE, text);
+      const r = await trust.onboardClaude({ env: NO_ENV });
+      assert.match(r.skipped, /does not parse|not a JSON object/, text);
+      assert.equal(await readFile(CLAUDE, 'utf8'), text, 'never truncated or rewritten');
+    }
+  });
+});
+
 describe('Claude Code: ~/.claude.json projects[<key>].hasTrustDialogAccepted', () => {
   test('the key is added; every other key, project and the file mode stay; the layout is Claude Code\'s own', async () => {
     const dir = await freshDir();
@@ -399,7 +427,10 @@ launchMod._deps.agentPath = async () => process.env.PATH;
 const lastEvent = async () => JSON.parse((await readFile(process.env.DROVER_EVENTS, 'utf8')).trim().split('\n').at(-1));
 
 describe('launch.start in tmux', () => {
-  before(() => { launchMod._deps.trustFolder = (engine, dir, opts) => trust.trustFolder(engine, dir, { ...opts, env: NO_ENV }); });
+  before(() => {
+    launchMod._deps.trustFolder = (engine, dir, opts) => trust.trustFolder(engine, dir, { ...opts, env: NO_ENV });
+    launchMod._deps.onboardClaude = (opts) => trust.onboardClaude({ ...opts, env: NO_ENV });
+  });
 
   test('trusts cwd before the window opens; the result and the launch event say what was done', async () => {
     const dir = await freshDir();
@@ -410,6 +441,17 @@ describe('launch.start in tmux', () => {
     assert.deepEqual(JSON.parse(windows.at(-1).configThen).projects[dir], { hasTrustDialogAccepted: true }, 'on disk before the agent starts');
     const ev = await lastEvent();
     assert.equal(ev.type, 'launch'); assert.deepEqual(ev.trust, want); assert.equal(ev.id, r.event);
+  });
+
+  test('a config that never finished onboarding is finished before the window opens; the result says so only when it wrote', async () => {
+    const dir = await freshDir();
+    await writeFile(CLAUDE, '{}');
+    const r = await launchMod.launch({ engine: 'claude', mode: 'tmux', cwd: dir, credential: 'none', name: 't-onb' }, { actor: 't' });
+    assert.deepEqual(r.onboarding, { file: '~/.claude.json', changed: true });
+    assert.equal(JSON.parse(windows.at(-1).configThen).hasCompletedOnboarding, true, 'on disk before the agent starts');
+    assert.deepEqual((await lastEvent()).onboarding, r.onboarding);
+    const again = await launchMod.launch({ engine: 'claude', mode: 'tmux', cwd: dir, credential: 'none', name: 't-onb2' }, { actor: 't' });
+    assert.ok(!('onboarding' in again), 'nothing to do: nothing reported');
   });
 
   test('trust: false (or "false") leaves the config alone and says nothing about it', async () => {
