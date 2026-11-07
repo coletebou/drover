@@ -30,6 +30,7 @@ import * as botAuth from './bots/oauth.js';
 import * as native from './native.js';
 import { ops as settingsOps } from './settings.js';
 import { ops as notifyOps, notifier } from './notify.js';
+import { ops as askOps, _deps as askDeps } from './ask/ops.js';
 import { ops as uploadOps } from './uploads.js';
 import { ops as fileOps } from './files.js';
 import { ops as fileWaitOps, waitLimits } from './filewait.js';
@@ -540,6 +541,8 @@ export const local = {
     // Approvals the same: a request is a bot's (drover_request_approval), a decision the owner's (a main-token route), and
     // a message that carries one is how the decision reaches the bot. An agent's append must pass for neither.
     if (event && typeof event === 'object' && (event.type === 'approval' || Object.hasOwn(event, 'approval'))) throw new Error('refused: approval events are written by Drover itself (a bot asks with drover_request_approval; the owner answers in Drover)');
+    // Asks the same: an answer counts as the owner's word only when a channel verified it (core/ask/router.js).
+    if (event?.type === 'ask') throw new Error('refused: ask events are written by Drover itself (ask.create asks; only a verified reply on a channel answers)');
     // Who, when and where are the op's to stamp: a body that named them could pass as another actor (the owner, a bot)
     // or sort itself before an earlier event.
     const { id: _id, ts: _ts, host: _host, actor: _actor, ...body } = event && typeof event === 'object' ? event : {};
@@ -1202,6 +1205,7 @@ const INVALIDATES = {
   'openclaw.sweep': ['openclaw.', 'events.'],
   'uploads.put': ['uploads.', 'events.'], 'uploads.remove': ['uploads.', 'events.'], 'files.write': ['files.', 'events.'],
   'docker.restart': ['docker.'], 'docker.start': ['docker.'], 'docker.exec': ['docker.'], 'docker.run': ['docker.'],
+  'ask.create': ['events.', 'notify.'], 'ask.cancel': ['events.'], 'ask.deliver': ['events.'], 'ask.mark': ['events.'],
 };
 
 // Keys whose value is a secret, the redactor's list ("credentials" plural only, so a launch's credential pool id stays).
@@ -1296,7 +1300,11 @@ export async function dispatchCached(op, args = {}) {
   return { result: r.value, cache: r.meta };
 }
 
-Object.assign(local, survey.ops, credentialOps, settingsOps, notifyOps, uploadOps, fileOps, fileWaitOps, openclaw.consoleOps, native.ops, searchOps, docker.ops);
+Object.assign(local, survey.ops, credentialOps, settingsOps, notifyOps, uploadOps, fileOps, fileWaitOps, openclaw.consoleOps, native.ops, searchOps, docker.ops, askOps);
+// Asks (core/ask): this host's ops, a peer's over its ssh rpc, and the alerts every client shows.
+askDeps.dispatch = (op, args) => dispatchLocal(op, args);
+askDeps.call = (host, op, args, opts) => (!host || host === hosts.LOCAL ? dispatchLocal(op, args) : callOn(host, op, args, dispatchLocal, opts));
+askDeps.notify = async (alert) => (await notifier.emit([alert]))[0] ?? null;
 survey._deps.dispatch = (op, args) => dispatch(op, args);
 native._deps.dispatch = (op, args) => dispatch(op, args);
 native._deps.localNames = () => new Set([hosts.localShortName(), hostname().split('.')[0]]);

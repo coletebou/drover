@@ -1,0 +1,236 @@
+// Asks, the pure parts: questions, the event's rules, the fold (core/ask/model.js), the reply grammar
+// (core/ask/parse.js) and when the hub may text (core/ask/policy.js). No I/O.
+import { test, describe } from 'node:test';
+import assert from 'node:assert/strict';
+import { normalizeQuestions, validateAskEvent, foldAsks, nextCode, askText, batchText, deliveryText, forChannel, REUSE_MS } from '../core/ask/model.js';
+import { parseReply, parseCommand, DEFAULT_PAUSE_MS } from '../core/ask/parse.js';
+import { parseWindow, quietState, rateState, pauseState, mayText, channelOrder, reminderAt, readConfig, localMinutes } from '../core/ask/policy.js';
+
+const T0 = Date.parse('2026-11-07T15:00:00Z');   // 10:00 in New York (EST)
+const iso = (ms) => new Date(ms).toISOString();
+const ask = (over = {}) => ({ askId: over.askId ?? 'a1', code: 'K7', status: 'open', closedAt: null, questions: [{ question: 'Ship it?', options: ['yes', 'no'] }], ...over });
+
+describe('questions', () => {
+  test('one question, options as a list or a comma string', () => {
+    assert.deepEqual(normalizeQuestions({ question: ' Ship? ', options: ['yes', ' no '] }), [{ question: 'Ship?', options: ['yes', 'no'] }]);
+    assert.deepEqual(normalizeQuestions({ question: 'Ship?', options: 'a, b' }), [{ question: 'Ship?', options: ['a', 'b'] }]);
+    assert.deepEqual(normalizeQuestions({ question: 'Why?' }), [{ question: 'Why?', options: [] }]);
+  });
+  test('several questions, strings or objects', () => {
+    assert.deepEqual(normalizeQuestions({ questions: ['One?', { question: 'Two?', options: ['x', 'y'] }] }), [{ question: 'One?', options: [] }, { question: 'Two?', options: ['x', 'y'] }]);
+  });
+  test('bad input is refused with a reason', () => {
+    assert.throws(() => normalizeQuestions({}), /non-empty string/);
+    assert.throws(() => normalizeQuestions({ question: 'x', questions: ['y'] }), /not both/);
+    assert.throws(() => normalizeQuestions({ question: 'x', options: ['only'] }), /one option/);
+    assert.throws(() => normalizeQuestions({ questions: Array(10).fill('q') }), /at most 9/);
+    assert.throws(() => normalizeQuestions({ question: 'x'.repeat(601) }), /over 600/);
+  });
+});
+
+describe('the ask event', () => {
+  test('each phase has its rules', () => {
+    assert.ok(validateAskEvent({ type: 'ask', phase: 'created', askId: 'a', questions: [{ question: 'q', options: [] }] }));
+    assert.throws(() => validateAskEvent({ type: 'ask', phase: 'created', questions: [] }), /askId/);
+    assert.throws(() => validateAskEvent({ type: 'ask', phase: 'routed', askId: 'a', code: 'I1' }), /code/);
+    assert.throws(() => validateAskEvent({ type: 'ask', phase: 'sent', askId: 'a', channel: 'fax', kind: 'ask' }), /channel/);
+    assert.throws(() => validateAskEvent({ type: 'ask', phase: 'nope', askId: 'a' }), /phase/);
+  });
+  test('an answer is verified by definition: untrusted must be false and the source names a channel', () => {
+    const ok = { type: 'ask', phase: 'answered', askId: 'a', answers: [{ q: 0, option: 1, text: '' }], source: 'cole:telegram', untrusted: false };
+    assert.ok(validateAskEvent(ok));
+    assert.throws(() => validateAskEvent({ ...ok, untrusted: true }), /phase inbound/);
+    assert.throws(() => validateAskEvent({ ...ok, untrusted: undefined }), /phase inbound/);
+    assert.throws(() => validateAskEvent({ ...ok, source: 'lux' }), /source/);
+  });
+});
+
+describe('the fold', () => {
+  const created = { id: 'e1', ts: iso(T0), type: 'ask', phase: 'created', askId: 'a1', origin: 'forge', sessionId: 's1', sessionName: 'worker', questions: [{ question: 'Ship?', options: ['yes', 'no'] }], urgency: 'normal' };
+  const routed = { id: 'e2', ts: iso(T0 + 1000), type: 'ask', phase: 'routed', askId: 'a1', code: 'K7', hub: 'mini', ask: { origin: 'forge', sessionId: 's1', questions: created.questions, urgency: 'normal', createdAt: created.ts } };
+  const answered = (id, ts, msg, option) => ({ id, ts: iso(ts), type: 'ask', phase: 'answered', askId: 'a1', answers: [{ q: 0, option, text: '' }], source: 'cole:sms', providerMessageId: msg, untrusted: false });
+  test('the hub alone (routed carries the ask) and both files merged give the same ask', () => {
+    const hubOnly = foldAsks([routed]).asks.get('a1');
+    const merged = foldAsks([created, routed]).asks.get('a1');
+    for (const a of [hubOnly, merged]) {
+      assert.equal(a.code, 'K7'); assert.equal(a.origin, 'forge'); assert.equal(a.sessionId, 's1'); assert.equal(a.status, 'open'); assert.equal(a.questions[0].question, 'Ship?');
+    }
+  });
+  test('the first answer wins, later ones are follow-ups, and one provider message counts once', () => {
+    const a = foldAsks([created, routed, answered('e3', T0 + 5000, 'SM1', 1), answered('e3b', T0 + 5001, 'SM1', 1), answered('e4', T0 + 9000, 'SM2', 0)]).asks.get('a1');
+    assert.equal(a.status, 'answered');
+    assert.equal(a.answers.length, 1); assert.equal(a.answers[0].answers[0].option, 1);
+    assert.equal(a.followUps.length, 1);
+  });
+  test('a cancel after the answer does not undo it; an answer after a cancel is kept as a follow-up', () => {
+    const cancel = (ts) => ({ id: `c${ts}`, ts: iso(ts), type: 'ask', phase: 'cancelled', askId: 'a1' });
+    assert.equal(foldAsks([created, answered('e3', T0 + 5000, 'SM1', 0), cancel(T0 + 6000)]).asks.get('a1').status, 'answered');
+    const b = foldAsks([created, cancel(T0 + 2000), answered('e3', T0 + 5000, 'SM1', 0)]).asks.get('a1');
+    assert.equal(b.status, 'cancelled'); assert.equal(b.followUps.length, 1);
+  });
+  test('sends attach to every ask of a batch; an ask known only from sends is not an ask', () => {
+    const r = foldAsks([created, routed, { id: 's', ts: iso(T0 + 2000), type: 'ask', phase: 'sent', askIds: ['a1', 'ghost'], channel: 'telegram', kind: 'batch', ok: true }]);
+    assert.equal(r.asks.get('a1').sends.length, 1);
+    assert.equal(r.asks.has('ghost'), false);
+    assert.equal(r.sends.length, 1);
+  });
+});
+
+describe('codes', () => {
+  const at = (code, status = 'open', closedAgoMs = null, routedAt = iso(T0)) => ({ code, status, routedAt, closedAt: closedAgoMs === null ? null : iso(T0 - closedAgoMs) });
+  test('the smallest free number and the next letter', () => {
+    assert.equal(nextCode([], T0), 'A1');
+    assert.equal(nextCode([at('A1'), { ...at('B2'), routedAt: iso(T0 + 1) }], T0), 'C3');
+  });
+  test('a number closed a moment ago is not reused; one closed long ago is', () => {
+    assert.equal(nextCode([at('A1', 'answered', 60_000)], T0), 'B2');
+    assert.equal(nextCode([at('A1', 'answered', REUSE_MS + 1)], T0), 'B1');
+  });
+  test('letters skip I and O and wrap', () => {
+    assert.equal(nextCode([at('H1', 'answered', REUSE_MS + 1)], T0), 'J1');
+    assert.equal(nextCode([at('N1', 'answered', REUSE_MS + 1)], T0), 'P1');
+    assert.equal(nextCode([at('Z1', 'answered', REUSE_MS + 1)], T0), 'A1');
+  });
+});
+
+describe('texts', () => {
+  const a = { askId: 'x', code: 'K7', origin: 'hz-forge', sessionName: 'drover-ask', urgency: 'urgent', questions: [{ question: 'Ship the “SMS” adapter — today?', options: ['yes', 'no'] }] };
+  test('an ask names its code, who asks and the options', () => {
+    const t = askText(a);
+    assert.match(t, /^Drover ask K7 · drover-ask on hz-forge \(urgent\)\n/);
+    assert.match(t, /a\) yes {2}b\) no/);
+    assert.match(t, /Reply: K7 a, tap a button, or any text/);
+  });
+  test('SMS gets plain ASCII (one other character makes every segment UCS-2)', () => {
+    const t = askText(a, { channel: 'sms' });
+    assert.equal(/[^\x09\x0a\x0d\x20-\x7e]/.test(t), false, t);
+    assert.match(t, /"SMS" adapter - today\?/);
+    assert.equal(forChannel('→ · …', 'sms'), '-> - ...');
+  });
+  test('several questions are numbered; several asks are listed with their codes', () => {
+    const m = askText({ ...a, urgency: 'normal', questions: [{ question: 'One?', options: ['x', 'y'] }, { question: 'Two?', options: [] }] });
+    assert.match(m, /1\) One\? {2}a\) x {2}b\) y\n2\) Two\?/);
+    assert.match(m, /Reply like: K7 1b 2 yes/);
+    const b = batchText([a, { ...a, askId: 'y', code: 'M8', sessionName: 'tg', urgency: 'normal', questions: [{ question: 'Pick?', options: [] }] }]);
+    assert.match(b, /^Drover: 2 asks\nK7 · drover-ask on hz-forge \(urgent\): Ship/);
+    assert.match(b, /\nM8 · tg on hz-forge: Pick\?/);
+  });
+  test('what the session receives says who answered, how, and how to check', () => {
+    const t = deliveryText(a, { channel: 'telegram', source: 'cole:telegram', answers: [{ q: 0, option: 1, text: '' }] }, { ownerName: 'Cole' });
+    assert.match(t, /^\[Cole via telegram, verified\] K7 → b \(no\)\nQuestion: Ship/);
+    assert.match(t, /check it with drover_ask_get/);
+    assert.match(deliveryText(a, { channel: 'sms', answers: [{ q: 0, option: null, text: 'after lunch' }] }, { ownerName: 'Cole', followUp: true }), /^\[Cole via sms, verified, follow-up\] K7 → "after lunch"/);
+  });
+});
+
+describe('the reply grammar', () => {
+  const k7 = ask();
+  const m8 = ask({ askId: 'a2', code: 'M8', questions: [{ question: 'Name?', options: [] }] });
+  const b3 = ask({ askId: 'a3', code: 'B3', questions: [{ question: 'One?', options: ['x', 'y'] }, { question: 'Two?', options: ['p', 'q', 'r'] }, { question: 'Three?', options: [] }] });
+  const one = (r) => r.answers.map((x) => [x.code, x.answers.map((y) => [y.q, y.option, y.text])]);
+  test('code and option, glued or apart, any case', () => {
+    for (const s of ['K7 b', 'k7b', 'K7: b', 'k7 B']) assert.deepEqual(one(parseReply(s, { asks: [k7, m8] })), [['K7', [[0, 1, '']]]], s);
+  });
+  test('by number alone, since numbers are unique among open asks', () => {
+    assert.deepEqual(one(parseReply('7b', { asks: [k7, m8] })), [['K7', [[0, 1, '']]]]);
+    assert.deepEqual(one(parseReply('7 b', { asks: [k7, m8] })), [['K7', [[0, 1, '']]]]);
+  });
+  test('a bare answer goes to the only open ask; with several open it is ambiguous', () => {
+    assert.deepEqual(one(parseReply('b', { asks: [k7] })), [['K7', [[0, 1, '']]]]);
+    assert.deepEqual(one(parseReply('No', { asks: [k7] })), [['K7', [[0, 1, '']]]]);   // the label picks the option
+    const r = parseReply('yes', { asks: [k7, m8] });
+    assert.deepEqual(r.answers, []); assert.deepEqual(r.ambiguous.codes, ['K7', 'M8']);
+  });
+  test('free text, with or without a code, and an option with words after it', () => {
+    assert.deepEqual(one(parseReply('M8 call it Drover', { asks: [k7, m8] })), [['M8', [[0, null, 'call it Drover']]]]);
+    assert.deepEqual(one(parseReply('K7 b but only after lunch', { asks: [k7, m8] })), [['K7', [[0, 1, 'but only after lunch']]]]);
+    assert.deepEqual(one(parseReply('ship it after lunch', { asks: [m8] })), [['M8', [[0, null, 'ship it after lunch']]]]);
+  });
+  test('several asks in one reply', () => {
+    assert.deepEqual(one(parseReply('K7 b M8 Drover', { asks: [k7, m8] })), [['K7', [[0, 1, '']]], ['M8', [[0, null, 'Drover']]]]);
+    assert.deepEqual(one(parseReply('7a, 8 Drover', { asks: [k7, m8] })), [['K7', [[0, 0, '']]], ['M8', [[0, null, 'Drover']]]]);
+  });
+  test('a multi-question ask: 1a 2b 3 yes when it is the only open ask or replied to; with its code otherwise', () => {
+    assert.deepEqual(one(parseReply('1a 2c 3 yes please', { asks: [b3] })), [['B3', [[0, 0, ''], [1, 2, ''], [2, null, 'yes please']]]]);
+    assert.deepEqual(one(parseReply('1a 2c', { asks: [k7, b3], target: 'a3' })), [['B3', [[0, 0, ''], [1, 2, '']]]]);
+    assert.deepEqual(one(parseReply('B3 1b 3 later K7 a', { asks: [k7, b3] })), [['B3', [[0, 1, ''], [2, null, 'later']]], ['K7', [[0, 0, '']]]]);
+  });
+  test('a letter past the options is text; a second letter is text', () => {
+    assert.deepEqual(one(parseReply('K7 c', { asks: [k7, m8] })), [['K7', [[0, null, 'c']]]]);
+    assert.deepEqual(one(parseReply('K7 a b', { asks: [k7, m8] })), [['K7', [[0, 0, 'b']]]]);
+  });
+  test('an answer to an ask closed a moment ago is marked closed (a follow-up), never moved to a newer ask', () => {
+    const old = ask({ status: 'answered', closedAt: iso(T0) });
+    const r = parseReply('K7 a', { asks: [old, m8] });
+    assert.deepEqual(one(r), [['K7', [[0, 0, '']]]]); assert.equal(r.answers[0].closed, true);
+  });
+  test('nothing open: unmatched', () => {
+    assert.equal(parseReply('hello', { asks: [] }).unmatched, true);
+    assert.equal(parseReply('', { asks: [k7] }).unmatched, true);
+  });
+  test('commands', () => {
+    assert.deepEqual(parseCommand('STOP'), { command: 'stop' });
+    assert.deepEqual(parseCommand('resume'), { command: 'resume' });
+    assert.deepEqual(parseCommand('pause asks 2h'), { command: 'pause', ms: 2 * 3_600_000 });
+    assert.deepEqual(parseCommand('pause for 30 min'), { command: 'pause', ms: 30 * 60_000 });
+    assert.deepEqual(parseCommand('pause'), { command: 'pause', ms: DEFAULT_PAUSE_MS });
+    assert.deepEqual(parseCommand('status'), { command: 'status' });
+    assert.deepEqual(parseCommand('/stop'), { command: 'stop' });
+    assert.deepEqual(parseCommand('/status@drover_test_bot'), { command: 'status' });
+    assert.deepEqual(parseCommand('/start'), { command: 'start' });
+    assert.deepEqual(parseCommand('help'), { command: 'help' });
+    assert.equal(parseCommand('pause 3 fortnights'), null);
+    assert.equal(parseCommand('stop the deploy'), null);
+    assert.deepEqual(parseReply('Stop', { asks: [k7] }).command, { command: 'stop' });
+  });
+});
+
+describe('policy', () => {
+  const cfg = { ...readConfig({}), quiet: parseWindow('22:00-08:00'), tz: 'America/New_York', ratePerHour: 2 };
+  test('settings: defaults, and what the environment says', () => {
+    const d = readConfig({});
+    assert.deepEqual(d.order, ['telegram', 'imessage', 'sms']); assert.equal(d.hub, null); assert.equal(d.ratePerHour, 6);
+    const c = readConfig({ DROVER_ASK_HUB: 'mini', DROVER_ASK_CHANNELS: 'sms, fax,telegram', DROVER_ASK_QUIET: 'off', DROVER_ASK_TZ: 'Not/AZone', DROVER_ASK_RATE: '0' });
+    assert.equal(c.hub, 'mini'); assert.deepEqual(c.order, ['sms', 'telegram']); assert.equal(c.quiet, null); assert.equal(c.tz, 'America/New_York'); assert.equal(c.ratePerHour, 6);
+  });
+  test('quiet hours in the owner\'s zone, across midnight', () => {
+    assert.equal(localMinutes(T0, 'America/New_York'), 600);
+    assert.deepEqual(quietState(T0, cfg), { quiet: false, endsAt: null });
+    const late = Date.parse('2026-11-08T03:30:00Z');   // 22:30 EST
+    const q = quietState(late, cfg);
+    assert.equal(q.quiet, true); assert.equal(iso(q.endsAt), '2026-11-08T13:00:00.000Z');   // 08:00 EST
+    const early = Date.parse('2026-11-08T12:59:00Z');  // 07:59 EST
+    assert.equal(iso(quietState(early, cfg).endsAt), '2026-11-08T13:00:00.000Z');
+  });
+  test('the rate limit counts texts of the last hour, not acks or failures', () => {
+    const s = (agoMin, kind = 'ask', ok = true) => ({ ts: iso(T0 - agoMin * 60_000), kind, ok });
+    assert.equal(rateState([s(10), s(70)], T0, cfg).allowed, true);
+    const full = rateState([s(50), s(10), s(5, 'ack'), s(1, 'ask', false)], T0, cfg);
+    assert.equal(full.allowed, false); assert.equal(iso(full.nextAt), iso(T0 + 10 * 60_000));
+  });
+  test('pause, stop and resume, in order', () => {
+    const c = (command, agoMin, extra = {}) => ({ command, ts: iso(T0 - agoMin * 60_000), ...extra });
+    assert.deepEqual(pauseState([c('pause', 10, { ms: 3_600_000 })], T0), { stopped: false, pausedUntil: T0 + 50 * 60_000, stoppedSince: null });
+    assert.equal(pauseState([c('pause', 90, { ms: 3_600_000 })], T0).pausedUntil, null);
+    assert.equal(pauseState([c('stop', 5)], T0).stopped, true);
+    assert.equal(pauseState([c('stop', 5), c('resume', 1)], T0).stopped, false);
+  });
+  test('may it text now: urgent skips quiet, pause and rate; a stop holds everything', () => {
+    const late = Date.parse('2026-11-08T03:30:00Z');
+    assert.deepEqual(mayText({ urgency: 'normal' }, { now: late, config: cfg }).why, 'quiet hours');
+    assert.deepEqual(mayText({ urgency: 'urgent' }, { now: late, config: cfg }), { send: true });
+    assert.equal(mayText({ urgency: 'normal' }, { now: T0, config: cfg, controls: [{ command: 'pause', ts: iso(T0), ms: 60_000 }] }).why, 'paused');
+    assert.equal(mayText({ urgency: 'urgent' }, { now: T0, config: cfg, controls: [{ command: 'stop', ts: iso(T0) }] }).why, 'stopped');
+    assert.equal(mayText({ urgency: 'normal' }, { now: T0, config: cfg, sends: [{ ts: iso(T0 - 1000), kind: 'ask' }, { ts: iso(T0 - 2000), kind: 'batch' }] }).why, 'rate limit');
+  });
+  test('channels: the ask\'s own order or the configured one, only usable ones', () => {
+    assert.deepEqual(channelOrder({}, { order: ['telegram', 'imessage', 'sms'], usable: ['sms', 'telegram'] }), ['telegram', 'sms']);
+    assert.deepEqual(channelOrder({ channels: ['sms', 'imessage'] }, { order: ['telegram'], usable: ['sms', 'telegram'] }), ['sms']);
+  });
+  test('one reminder before expiry: a fifth of the life, at least ten minutes; none for a short life', () => {
+    assert.equal(reminderAt({ routedAt: iso(T0), expiresAt: iso(T0 + 10 * 3_600_000) }), T0 + 8 * 3_600_000);
+    assert.equal(reminderAt({ routedAt: iso(T0), expiresAt: iso(T0 + 30 * 60_000) }), T0 + 20 * 60_000);
+    assert.equal(reminderAt({ routedAt: iso(T0), expiresAt: iso(T0 + 5 * 60_000) }), null);
+    assert.equal(reminderAt({ routedAt: iso(T0) }), null);
+  });
+});
