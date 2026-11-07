@@ -2,8 +2,8 @@
 //
 //   DROVER_ASK_TELEGRAM_TOKEN   the bot token (a secret: ~/.env_secrets)
 //   DROVER_ASK_TELEGRAM_CHAT    the owner's numeric Telegram user id: the only sender whose replies count
-//   DROVER_ASK_TELEGRAM_INBOUND webhook (default when the bot gateway has a public URL) or poll (long polling,
-//                               for a hub with no public endpoint)
+//   DROVER_ASK_TELEGRAM_INBOUND webhook (default when the bot gateway's public URL is on a port Telegram calls: 443,
+//                               80, 88 or 8443) or poll (long polling: no inbound port at all; the default otherwise)
 //   DROVER_ASK_TELEGRAM_API     the Bot API origin (tests point it at a fake)
 //
 // Webhook updates are believed only with the secret header Telegram was given at setWebhook (a random value kept in
@@ -32,8 +32,18 @@ export function missing(env = _deps.env) {
   return [!c.token && 'DROVER_ASK_TELEGRAM_TOKEN', !/^\d{3,15}$/.test(c.chat) && 'DROVER_ASK_TELEGRAM_CHAT'].filter(Boolean);
 }
 export const configured = (env) => missing(env).length === 0;
-/** webhook or poll: poll when asked for, or when there is no public URL to take a webhook. */
-export const inboundMode = ({ publicBase, env = _deps.env } = {}) => (cfg(env).inbound === 'poll' || !publicBase ? 'poll' : 'webhook');
+// Telegram calls a webhook only on these ports (core.telegram.org/bots/api#setwebhook); '' is the scheme's default (443).
+export const WEBHOOK_PORTS = new Set(['', '443', '80', '88', '8443']);
+/**
+ * webhook or poll. poll when asked for, when there is no public URL, or when that URL's port is not one Telegram calls
+ * (a Tailscale Funnel on :10000, say): long polling needs no inbound port at all. webhook when asked for.
+ */
+export function inboundMode({ publicBase, env = _deps.env } = {}) {
+  const want = cfg(env).inbound;
+  if (want === 'poll' || !publicBase) return 'poll';
+  if (want === 'webhook') return 'webhook';
+  try { return WEBHOOK_PORTS.has(new URL(publicBase).port) ? 'webhook' : 'poll'; } catch { return 'poll'; }
+}
 
 class TelegramError extends Error {
   constructor(method, description, code) { super(`telegram ${method}: ${description}`); this.code = code ?? null; }

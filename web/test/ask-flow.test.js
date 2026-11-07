@@ -457,6 +457,11 @@ describe('the asking host\'s side', () => {
     assert.equal(s.channels.telegram.configured, true); assert.equal(s.channels.telegram.health.ok, true); assert.equal(s.channels.telegram.health.bot, 'test_drover_bot');
     assert.equal(s.channels.sms.health.ok, true);
     assert.equal(JSON.stringify(s).includes('fake-auth-token') || JSON.stringify(s).includes('999:fake-token'), false);
-    assert.equal(s.webhook.telegram, `${base}/hooks/telegram`);
+    // The test gateway's origin is http on a random port, not one Telegram calls: Telegram long-polls; SMS takes the webhook.
+    assert.equal(s.inbound.telegram, 'long poll'); assert.equal(s.inbound.sms, `webhook ${base}/hooks/twilio/sms`);
+    assert.equal(telegram.inboundMode({ publicBase: 'https://box.example.ts.net:10000', env: {} }), 'poll');
+    assert.equal(telegram.inboundMode({ publicBase: 'https://box.example.ts.net', env: {} }), 'webhook');
+    assert.equal(telegram.inboundMode({ publicBase: 'https://box.example.ts.net:8443', env: {} }), 'webhook');
+    assert.equal(telegram.inboundMode({ publicBase: 'https://box.example.ts.net:10000', env: { DROVER_ASK_TELEGRAM_INBOUND: 'webhook' } }), 'webhook');
   });
 });

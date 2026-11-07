@@ -356,9 +356,10 @@ Set `DROVER_ASK_HUB` in a settings file every host reads, and each channel on th
 the rest in a settings file; `drover ask status` names what is missing, `--probe` asks each provider):
 
 - **Telegram**: a bot of your own from @BotFather (`DROVER_ASK_TELEGRAM_TOKEN`) and your numeric user id
-  (`DROVER_ASK_TELEGRAM_CHAT`); open the bot and press Start once. With the bot gateway on (`DROVER_BOTS_URL`) the hub
-  sets the webhook `<public origin>/hooks/telegram` itself, with a secret header; without one, or with
-  `DROVER_ASK_TELEGRAM_INBOUND=poll`, it long-polls. Options become buttons.
+  (`DROVER_ASK_TELEGRAM_CHAT`); open the bot and press Start once. The hub long-polls for replies (no inbound port),
+  unless the bot gateway's public origin (`DROVER_BOTS_URL`) is on a port Telegram calls (443, 80, 88 or 8443): then
+  it sets the webhook `<public origin>/hooks/telegram` itself, with a secret header (a Funnel on :10000 is not one;
+  `DROVER_ASK_TELEGRAM_INBOUND=poll` or `webhook` decides). Options become buttons.
 - **SMS** (Twilio): `DROVER_ASK_TWILIO_ACCOUNT_SID`, `DROVER_ASK_TWILIO_AUTH_TOKEN`, `DROVER_ASK_SMS_FROM` (a number in
   an approved US A2P 10DLC campaign), `DROVER_ASK_SMS_TO` (your phone). Point the number's incoming-message webhook
   at `<public origin>/hooks/twilio/sms` (POST); every request's `X-Twilio-Signature` is checked against that URL. Or

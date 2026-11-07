@@ -99,6 +99,18 @@ Object.assign(routerDeps, {
   publicBase: () => { try { return publicBase(_deps.env); } catch { return null; } },
 });
 
+/** How the hub hears each channel's replies: a webhook URL on the bot gateway, polling, or the imsg watch. */
+function inboundModes() {
+  const base = routerDeps.publicBase();
+  const tg = ADAPTERS.telegram.inboundMode({ publicBase: base, env: _deps.env });
+  const sm = ADAPTERS.sms.inboundMode({ publicBase: base, env: _deps.env });
+  return {
+    telegram: tg === 'webhook' ? `webhook ${base}/hooks/telegram` : 'long poll',
+    sms: sm === 'webhook' ? `webhook ${base}/hooks/twilio/sms` : 'reads the Twilio message log',
+    imessage: 'imsg watch',
+  };
+}
+
 /** An ask as the ops return it: what it asks, where it stands, the answer with its provenance. */
 export function view(a, { full = false } = {}) {
   const ans = a.answers[0] ?? null;
@@ -233,7 +245,7 @@ export const ops = {
       order: cfg.order, quietHours: cfg.quiet ? `${String(Math.floor(cfg.quiet.start / 60)).padStart(2, '0')}:${String(cfg.quiet.start % 60).padStart(2, '0')}-${String(Math.floor(cfg.quiet.end / 60)).padStart(2, '0')}:${String(cfg.quiet.end % 60).padStart(2, '0')}` : 'off', tz: cfg.tz, ratePerHour: cfg.ratePerHour,
       stopped: p.stopped, pausedUntil: p.pausedUntil ? new Date(p.pausedUntil).toISOString() : null,
       open: open.length, unrouted: open.filter((a) => !a.code).length, channels,
-      ...(isHub() ? { webhook: routerDeps.publicBase() ? { telegram: `${routerDeps.publicBase()}/hooks/telegram`, sms: `${routerDeps.publicBase()}/hooks/twilio/sms` } : null } : {}),
+      ...(isHub() ? { inbound: inboundModes() } : {}),
     };
   },
 
