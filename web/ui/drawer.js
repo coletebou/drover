@@ -17,6 +17,7 @@ import { h, clear, btn, engine, dot, ago, kv, fmtTime, shortPath, loading, empty
 import { tmuxWindowTarget, isWindow } from './transcript.js';
 import { copyButton, copyText, saveText, canShare, share, fileToBase64 } from './clip.js';
 import { openMenu } from './menu.js';
+import { botRoutines, setBotRoutine, testBotRoutine } from './api.js';
 import * as dictation from './dictation.js';
 import { ChatView, atBottom } from './chat.js';
 import { chatItems, mergeTurns, rebase, withReceipts, lastUnreadReply } from './chat-model.js';
@@ -361,6 +362,8 @@ export class Drawer {
       ['resume', resume ? h('code', null, resume) : null],
       ['transcript', s.transcript ? h('code', null, s.transcript) : null], ['socket', s.socket ? h('code', null, s.socket) : null], ['kind', s.sessionKind ?? s.kind], ['command', w.cmd], ['panes', w.panes],
     ]));
+    // A bot's own Routine; "every Grok bot" (grok:*, where broadcasts go) has none.
+    if (t.engine === 'grok' && (this.sessionIdForChat() ?? t.id) !== 'grok:*') body.append(this.#routineSection(body));
     const notes = h('div', { style: { marginTop: '16px' } }, h('h3', null, 'Notes'), h('p', { class: 'muted small' }, 'Notes are kept in the truth file against this id.'));
     const ta = h('textarea', { rows: 3, placeholder: 'Write a note about this session' });
     notes.append(ta, h('div', { class: 'toolbar', style: { marginTop: '6px' } }, btn('Save note', async () => { if (!ta.value.trim()) return; await this.#call('events.append', { event: { type: 'note', about: this.sessionIdForChat() ?? t.id, text: ta.value.trim() } }); ta.value = ''; this.ctx.toast('Note saved', 'ok'); }, { cls: 'sm' })));
@@ -373,6 +376,37 @@ export class Drawer {
       if (!r.items.length) { up.append(h('p', { class: 'muted small' }, 'Paste or drop files into the composer to send them to this session.')); return; }
       for (const f of r.items) up.append(h('div', { class: 'row static' }, h('span', { class: 'mono small' }, fmtBytes(f.bytes)), h('div', { class: 'main-col' }, h('div', { class: 'l1' }, h('span', { class: 'trunc' }, f.name)), h('div', { class: 'l2' }, f.path)), copyButton(f.path, 'Copy path')));
     }).catch(() => { up.lastChild.textContent = 'Could not list uploads.'; });
+  }
+
+  /**
+   * A Grok bot's Routine: where it leads (host and id tail), and a form to set or replace it with the main token
+   * (POST /api/bots/routine), then its connection test. Only on the Drover that keeps the bot: its Routines live there.
+   */
+  #routineSection(body) {
+    const t = this.target;
+    const bot = String(this.sessionIdForChat() ?? t.id ?? '').replace(/^grok:/, '');
+    const box = h('div', { style: { marginTop: '16px' } }, h('h3', null, 'Routine'));
+    if ((t.host ?? 'local') !== 'local' || !this.ctx.isLocal()) { box.append(h('p', { class: 'muted small' }, `${this.hostLabel()} keeps this bot: set its routine in that machine's Drover.`)); return box; }
+    const now = h('p', { class: 'muted small' }, 'Loading…');
+    botRoutines().then((list) => {
+      const r = list.find((x) => x.bot === bot)?.routine;
+      now.textContent = r ? `Set: ${r.host} ${r.webhook ?? ''}${r.updatedAt ? `, ${fmtTime(r.updatedAt)}` : ''}` : 'None yet: messages wait in its inbox until it reads them.';
+    }).catch(() => { now.textContent = 'This Drover keeps no Grok bots.'; });
+    const url = h('input', { type: 'url', placeholder: 'Webhook URL (https://api2.cursor.sh/automations/webhook/...)', autocomplete: 'off', spellcheck: 'false', 'aria-label': 'Webhook URL' });
+    const key = h('input', { type: 'password', placeholder: 'Webhook key (crsr_...)', autocomplete: 'off', spellcheck: 'false', 'aria-label': 'Webhook key' });
+    const save = btn('Set routine', async () => {
+      if (!url.value.trim() || !key.value.trim()) { this.ctx.toast('Paste both the Webhook URL and the Webhook key', 'error'); return; }
+      try {
+        const r = await setBotRoutine(bot, url.value.trim(), key.value.trim());
+        url.value = ''; key.value = '';
+        const test = await testBotRoutine(bot).catch((e) => ({ ok: false, error: e.message }));
+        this.ctx.toast(test.ok ? `Routine set for ${bot} (${r.routine.host} ${r.routine.webhook ?? ''}): connection test sent` : `Routine set for ${bot}, but the connection test failed: ${test.error}`, test.ok ? 'ok' : 'error');
+        if (this.tab === 'info') this.#renderInfo(body);
+      } catch (e) { this.ctx.toast(`Routine: ${e.message}`, 'error'); }
+    }, { cls: 'sm' });
+    box.append(now, h('p', { class: 'muted small' }, 'Paste the Webhook URL and key of its routine named Drover, from its panel in Grok Bot. Away from this screen, the bot\'s own setup link (in its drover_whoami) does the same with a code to approve.'),
+      url, key, h('div', { class: 'toolbar', style: { marginTop: '6px' } }, save));
+    return box;
   }
 
   // ------------------------------------------------------------ actions
