@@ -419,6 +419,9 @@ export class Router {
       if (_deps.channels.telegram.inboundMode({ publicBase: base, env }) === 'poll') this.stops.push(_deps.channels.telegram.startPolling((u) => this.inbound(_deps.channels.telegram.readUpdate(u, { env })), { log: _deps.log, env }));
       else _deps.channels.telegram.ensureWebhook(`${base}/hooks/telegram`, { env }).then((r) => r.changed && _deps.log('telegram webhook set'), (e) => _deps.log('telegram webhook', e.message));
     }
+    if (_deps.channels.sms?.configured(env) && _deps.channels.sms.inboundMode?.({ publicBase: _deps.publicBase(), env }) === 'poll') {
+      this.stops.push(_deps.channels.sms.startPolling((m) => this.inbound(m), { log: _deps.log, env }));
+    }
     const loop = () => { this.tick().catch((e) => _deps.log('tick', e.message)).finally(() => { if (this.running) { this.timer = setTimeout(loop, TICK_MS); this.timer.unref?.(); } }); };
     this.timer = setTimeout(loop, 1000); this.timer.unref?.();
     return () => this.stop();

@@ -18,7 +18,7 @@ const FROM = '+15005550006', OWNER_PHONE = '+15005550123';
 Object.assign(process.env, {
   DROVER_STATE: path.join(tmp, 'state'), DROVER_DOTFILES: path.join(tmp, 'dotfiles'), DROVER_EVENTS: path.join(tmp, 'events.jsonl'),
   DROVER_PLUGINS: '', CLAUDE_CONFIG_DIR: path.join(tmp, 'claude'), CODEX_HOME: path.join(tmp, 'codex'), DROVER_PAIR_NOTIFY: 'off',
-  DROVER_HOST: 'hub', DROVER_ASK_HUB: 'hub', DROVER_ASK_QUIET: 'off', DROVER_ASK_RATE: '20', DROVER_WORK_CONTEXT: 'none', DROVER_OWNER: 'owner', DROVER_OWNER_NAME: 'Owner',
+  DROVER_HOST: 'hub', DROVER_ASK_HUB: 'hub', DROVER_ASK_QUIET: 'off', DROVER_ASK_RATE: '120', DROVER_WORK_CONTEXT: 'none', DROVER_OWNER: 'owner', DROVER_OWNER_NAME: 'Owner',
   DROVER_ASK_TELEGRAM_TOKEN: '999:fake-token', DROVER_ASK_TELEGRAM_CHAT: OWNER_CHAT,
   DROVER_ASK_TWILIO_ACCOUNT_SID: SID, DROVER_ASK_TWILIO_AUTH_TOKEN: 'fake-auth-token', DROVER_ASK_SMS_FROM: FROM, DROVER_ASK_SMS_TO: OWNER_PHONE,
   DROVER_ASK_CHANNELS: 'telegram,sms', DROVER_FLEET_CATALOG: path.join(tmp, 'no-catalog.json'),
@@ -35,7 +35,7 @@ process.env.PATH = `${bin}:${process.env.PATH}`;
 
 // ---------------------------------------------------------------- fake providers
 const tg = { calls: [], next: 100 };
-const tw = { sends: [] };
+const tw = { sends: [], log: [], queries: [] };   // log: the account's message log, newest first
 function fakeTelegram(req, res) {
   let body = '';
   req.on('data', (d) => { body += d; });
@@ -59,6 +59,10 @@ function fakeTwilio(req, res) {
     const json = (code, o) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)); };
     if (req.headers.authorization !== `Basic ${Buffer.from(`${SID}:fake-auth-token`).toString('base64')}`) return json(401, { code: 20003, message: 'Authenticate' });
     if (req.method === 'POST' && req.url === `/2010-04-01/Accounts/${SID}/Messages.json`) { const f = Object.fromEntries(new URLSearchParams(body)); tw.sends.push(f); return json(201, { sid: `SM${String(tw.sends.length).padStart(32, '0')}` }); }
+    if (req.method === 'GET' && req.url.startsWith(`/2010-04-01/Accounts/${SID}/Messages.json?`)) {
+      const q = new URL(req.url, 'http://x').searchParams; tw.queries.push(q);
+      return json(200, { messages: tw.log.filter((m) => m.from === q.get('From') && m.to === q.get('To')).slice(0, Number(q.get('PageSize') ?? 50)) });
+    }
     if (req.method === 'GET' && req.url.startsWith(`/2010-04-01/Accounts/${SID}/IncomingPhoneNumbers.json`)) return json(200, { incoming_phone_numbers: [{ phone_number: FROM, capabilities: { sms: true }, sms_url: null }] });
     return json(404, { message: 'not found' });
   });
@@ -86,6 +90,7 @@ const telegram = await import('../core/ask/channels/telegram.js');
 let gw, base;
 const allEvents = async () => (await readFile(process.env.DROVER_EVENTS, 'utf8')).split('\n').filter(Boolean).map((l) => JSON.parse(l));
 const askEvents = async (phase) => (await allEvents()).filter((e) => e.type === 'ask' && (!phase || e.phase === phase));
+const until = async (pred, ms = 3000) => { const end = Date.now() + ms; while (Date.now() < end) { if (await pred()) return true; await new Promise((r) => setTimeout(r, 25)); } return false; };
 const settle = async () => { await router.exclusive(() => {}); await new Promise((r) => setTimeout(r, 60)); };
 const sentTexts = () => tg.calls.filter((c) => c.method === 'sendMessage');
 const lastAskMessageId = () => tg.next - 1;
@@ -238,6 +243,25 @@ describe('answers by SMS', () => {
   });
 });
 
+describe('SMS replies read from the account\'s log (poll, for a hub without a webhook)', () => {
+  test('the first look is the baseline; the owner\'s new reply answers once; only the owner\'s messages are asked for', async () => {
+    tw.log.unshift({ sid: 'SMold', direction: 'inbound', from: OWNER_PHONE, to: FROM, body: 'an old message', account_sid: SID });
+    tw.log.unshift({ sid: 'SMstranger', direction: 'inbound', from: '+15005550177', to: FROM, body: 'hi', account_sid: SID });
+    const stop = sms.startPolling((m) => router.inbound(m), { everyMs: 40 });
+    try {
+      assert.ok(await until(() => tw.queries.length >= 2), 'polling');
+      const r = await ask({ question: 'Polled?', options: ['yes', 'no'], channels: ['sms'] });
+      tw.log.unshift({ sid: 'SMnew1', direction: 'inbound', from: OWNER_PHONE, to: FROM, body: `${r.code} b`, account_sid: SID });
+      tw.log.unshift({ sid: 'SMout1', direction: 'outbound-api', from: FROM, to: OWNER_PHONE, body: 'ours', account_sid: SID });
+      assert.ok(await until(() => inbox.some((m) => m.includes(`${r.code} → b (no)`))), 'answered');
+      await new Promise((res) => setTimeout(res, 200));
+      assert.equal(inbox.filter((m) => m.includes(`${r.code} → b`)).length, 1, 'once');
+      assert.equal(inbox.some((m) => m.includes('an old message')), false, 'the baseline is never replayed');
+      assert.ok(tw.queries.every((q) => q.get('From') === OWNER_PHONE && q.get('To') === FROM));
+    } finally { stop(); }
+  });
+});
+
 describe('the owner\'s commands, quiet hours and the rate limit', () => {
   const say = (text, id) => tgUpdate({ update_id: id, message: { message_id: id, from: { id: Number(OWNER_CHAT) }, chat: { id: Number(OWNER_CHAT), type: 'private' }, text } }, secret);
   test('pause holds normal asks, urgent ones still go; resume sends the held ones in one text', async () => {
@@ -288,7 +312,7 @@ describe('the owner\'s commands, quiet hours and the rate limit', () => {
       routerDeps.now = () => Date.now() + 3_600_000;   // an hour on
       const t = await router.tick();
       assert.deepEqual(t.sent.map((s) => s.codes).flat(), [r.code]);
-    } finally { process.env.DROVER_ASK_RATE = '20'; routerDeps.now = realNow; }
+    } finally { process.env.DROVER_ASK_RATE = '120'; routerDeps.now = realNow; }
   });
   test('status lists the open asks', async () => {
     const r = await ask({ question: 'Listed?' });

@@ -5,17 +5,25 @@
 //   DROVER_ASK_SMS_FROM         the sending number, E.164 (+18065550123)
 //   DROVER_ASK_SMS_TO           the owner's phone, E.164: the only sender whose replies count
 //   DROVER_ASK_TWILIO_API       the API origin (tests point it at a fake)
+//   DROVER_ASK_SMS_INBOUND      webhook (default when the bot gateway has a public URL) or poll: read the owner's
+//                               replies from the account's message log every 15 s (filtered to the owner's number by
+//                               Twilio, so no one else's message is ever fetched), for a hub with no public endpoint
+//                               or a number whose Messaging Service sends no webhook
 //
 // An inbound webhook is believed only with a valid X-Twilio-Signature (HMAC-SHA1 of the URL Twilio called and the
 // sorted form fields, keyed by the auth token, compared in constant time), the account's own AccountSid, To our
 // number and From the owner's. Twilio itself answers STOP/START on a Messaging Service (opt-out); Drover's own
 // stop/resume ride on top.
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
+import path from 'node:path';
 import { envvar } from '../../envvars.js';
+import { stateDir } from '../../paths.js';
 import { clip } from '../model.js';
 
 export const NAME = 'sms';
-export const _deps = { fetch: (...a) => fetch(...a), env: process.env };
+export const _deps = { fetch: (...a) => fetch(...a), env: process.env, stateDir: () => stateDir() };
+export const POLL_MS = 15_000;
 
 /** +1 (704) 555-0123 -> +17045550123; a 10-digit US number gets +1. Anything else: as given, trimmed. */
 export function e164(s) {
@@ -33,7 +41,10 @@ const cfg = (env = _deps.env) => ({
   from: e164(envvar('ASK_SMS_FROM', env)),
   to: e164(envvar('ASK_SMS_TO', env)),
   api: (envvar('ASK_TWILIO_API', env) ?? 'https://api.twilio.com').replace(/\/+$/, ''),
+  inbound: String(envvar('ASK_SMS_INBOUND', env) ?? '').trim().toLowerCase(),
 });
+/** webhook or poll: poll when asked for, or when there is no public URL to take a webhook. */
+export const inboundMode = ({ publicBase, env = _deps.env } = {}) => (cfg(env).inbound === 'poll' || !publicBase ? 'poll' : 'webhook');
 
 export function missing(env = _deps.env) {
   const c = cfg(env);
@@ -86,6 +97,46 @@ export function readInbound(params, { env = _deps.env } = {}) {
   const from = e164(params.From), to = e164(params.To);
   const why = params.AccountSid !== c.sid ? 'another Twilio account' : to !== c.from ? 'sent to another number' : from !== c.to ? 'not the owner\'s phone' : null;
   return { channel: NAME, verified: !why, reason: why, sender: `sms:${from}`, text: String(params.Body ?? ''), providerMessageId: `sms:${params.MessageSid ?? params.SmsSid ?? ''}`, replyTo: null, button: null };
+}
+
+/**
+ * Polling, for a hub that takes no webhook: the owner's messages to our number from the account's log (Twilio filters
+ * by From and To), newest first, each handed on once. What was there at the first look is the baseline, never
+ * replayed; the message ids seen are kept on disk across restarts. Returns stop().
+ */
+export function startPolling(onInbound, { log = () => {}, env = _deps.env, everyMs = POLL_MS } = {}) {
+  const c = cfg(env);
+  const file = path.join(_deps.stateDir(), 'ask', 'sms-seen.json');
+  let stopped = false, timer = null, seen = null;
+  const save = async () => {
+    await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+    const tmp = `${file}.${process.pid}.tmp`;
+    await writeFile(tmp, JSON.stringify({ sids: [...seen].slice(-300) }) + '\n', { mode: 0o600 });
+    await rename(tmp, file);
+  };
+  const look = async () => {
+    const q = new URLSearchParams({ To: c.from, From: c.to, PageSize: '20' });
+    const r = await api('GET', `/2010-04-01/Accounts/${c.sid}/Messages.json?${q}`, null, { env, timeoutMs: 15_000 });
+    const msgs = (r.messages ?? []).filter((m) => m.direction === 'inbound' && m.sid);
+    if (seen === null) {
+      try { seen = new Set(JSON.parse(await readFile(file, 'utf8')).sids ?? []); }
+      catch { seen = new Set(msgs.map((m) => m.sid)); await save(); return; }   // first look ever: the baseline
+    }
+    const fresh = msgs.filter((m) => !seen.has(m.sid)).reverse();   // oldest first
+    for (const m of fresh) {
+      seen.add(m.sid);
+      try { await onInbound(readInbound({ AccountSid: m.account_sid, From: m.from, To: m.to, Body: m.body, MessageSid: m.sid }, { env })); }
+      catch (e) { log('sms inbound', e.message); }
+    }
+    if (fresh.length) await save();
+  };
+  const loop = async () => {
+    if (stopped) return;
+    try { await look(); } catch (e) { log('sms poll', e.message); }
+    if (!stopped) { timer = setTimeout(loop, everyMs); timer.unref?.(); }
+  };
+  loop();
+  return () => { stopped = true; clearTimeout(timer); };
 }
 
 /** Health: the account answers and the sending number is on it with SMS. */

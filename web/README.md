@@ -361,7 +361,9 @@ the rest in a settings file; `drover ask status` names what is missing, `--probe
   `DROVER_ASK_TELEGRAM_INBOUND=poll`, it long-polls. Options become buttons.
 - **SMS** (Twilio): `DROVER_ASK_TWILIO_ACCOUNT_SID`, `DROVER_ASK_TWILIO_AUTH_TOKEN`, `DROVER_ASK_SMS_FROM` (a number in
   an approved US A2P 10DLC campaign), `DROVER_ASK_SMS_TO` (your phone). Point the number's incoming-message webhook
-  at `<public origin>/hooks/twilio/sms` (POST); every request's `X-Twilio-Signature` is checked against that URL.
+  at `<public origin>/hooks/twilio/sms` (POST); every request's `X-Twilio-Signature` is checked against that URL. Or
+  `DROVER_ASK_SMS_INBOUND=poll` (the default without a public URL): the hub reads your replies from the account's
+  message log every 15 s, asking Twilio only for messages from your number to that one, with nothing to configure.
 - **iMessage** (a Mac): `DROVER_ASK_IMESSAGE_TO` (your handle) and the [imsg](https://github.com/steipete/imsg) CLI
   (`DROVER_ASK_IMSG`, default `/opt/homebrew/bin/imsg`), as the macOS user the daemon runs as. That user's Messages
   must be signed into an Apple ID that is not yours (a text to yourself raises no alert; the hub checks this at start
