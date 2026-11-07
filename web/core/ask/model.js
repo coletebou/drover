@@ -156,7 +156,9 @@ export function foldAsks(events = []) {
         const fresh = a.status === 'open' ? e.answers.filter((x) => !a.answeredQs.has(x.q)) : [];
         if (fresh.length) {
           a.answers.push(ans);
-          for (const x of fresh) { a.answeredQs.add(x.q); a.merged[x.q] = x; }
+          // Each question's answer keeps the reply it came in (several replies may answer one ask, on several
+          // channels), so every decision can be checked against its own provider message.
+          for (const x of fresh) { a.answeredQs.add(x.q); a.merged[x.q] = { ...x, source: ans.source, channel: ans.channel, providerMessageId: ans.providerMessageId, sender: ans.sender, ts: ans.ts }; }
           if (a.answeredQs.size >= Math.max(1, a.questions.length)) { a.status = 'answered'; a.closedAt = e.ts; }
         } else a.followUps.push(ans);
         break;
@@ -226,7 +228,8 @@ export function askText(a, { channel = 'telegram', reminder = false, escalation 
   } else {
     a.questions.forEach((q, i) => lines.push(`${i + 1}) ${q.question}${q.options.length ? `  ${optionLine(q.options)}` : ''}`));
     const sample = a.questions.map((q, i) => `${i + 1}${q.options.length ? letter(Math.min(1, q.options.length - 1)) : ' yes'}`).join(' ');
-    lines.push(`Reply like: ${a.code} ${sample}`);
+    // A ; or a line break splits one answer from the next, so a free-text answer does not swallow a later question.
+    lines.push(`Reply like: ${a.code} ${sample} (; or a new line splits answers)`);
   }
   if (a.expiresAt && !reminder) lines.push(`Expires ${shortTime(a.expiresAt)}`);
   return forChannel(lines.join('\n'), channel);

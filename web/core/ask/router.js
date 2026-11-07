@@ -18,6 +18,7 @@
 import { foldAsks, normalizeQuestions, nextCode, askText, batchText, answerWords, whoLabel, forChannel, clip, oneLine, TERMINAL, TEXT_LIMITS } from './model.js';
 import { parseReply } from './parse.js';
 import { readConfig, mayText, channelOrder, reminderAt, pauseState, rateState } from './policy.js';
+import * as hubkey from './hubkey.js';
 import { ADAPTERS, usableChannels } from './channels/index.js';
 import { OWNER } from '../owner.js';
 
@@ -66,6 +67,8 @@ export class Router {
     this.running = false;
     this.disabled = new Map();        // channel -> why the hub will not use it (a failed safety check, the owner's carrier opt-out)
     this.tickSends = [];              // texts sent since the last fold was read: they count against the rate limit at once
+    this.backAt = new Map();          // channel -> when it came back (an SMS opt-in): its failures before then are forgiven
+    this.webhook = null;              // Telegram by webhook: { url, ok, tries, at } until Telegram has taken it
   }
 
   /** Run fn with the router's lock held; returns its result. */
@@ -97,7 +100,9 @@ export class Router {
     const copy = { origin, sessionId: ask.sessionId ?? null, sessionName: ask.sessionName ?? null, cwd: ask.cwd ?? null, questions, urgency: ask.urgency ?? 'normal', expiresAt: ask.expiresAt ?? null, channels: ask.channels ?? null, createdAt: ask.createdAt ?? null, createdBy: ask.createdBy ?? null };
     await _deps.append({ type: 'ask', phase: 'routed', askId: ask.askId, code, origin, hub: _deps.hostName(), ask: copy });
     if (alias && !sameHost(alias, _deps.hostName())) {
-      _deps.call(alias, 'ask.mark', { askId: ask.askId, phase: 'routed', code, hub: _deps.hostName() }, { timeoutMs: PULL_TIMEOUT_MS }).catch((e) => _deps.log('ask.mark routed', origin, e.message));
+      // Signed, as every call the hub makes to an asking host (core/ask/hubkey.js): that host takes no unsigned one.
+      const mark = { askId: ask.askId, phase: 'routed', code, hub: _deps.hostName() };
+      hubkey.signCall('ask.mark', mark).then((sig) => _deps.call(alias, 'ask.mark', { ...mark, sig }, { timeoutMs: PULL_TIMEOUT_MS })).catch((e) => _deps.log('ask.mark routed', origin, e.message));
     }
     return { ...copy, askId: ask.askId, code, deliverTo: origin, status: 'open', routedAt: new Date(now).toISOString(), sends: [], answers: [], followUps: [], deliveries: [] };
   }
@@ -117,19 +122,21 @@ export class Router {
       if (!may.send) { held.push({ askId: a.askId, code: a.code, why: may.why, until: may.until }); continue; }
       const chans = channelOrder(a, { order: cfg.order, usable });
       if (!chans.length) { held.push({ askId: a.askId, code: a.code, why: 'no channel is configured on the hub', until: null }); continue; }
-      const k = chans.join(',');
+      // Urgent asks batch apart: a batch passes the rate limit only when all of it is urgent.
+      const k = `${chans.join(',')}|${a.urgency === 'urgent' ? 'urgent' : 'normal'}`;
       if (!groups.has(k)) groups.set(k, []);
       groups.get(k).push(a);
     }
     const sent = [];
     for (const [k, group] of groups) {
-      const chans = k.split(',');
-      // Batches split to fit the smallest text the group's channels take.
-      const limit = Math.min(...chans.map((c) => TEXT_LIMITS[c] ?? 1600));
+      const chans = k.split('|')[0].split(',');
+      // A batch must fit every channel it may go out on, each measured as that channel writes it: SMS drops what is
+      // not ASCII, so its text is the shortest and no measure for Telegram's or iMessage's.
+      const fits = (asks) => chans.every((c) => batchText(asks, { channel: c }).length <= (TEXT_LIMITS[c] ?? 1600));
       const chunks = [];
       for (const a of group) {
         const last = chunks.at(-1);
-        if (last && batchText([...last, a], { channel: 'sms' }).length <= limit) last.push(a); else chunks.push([a]);
+        if (last && fits([...last, a])) last.push(a); else chunks.push([a]);
       }
       for (const asks of chunks) {
         const urgent = asks.every((a) => a.urgency === 'urgent');
@@ -207,6 +214,7 @@ export class Router {
   }
 
   async tick() {
+    if (this.webhook && !this.webhook.ok && retryDue(this.webhook.tries, this.webhook.at, _deps.now())) await this.registerWebhook();
     const pulled = await this.pull();
     const report = await this.exclusive(() => this.#tick(pulled));
     for (const { a, ans, followUp } of report.redeliver.splice(0)) {
@@ -252,7 +260,8 @@ export class Router {
     const live = [...st.asks.values()].filter((a) => a.status === 'open' && a.code);
     const untexted = live.filter((a) => {
       if (a.sends.some((s) => s.ok && ['ask', 'batch', 'escalation'].includes(s.kind))) return false;
-      const failed = a.sends.filter((s) => !s.ok && ['ask', 'batch'].includes(s.kind));
+      // A channel that came back forgives what failed on it before: those asks go out now, not after the backoff.
+      const failed = a.sends.filter((s) => !s.ok && ['ask', 'batch'].includes(s.kind) && !(Date.parse(s.ts) <= (this.backAt.get(s.channel) ?? -1)));
       return retryDue(failed.length, failed.at(-1)?.ts, now);
     });
     if (untexted.length) { const r = await this.textOut(untexted); report.sent.push(...r.sent); report.held.push(...r.held); }
@@ -269,8 +278,16 @@ export class Router {
       if (a.urgency === 'urgent') {
         const last = Math.max(...ok.map((s) => Date.parse(s.ts)));
         const used = new Set(ok.map((s) => s.channel));
-        const nextCh = channelOrder(a, { order: cfg.order, usable }).find((c) => !used.has(c));
-        if (nextCh && now - last >= cfg.escalateMs && !pauseState(st.controls, now).stopped) { const r = await this.sendOn(nextCh, [a], { kind: 'escalation' }); if (r.ok) report.escalated.push(`${a.code}:${nextCh}`); }
+        // The channels the ask has not reached, in order. One whose escalation failed lately waits out the send backoff,
+        // and a failure falls through to the next, so a dead channel never keeps a working one from being tried.
+        const failedOn = (c) => a.sends.filter((s) => !s.ok && s.kind === 'escalation' && s.channel === c);
+        const ready = (c) => { const f = failedOn(c); return retryDue(f.length, f.at(-1)?.ts, now); };
+        if (now - last >= cfg.escalateMs && !pauseState(st.controls, now).stopped) {
+          for (const c of channelOrder(a, { order: cfg.order, usable }).filter((x) => !used.has(x) && ready(x))) {
+            const r = await this.sendOn(c, [a], { kind: 'escalation' });
+            if (r.ok) { report.escalated.push(`${a.code}:${c}`); break; }
+          }
+        }
       }
     }
     // 3. answers recorded here that did not reach the asking host yet, and expiry notices that did not (sent after the
@@ -300,6 +317,7 @@ export class Router {
     const origin = targetOf(a);
     const args = { askId: a.askId, code: a.code, answers: ans.answers, source: ans.source, channel: ans.channel, providerMessageId: ans.providerMessageId, sender: ans.sender, raw: ans.raw, followUp, hub: _deps.hostName() };
     try {
+      if (origin !== 'local') args.sig = await hubkey.signCall('ask.deliver', args);
       const r = await _deps.call(origin, 'ask.deliver', args, { timeoutMs: 60_000 });
       // On the hub's own asks, ask.deliver here already recorded the delivery in this same truth file.
       if (origin !== 'local') await _deps.append({ type: 'ask', phase: 'delivered', askId: a.askId, ok: r?.ok !== false, final: r?.final === true, providerMessageId: ans.providerMessageId, to: { host: origin, sessionId: a.sessionId ?? null, resolvedTo: r?.resolvedTo ?? null }, ...(r?.ok === false ? { error: clip(r.error ?? 'refused', 300) } : {}), kind: followUp ? 'follow-up' : 'answer' });
@@ -314,16 +332,24 @@ export class Router {
   async tellAsker(a, why) {
     const origin = targetOf(a);
     let ok = true, error = null;
-    try { await _deps.call(origin, 'ask.mark', { askId: a.askId, phase: 'expired', code: a.code, hub: _deps.hostName(), why }, { timeoutMs: PULL_TIMEOUT_MS }); }
+    try {
+      const mark = { askId: a.askId, phase: 'expired', code: a.code, hub: _deps.hostName(), why };
+      await _deps.call(origin, 'ask.mark', origin === 'local' ? mark : { ...mark, sig: await hubkey.signCall('ask.mark', mark) }, { timeoutMs: PULL_TIMEOUT_MS });
+    }
     catch (e) { ok = false; error = clip(e.message, 300); _deps.log('ask.mark expired', origin, e.message); }
     // The hub's own asks: ask.mark here recorded it. Another host's: recorded here, and retried while it fails.
     if (origin !== 'local') await _deps.append({ type: 'ask', phase: 'delivered', askId: a.askId, ok, kind: 'expired', to: { host: origin, sessionId: a.sessionId ?? null }, ...(error ? { error } : {}) });
   }
 
   /** Record a verified answer, deliver it, rewrite the message it answered, and return what to tell the owner. */
-  async #answer(a, answers, msg, { followUp }) {
+  /** Record one ask's answer from a message: in the truth file before anything is sent anywhere. */
+  async #record(a, answers, msg) {
     const ev = await _deps.append({ type: 'ask', phase: 'answered', askId: a.askId, answers, source: sourceFor(msg.channel), channel: msg.channel, providerMessageId: msg.providerMessageId, sender: msg.sender, raw: clip(msg.text, 2000), untrusted: false });
-    const ans = { answers, source: ev.source, channel: msg.channel, providerMessageId: msg.providerMessageId, sender: msg.sender, raw: ev.raw };
+    return { answers, source: ev.source, channel: msg.channel, providerMessageId: msg.providerMessageId, sender: msg.sender, raw: ev.raw };
+  }
+
+  async #answer(a, answers, msg, { followUp, ans = null }) {
+    ans ??= await this.#record(a, answers, msg);
     const d = await this.deliver(a, ans, { followUp });
     const words = a.questions.length === 1 ? answerWords(a.questions[0], answers[0]) : answers.map((x) => `${x.q + 1}: ${answerWords(a.questions[x.q], x)}`).join(' · ');
     // A multi-question ask stays open (its buttons too) until every question has an answer.
@@ -362,6 +388,17 @@ export class Router {
       await _deps.append({ type: 'ask', phase: 'inbound', channel: msg.channel, untrusted: false, sender: msg.sender, reason: 'no words to read (media or a reaction)', providerMessageId: msg.providerMessageId ?? null, text: clip(oneLine(msg.text), 200) });
       return { ignored: 'no words' };
     }
+    // An edit changes a message the owner already sent: it is read only against the asks that message answered, as a
+    // follow-up there, never against whatever is open now. An edit of a message that answered nothing is not read.
+    let editAsks = null;
+    if (msg.edit) {
+      editAsks = [...st.asks.values()].filter((a) => [...a.answers, ...a.followUps].some((x) => x.providerMessageId === msg.original));
+      if (!editAsks.length) {
+        await _deps.append({ type: 'ask', phase: 'inbound', channel: msg.channel, untrusted: false, sender: msg.sender, reason: 'an edit of a message that answered no ask', providerMessageId: msg.providerMessageId ?? null, text: clip(oneLine(msg.text), 200) });
+        await this.ack(msg.channel, 'An edited message is not read as a new answer: send it as a new message.');
+        return { ignored: 'edit' };
+      }
+    }
     const now = _deps.now();
     const candidates = [...st.asks.values()].filter((a) => a.code && (a.status === 'open' || (a.closedAt && now - Date.parse(a.closedAt) < RECENT_MS)));
     // The message a reply or a button belongs to pins the ask exactly.
@@ -385,12 +422,12 @@ export class Router {
     }
     // A reply to one of our messages is bound to the asks it carried, whatever their age (a reply to an acknowledgement
     // or a notice carries none: then it is read like any other message).
-    const tied = msg.replyTo ? sentWith(msg.replyTo) : null;
-    const tiedAsks = (tied?.askIds ?? (tied?.askId ? [tied.askId] : [])).map((id) => st.asks.get(id)).filter(Boolean);
+    const tied = !editAsks && msg.replyTo ? sentWith(msg.replyTo) : null;
+    const tiedAsks = editAsks ?? (tied?.askIds ?? (tied?.askId ? [tied.askId] : [])).map((id) => st.asks.get(id)).filter(Boolean);
     const target = tiedAsks.length === 1 ? tiedAsks[0].askId : null;
     const scope = tiedAsks.length > 1 ? tiedAsks : target ? [...candidates.filter((a) => a.askId !== target), tiedAsks[0]] : candidates;
     const r = parseReply(msg.text, { asks: scope, target });
-    if (r.command) return this.#command(r.command, msg, st);
+    if (r.command && !editAsks) return this.#command(r.command, msg, st);
     if (r.ambiguous) {
       const list = scope.filter((a) => a.status === 'open').map((a) => `${a.code} (${clip(a.questions[0].question, 50)})`).join(', ');
       await this.ack(msg.channel, `Which ask? Open: ${list}. Reply like ${scope.find((a) => a.status === 'open')?.code ?? 'K7'} b`);
@@ -402,11 +439,12 @@ export class Router {
       await this.ack(msg.channel, 'No open asks right now. (Reply status to list them.)');
       return { unmatched: true };
     }
+    // Every answer the message holds is recorded before any is delivered: a delivery can wait a minute on another
+    // host, and a restart then must not lose the rest (the message counts as handled once one answer is recorded).
+    const recorded = [];
+    for (const x of r.answers) { const a = st.asks.get(x.askId); recorded.push({ a, x, ans: await this.#record(a, x.answers, msg) }); }
     const lines = [];
-    for (const x of r.answers) {
-      const a = st.asks.get(x.askId);
-      lines.push(await this.#answer(a, x.answers, msg, { followUp: a.status !== 'open' }));
-    }
+    for (const { a, x, ans } of recorded) lines.push(await this.#answer(a, x.answers, msg, { followUp: a.status !== 'open' || Boolean(editAsks), ans }));
     await this.ack(msg.channel, lines.join('\n'));
     return { answered: r.answers.map((x) => x.code) };
   }
@@ -414,8 +452,19 @@ export class Router {
   async #command(c0, msg, st) {
     const now = _deps.now();
     const open = [...st.asks.values()].filter((a) => a.status === 'open' && a.code);
-    // start resumes only after a stop (SMS START, the carrier's word for it); otherwise it is hello.
-    const c = c0.command === 'start' ? (pauseState(st.controls, now).stopped ? { command: 'resume' } : { command: 'help' }) : c0;
+    // Over SMS, START and UNSTOP are the carrier's opt-in: Twilio takes the number back and confirms it itself. SMS is
+    // back in rotation whatever Drover's own stop says (it may have gone out on a 21610 alone, or the stop was lifted
+    // on another channel), and with no stop of Drover's to lift there is nothing for us to say.
+    const optIn = msg.channel === 'sms' && /^(start|unstop)$/i.test(String(msg.text ?? '').trim());
+    if (optIn) { this.disabled.delete('sms'); this.backAt.set('sms', now); }
+    const stopped = pauseState(st.controls, now).stopped;
+    if (optIn && !stopped) {
+      await _deps.append({ type: 'ask', phase: 'control', command: 'optin', source: sourceFor(msg.channel), sender: msg.sender, providerMessageId: msg.providerMessageId ?? null });
+      setTimeout(() => this.tick().catch(() => {}), 10).unref?.();
+      return { command: 'optin' };
+    }
+    // Otherwise start resumes only after a stop; elsewhere it is hello.
+    const c = c0.command === 'start' ? (stopped ? { command: 'resume' } : { command: 'help' }) : c0;
     if (c.command === 'help') {
       await this.ack(msg.channel, `Drover texts you agents' questions here, each with a code like K7. Answer with the code and a letter (K7 b, or 7b), any words (K7 after lunch), several at once (1a 2b 3 yes), or a button. Also: status, pause asks 2h, stop, resume${msg.channel === 'sms' ? ' (after STOP on SMS: START)' : ''}.${open.length ? ` ${open.length} open now: reply status.` : ''}`);
       return { command: 'help' };
@@ -428,7 +477,6 @@ export class Router {
     }
     const until = c.command === 'pause' ? new Date(now + c.ms).toISOString() : null;
     if (msg.channel === 'sms' && c.command === 'stop') this.disabled.set('sms', 'the owner texted STOP to the SMS number: Twilio sends nothing until they text START');
-    if (msg.channel === 'sms' && c.command === 'resume' && /^(start|unstop)$/i.test(String(msg.text).trim())) this.disabled.delete('sms');
     await _deps.append({ type: 'ask', phase: 'control', command: c.command, ...(c.ms ? { ms: c.ms, until } : {}), source: sourceFor(msg.channel), sender: msg.sender, providerMessageId: msg.providerMessageId ?? null });
     // Over SMS, STOP is also the carrier's opt-out: Twilio confirms it and blocks our texts until START.
     if (msg.channel === 'sms' && c.command === 'stop') return { command: 'stop' };
@@ -478,7 +526,7 @@ export class Router {
     if (_deps.channels.telegram?.configured(env)) {
       const base = _deps.publicBase();
       if (_deps.channels.telegram.inboundMode({ publicBase: base, env }) === 'poll') this.stops.push(_deps.channels.telegram.startPolling((u) => this.inbound(_deps.channels.telegram.readUpdate(u, { env })), { log: _deps.log, env }));
-      else _deps.channels.telegram.ensureWebhook(`${base}/hooks/telegram`, { env }).then((r) => r.changed && _deps.log('telegram webhook set'), (e) => _deps.log('telegram webhook', e.message));
+      else { this.webhook = { url: `${base}/hooks/telegram`, ok: false, tries: 0, at: null }; this.disabled.set('telegram', 'registering its webhook'); this.registerWebhook().catch(() => {}); }
     }
     if (_deps.channels.sms?.configured(env) && _deps.channels.sms.inboundMode?.({ publicBase: _deps.publicBase(), env }) === 'poll') {
       this.stops.push(_deps.channels.sms.startPolling((m) => this.inbound(m), { log: _deps.log, env }));
@@ -486,6 +534,25 @@ export class Router {
     const loop = () => { this.tick().catch((e) => _deps.log('tick', e.message)).finally(() => { if (this.running) { this.timer = setTimeout(loop, TICK_MS); this.timer.unref?.(); } }); };
     this.timer = setTimeout(loop, 1000); this.timer.unref?.();
     return () => this.stop();
+  }
+
+  /**
+   * Telegram by webhook: nothing goes out on it until Telegram has taken the webhook (else no reply could come back),
+   * and a failed registration is tried again from the tick, with the send backoff.
+   */
+  async registerWebhook() {
+    const w = this.webhook;
+    if (!w || w.ok) return;
+    try {
+      const r = await _deps.channels.telegram.ensureWebhook(w.url, { env: _deps.env });
+      w.ok = true;
+      this.disabled.delete('telegram'); this.backAt.set('telegram', _deps.now());
+      if (r?.changed) _deps.log('telegram webhook set');
+    } catch (e) {
+      w.tries++; w.at = new Date(_deps.now()).toISOString();
+      this.disabled.set('telegram', `its webhook is not registered yet, so no reply could come back (${clip(e.message, 120)}); retrying`);
+      _deps.log('telegram webhook', e.message);
+    }
   }
 
   stop() {

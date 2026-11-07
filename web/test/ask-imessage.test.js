@@ -92,6 +92,34 @@ describe('iMessage', () => {
     assert.ok(await until(async () => (await lines(process.env.FAKE_IMSG_LOG)).some((l) => l.method === 'watch.subscribe')));
     assert.equal((await lines(process.env.FAKE_IMSG_LOG)).find((l) => l.method === 'watch.subscribe').params.since_rowid, row);
   });
+  test('an owner reply still being handled when the daemon restarts is replayed, not lost: the cursor advances only once processing finishes', async () => {
+    const cursorPath = path.join(process.env.DROVER_STATE, 'ask', 'imsg-rowid');
+    const readCursor = async () => { try { return (await readFile(cursorPath, 'utf8')).trim(); } catch { return ''; } }; // first run: no cursor yet, as start() itself tolerates
+    const before = await readCursor();
+    stop(); stop = null;
+    let gotCall = false, release;
+    const pending = new Promise((r) => { release = r; });
+    const blocked = msg({ text: 'wait for it' });
+    stop = await imessage.start(async (r) => { if (r.rowid === blocked.id) { gotCall = true; await pending; } }, { log: () => {} });
+    assert.ok(await until(async () => (await lines(process.env.FAKE_IMSG_LOG)).some((l) => l.method === 'watch.subscribe')), 'resubscribed');
+    await incoming(blocked);
+    assert.ok(await until(() => gotCall), 'onInbound was called for the pending reply');
+    await new Promise((r) => setTimeout(r, 150)); // give a buggy implementation time to checkpoint before onInbound settles
+    assert.equal(await readCursor(), before, 'the cursor must not advance while this reply is still being processed');
+    // The daemon "restarts" while that reply is still in flight: the in-memory promise chain is abandoned along with
+    // the old channel, but the reply must come back, because the persisted cursor (and the since_rowid the new
+    // child subscribes with) is still behind it rather than past it.
+    stop(); stop = null;
+    const replayed = [];
+    stop = await imessage.start(async (r) => { replayed.push(r.rowid); }, { log: () => {} });
+    assert.ok(await until(async () => replayed.includes(blocked.id)), 'the message is replayed after the restart instead of being skipped as already done');
+    assert.ok(await until(async () => Number(await readCursor()) >= blocked.id), 'and the cursor now covers it');
+    release();
+    // Restore the shared channel the remaining tests expect.
+    stop(); stop = null;
+    stop = await imessage.start((m) => router.inbound(m), { log: () => {} });
+    assert.ok(await until(async () => (await lines(process.env.FAKE_IMSG_LOG)).some((l) => l.method === 'watch.subscribe')), 'resubscribed');
+  });
   test('health: works for a separate account, refuses the owner\'s own Apple ID and a signed-out one', async () => {
     process.env.FAKE_IMSG_ACCOUNT = 'Account: drover@example.com\nAliases: drover@example.com\n';
     assert.equal((await imessage.health()).ok, true);
@@ -101,6 +129,22 @@ describe('iMessage', () => {
     assert.equal(self.error.includes('555'), false, 'the aliases are compared, never repeated');
     process.env.FAKE_IMSG_ACCOUNT = '';
     assert.match((await imessage.health()).error, /signed out of iMessage/);
+    delete process.env.FAKE_IMSG_ACCOUNT;
+  });
+  test('health compares whole handles, not substrings: a bot account merely containing or echoing the owner\'s handle is not a self-chat, but the exact handle in any case still is', async () => {
+    // "bot-owner@example.com" ends with "owner@example.com", and a longer phone number can contain the owner's 10
+    // digits in its middle: neither is the same handle as the owner's own.
+    const emailOwner = { DROVER_ASK_IMESSAGE_TO: 'owner@example.com', DROVER_ASK_IMSG: FAKE };
+    process.env.FAKE_IMSG_ACCOUNT = 'Account: bot-owner@example.com\nAliases: bot-owner@example.com\n';
+    assert.equal((await imessage.health({ env: emailOwner })).ok, true, 'bot-owner@example.com merely ends with owner@example.com; not the same mailbox');
+    const phoneOwner = { DROVER_ASK_IMESSAGE_TO: '+13105550100', DROVER_ASK_IMSG: FAKE };
+    process.env.FAKE_IMSG_ACCOUNT = 'Account: bot-owner@example.com\nAliases: bot-owner@example.com, +1 310 555 0100999\n';
+    assert.equal((await imessage.health({ env: phoneOwner })).ok, true, 'a longer number that merely contains the owner\'s 10 digits is not the owner\'s own number');
+    // The exact handle, however it is cased, is still the same mailbox.
+    process.env.FAKE_IMSG_ACCOUNT = 'Account: OWNER@Example.COM\n';
+    const self = await imessage.health({ env: emailOwner });
+    assert.equal(self.ok, false, 'the exact owner handle, in any case, is still refused');
+    assert.match(self.error, /note to self/);
     delete process.env.FAKE_IMSG_ACCOUNT;
   });
   test('the hub checks the account before it reads or sends: the owner\'s own Apple ID keeps the channel off', async () => {

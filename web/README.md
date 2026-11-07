@@ -371,8 +371,10 @@ chain's live successor included): `[Owner via telegram, verified] K7 → b (no)`
 there; the hub pulls them every 15 s from the fleet hosts of its own identity (`DROVER_ASK_HOSTS` to name them), so
 an asking host never needs to reach the hub. Design, events and failure modes: [docs/ask.md](../docs/ask.md).
 
-Set `DROVER_ASK_HUB` in a settings file every host reads, and each channel on the hub (secrets in `~/.env_secrets`,
-the rest in a settings file; `drover ask status` names what is missing, `--probe` asks each provider):
+Set `DROVER_ASK_HUB` in a settings file every host reads, then, once the hub's daemon has run, `DROVER_ASK_HUB_KEY` in
+the same file: the public key `drover ask status` prints on the hub, without which no other host takes the hub's
+deliveries. Set each channel on the hub (secrets in `~/.env_secrets`, the rest in a settings file; `drover ask
+status` names what is missing, `--probe` asks each provider):
 
 - **Telegram**: a bot of your own from @BotFather (`DROVER_ASK_TELEGRAM_TOKEN`) and your numeric user id
   (`DROVER_ASK_TELEGRAM_CHAT`); open the bot and press Start once. The hub long-polls for replies (no inbound port),
@@ -384,6 +386,8 @@ the rest in a settings file; `drover ask status` names what is missing, `--probe
   at `<public origin>/hooks/twilio/sms` (POST); every request's `X-Twilio-Signature` is checked against that URL. Or
   `DROVER_ASK_SMS_INBOUND=poll` (the default without a public URL): the hub reads your replies from the account's
   message log every 15 s, asking Twilio only for messages from your number to that one, with nothing to configure.
+  Twilio signs webhooks with the auth token, so webhook mode trusts whoever holds it: where agents' environments carry
+  the token, use `poll` (the hook is then not served).
 - **iMessage** (a Mac): `DROVER_ASK_IMESSAGE_TO` (your handle) and the [imsg](https://github.com/steipete/imsg) CLI
   (`DROVER_ASK_IMSG`, default `/opt/homebrew/bin/imsg`), as the macOS user the daemon runs as. That user's Messages
   must be signed into an Apple ID that is not yours (a text to yourself raises no alert; the hub checks this at start
@@ -400,9 +404,10 @@ rate limit, and escalate to the next channel after `DROVER_ASK_ESCALATE_MINUTES`
 Only a reply its channel authenticated (the webhook's secret or signature, or the Messages database) and that comes
 from the owner's own id counts as an answer; anything else is recorded as an untrusted `inbound` and never delivered
 or acknowledged. `ask.get` returns the answer with its source, provider message id and sender. `events.append`
-refuses `ask` events, and the hub's own calls to the asking host (`ask.deliver`, `ask.mark`) are served only to an ssh
-session from the hub machine (the address its ssh alias resolves to; `DROVER_ASK_HUB_ADDRS` adds one, say for a hub
-that reaches a host through a jump host). Questions that look like work (`DROVER_WORK_CONTEXT`) and machines of the work identity are refused.
+refuses `ask` events, and the hub's own calls to the asking host (`ask.deliver`, `ask.mark`) are served only with the
+hub's signature: the hub signs them with a key that never leaves it, and every other host checks it against
+`DROVER_ASK_HUB_KEY`, the public key `drover ask status` prints on the hub (no setting, no relayed answer; see
+`docs/ask.md`, trust). Questions that look like work (`DROVER_WORK_CONTEXT`) and machines of the work identity are refused.
 
 ## Browser terminals
 

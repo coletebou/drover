@@ -215,8 +215,8 @@ async function main() {
     }
     case 'rpc': {
       const { dispatchLocal } = await import(path.join(ROOT, 'core', 'api.js'));
-      // The ask hub's calls to this host (ask.deliver, ask.mark) are served only for an ssh session from the hub.
-      await (await import(path.join(ROOT, 'core', 'ask', 'ops.js'))).serveRpc({ sshConnection: process.env.SSH_CONNECTION });
+      // The ask hub's calls to this host (ask.deliver, ask.mark) are served only with the hub's signature (core/ask/hubkey.js).
+      await (await import(path.join(ROOT, 'core', 'ask', 'ops.js'))).serveRpc();
       // A front keeps this process while it uses it, past later pulls: host.version reports the commit it started on,
       // and once the checkout has moved off it every reply says stale, so the front retires this process for a fresh one
       // with the new code (core/remote.js). Checked every minute (DROVER_RPC_STALE_CHECK_MS); two git calls each time (checkoutHead).
@@ -470,7 +470,7 @@ async function askCli() {
     return `${a.code}: ${words}  [${a.answer.source}, verified, ${a.answer.ts}]`;
   };
   const sub = argv[1];
-  if (sub === 'status') { print(await cliOp('ask.status', withHost({ probe: has('probe') })), (r) => [`host ${r.host}${r.isHub ? ' (the hub)' : ''}; hub ${r.hub ?? 'none (DROVER_ASK_HUB unset)'}${r.isHub ? `; routing ${r.routing ? 'on' : 'off (the daemon routes)'}` : ''}`, `order ${r.order.join(' > ')}; quiet ${r.quietHours} ${r.tz}; at most ${r.ratePerHour} texts an hour${r.stopped ? '; STOPPED by the owner' : r.pausedUntil ? `; paused until ${r.pausedUntil}` : ''}`, `open asks: ${r.open}${r.unrouted ? ` (${r.unrouted} not yet taken by the hub)` : ''}`, ...Object.entries(r.channels).map(([n, c]) => `  ${n.padEnd(9)} ${c.configured ? 'configured' : `missing ${c.missing.join(', ')}`}${c.health ? `; ${c.health.ok ? 'works' : `fails: ${c.health.error}`}` : ''}`)].join('\n')); return done(); }
+  if (sub === 'status') { print(await cliOp('ask.status', withHost({ probe: has('probe') })), (r) => [`host ${r.host}${r.isHub ? ' (the hub)' : ''}; hub ${r.hub ?? 'none (DROVER_ASK_HUB unset)'}${r.isHub ? `; routing ${r.routing ? 'on' : 'off (the daemon routes)'}` : ''}`, `order ${r.order.join(' > ')}; quiet ${r.quietHours} ${r.tz}; at most ${r.ratePerHour} texts an hour${r.stopped ? '; STOPPED by the owner' : r.pausedUntil ? `; paused until ${r.pausedUntil}` : ''}`, `open asks: ${r.open}${r.unrouted ? ` (${r.unrouted} not yet taken by the hub)` : ''}`, r.relay?.hubKey ? `hub key (DROVER_ASK_HUB_KEY on the other hosts): ${r.relay.hubKey}` : r.relay ? (r.relay.trusts.length ? `takes the hub's answers signed by ${r.relay.trusts.join(', ')}` : 'no DROVER_ASK_HUB_KEY: answers the hub relays here are refused') : null, ...Object.entries(r.channels).map(([n, c]) => `  ${n.padEnd(9)} ${c.configured ? 'configured' : `missing ${c.missing.join(', ')}`}${c.health ? `; ${c.health.ok ? 'works' : `fails: ${c.health.error}`}` : ''}`)].filter((l) => l !== null).join('\n')); return done(); }
   if (sub === 'list') {
     const status = has('all') ? 'all' : has('closed') ? 'closed' : has('answered') ? 'answered' : 'open';
     print(await cliOp('ask.list', withHost({ status, limit: Number(flag('limit', 50)) })), (r) => (r.asks.length ? r.asks.map((a) => `${(a.code ?? '--').padEnd(4)} ${a.status.padEnd(9)} ${(a.sessionName ?? a.sessionId ?? '-').slice(0, 20).padEnd(20)} ${a.questions[0].question.slice(0, 70)}${a.answer ? `  -> ${answerLine(a).split(': ').slice(1).join(': ')}` : ''}`).join('\n') : `no ${status} asks on ${r.host}`));

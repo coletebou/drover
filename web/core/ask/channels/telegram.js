@@ -19,8 +19,11 @@ import { letter, clip } from '../model.js';
 export const NAME = 'telegram';
 export const _deps = { fetch: (...a) => fetch(...a), env: process.env, stateDir: () => stateDir() };
 
+// Message and update ids are the bot account's: a replaced bot numbers from 1 again, in a chat whose id is the owner's
+// for every bot. So every id Drover keeps carries the bot's own id (the token's number before the colon, not secret).
 const cfg = (env = _deps.env) => ({
   token: envvar('ASK_TELEGRAM_TOKEN', env) ?? '',
+  bot: /^(\d+):/.exec(envvar('ASK_TELEGRAM_TOKEN', env) ?? '')?.[1] ?? '0',
   chat: String(envvar('ASK_TELEGRAM_CHAT', env) ?? '').trim(),
   api: (envvar('ASK_TELEGRAM_API', env) ?? 'https://api.telegram.org').replace(/\/+$/, ''),
   inbound: String(envvar('ASK_TELEGRAM_INBOUND', env) ?? '').trim().toLowerCase(),
@@ -84,13 +87,15 @@ export async function send({ text, asks = [] }, { env = _deps.env } = {}) {
   const c = cfg(env);
   const markup = buttonsFor(asks);
   const r = await call('sendMessage', { chat_id: c.chat, text, link_preview_options: { is_disabled: true }, ...(markup ? { reply_markup: markup } : {}) }, { env });
-  return { providerId: `tg:${r.message_id}`, messageIds: [`tg:${r.message_id}`] };
+  const id = `tg:${cfg(env).bot}:${r.message_id}`;
+  return { providerId: id, messageIds: [id] };
 }
 
 /** Rewrite a sent message (answered, expired, cancelled): the buttons go. */
 export async function edit(providerId, text, { env = _deps.env } = {}) {
-  const id = Number(String(providerId).replace(/^tg:/, ''));
-  if (!Number.isInteger(id)) return;
+  const m = /^tg:(?:(\d+):)?(\d+)$/.exec(String(providerId));
+  if (!m || (m[1] && m[1] !== cfg(env).bot)) return;   // another bot's message: this one cannot edit it
+  const id = Number(m[2]);
   await call('editMessageText', { chat_id: cfg(env).chat, message_id: id, text, link_preview_options: { is_disabled: true } }, { env });
 }
 
@@ -104,12 +109,12 @@ export async function answerButton(callbackId, text, { env = _deps.env } = {}) {
  * Verified only when the sender and the private chat are the owner's id and the sender is no bot.
  */
 export function readUpdate(update, { env = _deps.env } = {}) {
-  const owner = cfg(env).chat;
+  const { chat: owner, bot } = cfg(env);
   const cq = update?.callback_query;
   if (cq) {
     const from = String(cq.from?.id ?? ''), chat = String(cq.message?.chat?.id ?? '');
     const verified = Boolean(owner) && from === owner && chat === owner && cq.from?.is_bot !== true;
-    return { channel: NAME, verified, reason: verified ? null : 'not the owner\'s chat', sender: `tg:${from}`, text: String(cq.data ?? ''), providerMessageId: `tgcb:${cq.id}`, replyTo: cq.message?.message_id ? `tg:${cq.message.message_id}` : null, button: { id: cq.id, data: String(cq.data ?? '') } };
+    return { channel: NAME, verified, reason: verified ? null : 'not the owner\'s chat', sender: `tg:${from}`, text: String(cq.data ?? ''), providerMessageId: `tgcb:${bot}:${cq.id}`, replyTo: cq.message?.message_id ? `tg:${bot}:${cq.message.message_id}` : null, button: { id: cq.id, data: String(cq.data ?? '') } };
   }
   const m = update?.message ?? update?.edited_message;
   if (!m) return null;   // channel posts, member updates: nothing to read
@@ -117,7 +122,10 @@ export function readUpdate(update, { env = _deps.env } = {}) {
   const verified = Boolean(owner) && from === owner && chat === owner && m.chat?.type === 'private' && m.from?.is_bot !== true;
   const text = typeof m.text === 'string' ? m.text : typeof m.caption === 'string' ? m.caption : '';
   // Telegram numbers messages per chat: the chat is part of the id, so another chat's message never shadows the owner's.
-  return { channel: NAME, verified, reason: verified ? null : 'not the owner\'s private chat', sender: `tg:${from}`, text, providerMessageId: `tg:${chat}:${m.message_id}${update.edited_message ? `:edit:${m.edit_date ?? ''}` : ''}`, replyTo: m.reply_to_message?.message_id ? `tg:${m.reply_to_message.message_id}` : null, button: null };
+  // An edit keeps the id of the message it changes (original): the router reads it only as that message's follow-up.
+  const id = `tg:${bot}:${chat}:${m.message_id}`;
+  const edit = Boolean(update.edited_message);
+  return { channel: NAME, verified, reason: verified ? null : 'not the owner\'s private chat', sender: `tg:${from}`, text, providerMessageId: edit ? `${id}:edit:${m.edit_date ?? ''}` : id, ...(edit ? { edit: true, original: id } : {}), replyTo: m.reply_to_message?.message_id ? `tg:${bot}:${m.reply_to_message.message_id}` : null, button: null };
 }
 
 const secretFile = () => path.join(_deps.stateDir(), 'ask', 'telegram-webhook-secret');
@@ -157,7 +165,8 @@ export async function ensureWebhook(url, { env = _deps.env } = {}) {
  */
 export function startPolling(onUpdate, { log = () => {}, env = _deps.env } = {}) {
   let stopped = false, ctl = null;
-  const offsetFile = path.join(_deps.stateDir(), 'ask', 'telegram-offset');
+  // Update ids are the bot's too: a replaced bot starts its own count, so its offset is kept apart.
+  const offsetFile = path.join(_deps.stateDir(), 'ask', `telegram-offset-${cfg(env).bot}`);
   const loop = async () => {
     let offset = 0;
     try { offset = Number((await readFile(offsetFile, 'utf8')).trim()) || 0; } catch { /* first run */ }

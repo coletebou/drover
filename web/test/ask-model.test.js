@@ -217,6 +217,61 @@ describe('the reply grammar', () => {
     assert.equal(parseCommand('stop the deploy'), null);
     assert.deepEqual(parseReply('Stop', { asks: [k7] }).command, { command: 'stop' });
   });
+  test('C1: a spaced late reference ("8 b") resolves exactly like the glued form ("8b")', () => {
+    const m8c = ask({ askId: 'a9', code: 'M8', status: 'answered', closedAt: iso(T0), questions: [{ question: 'Name?', options: ['a1', 'b1'] }] });
+    const r = parseReply('8 b', { asks: [k7, m8c] });
+    assert.deepEqual(one(r), [['M8', [[0, 1, '']]]], 'a just-closed ask by number, never K7\'s words');
+    assert.equal(r.answers[0].closed, true);
+    assert.deepEqual(parseReply('8 b', { asks: [k7] }).ambiguous.why, 'no open ask is 8 B', 'no ask 8 at all is unclear, not K7\'s words');
+  });
+  test('C2: a free-text answer starting with the ask in hand\'s own number keeps the number', () => {
+    const a1 = ask({ askId: 'a10', code: 'A1', questions: [{ question: 'How many retries?', options: [] }] });
+    assert.deepEqual(one(parseReply('1 more', { asks: [a1] })), [['A1', [[0, null, '1 more']]]]);
+    assert.deepEqual(one(parseReply('1', { asks: [a1] })), [['A1', [[0, null, '1']]]], 'a bare own-number is still an answer, not unmatched');
+    const b2 = ask({ askId: 'a11', code: 'B2', questions: [{ question: 'How long?', options: [] }] });
+    assert.deepEqual(one(parseReply('2 hours', { asks: [b2] })), [['B2', [[0, null, '2 hours']]]]);
+  });
+  test('X2: bound to one ask\'s message, a code or number may only mean that ask - never a guess among others', () => {
+    const a1Old = ask({ askId: 'oldA1', code: 'A1', status: 'answered', closedAt: iso(T0 - 7_200_000), questions: [{ question: 'Ship?', options: ['yes', 'no'] }] });
+    const b1Open = ask({ askId: 'b1open', code: 'B1', status: 'open', questions: [{ question: 'Pick?', options: ['x', 'y'] }] });
+    const c2Open = ask({ askId: 'c2open', code: 'C2', status: 'open', questions: [{ question: 'Pick?', options: ['p', 'q'] }] });
+    // B1 reused A1's old number: a reply to A1's own message still means A1, not the open ask that now holds "1".
+    const r = parseReply('1b', { asks: [a1Old, b1Open], target: 'oldA1' });
+    assert.deepEqual(one(r), [['A1', [[0, 1, '']]]]);
+    assert.equal(r.answers[0].closed, true);
+    const r2 = parseReply('B1 b', { asks: [a1Old, b1Open], target: 'oldA1' });
+    assert.ok(r2.ambiguous, 'naming B1\'s own code while bound to A1 is unclear, not a switch');
+    assert.equal(r2.answers.length, 0);
+    const r3 = parseReply('2b', { asks: [a1Old, b1Open, c2Open], target: 'oldA1' });
+    assert.ok(r3.ambiguous, 'naming a different open ask by its own number is unclear, not a switch');
+    assert.equal(r3.answers.length, 0);
+  });
+  test('a spaced letter is an option only at the reply\'s end or before another reference: "2 a day" stays words', () => {
+    const m2c = ask({ askId: 'm2c', code: 'M2', status: 'answered', closedAt: iso(T0), questions: [{ question: 'Pick?', options: ['x', 'y'] }] });
+    assert.deepEqual(one(parseReply('2 a day', { asks: [k7, m2c] })), [['K7', [[0, null, '2 a day']]]], 'never a follow-up of the closed M2');
+    const m8c = ask({ askId: 'm8c2', code: 'M8', status: 'answered', closedAt: iso(T0), questions: [{ question: 'Name?', options: ['a1', 'b1'] }] });
+    assert.deepEqual(one(parseReply('8 b', { asks: [k7, m8c] })), [['M8', [[0, 1, '']]]]);
+  });
+  test('bound to an ask\'s message, a bare number or a code naming no ask is that ask\'s words; one naming another ask is unclear', () => {
+    const m3 = ask({ askId: 'm3open', code: 'M3', status: 'open', questions: [{ question: 'Pick?', options: ['x', 'y'] }] });
+    assert.deepEqual(one(parseReply('3', { asks: [k7, m3], target: k7.askId })), [['K7', [[0, null, '3']]]], 'how many? 3: whichever ask holds 3');
+    assert.deepEqual(one(parseReply('B2 works', { asks: [k7, m3], target: k7.askId })), [['K7', [[0, null, 'B2 works']]]]);
+    assert.deepEqual(one(parseReply('3 b', { asks: [k7], target: k7.askId })), [['K7', [[0, null, '3 b']]]], 'no ask 3: words');
+    assert.ok(parseReply('3b', { asks: [k7, m3], target: k7.askId }).ambiguous);
+    assert.ok(parseReply('M3 b', { asks: [k7, m3], target: k7.askId }).ambiguous);
+  });
+  test('a separator inside one answer\'s words stays in them', () => {
+    assert.deepEqual(one(parseReply('ship it; after lunch', { asks: [k7] })), [['K7', [[0, null, 'ship it; after lunch']]]]);
+  });
+  test('X6: a ; or a line break ends an answer\'s words, so the next sub-question may start again', () => {
+    const k7m = ask({ askId: 'k7m', code: 'K7', questions: [{ question: 'Name?', options: [] }, { question: 'When?', options: [] }] });
+    assert.deepEqual(one(parseReply('K7 1 Lantern; 2 tomorrow', { asks: [k7m] })), [['K7', [[0, null, 'Lantern'], [1, null, 'tomorrow']]]]);
+    assert.deepEqual(one(parseReply('K7 1 Lantern\n2 tomorrow', { asks: [k7m] })), [['K7', [[0, null, 'Lantern'], [1, null, 'tomorrow']]]], 'one answer per line');
+    const k7m2 = ask({ askId: 'k7m2', code: 'K7', questions: [{ question: 'Name?', options: [] }, { question: 'Confirm?', options: ['x', 'y'] }] });
+    assert.deepEqual(one(parseReply('K7 1 call it Lantern; 2a', { asks: [k7m2] })), [['K7', [[0, null, 'call it Lantern'], [1, 0, '']]]], 'free text then an option after the separator');
+    // No separator needed between several options: unchanged from before.
+    assert.deepEqual(one(parseReply('1a 2c 3 yes please', { asks: [b3] })), [['B3', [[0, 0, ''], [1, 2, ''], [2, null, 'yes please']]]]);
+  });
 });
 
 describe('policy', () => {

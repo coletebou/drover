@@ -1,5 +1,7 @@
 // The ask webhooks on the bot gateway's public listener (server/botgate.js), served only on the ask hub
-// (core/ask/ops.js isHub) with that channel configured; anywhere else they are 404, like any unknown path.
+// (core/ask/ops.js isHub), with that channel configured and set to take its replies by webhook; anywhere else, and
+// when the hub polls that channel instead, they are 404 like any unknown path. A hook nobody is meant to call is only
+// a way in: Twilio signs with the account's auth token, which any holder can use to sign a forged reply.
 //
 //   POST /hooks/telegram     Telegram's update, believed only with the secret header given at setWebhook
 //   POST /hooks/twilio/sms   Twilio's inbound SMS, believed only with a valid X-Twilio-Signature for this URL
@@ -27,7 +29,7 @@ function formFields(raw) {
 export async function serveHook(route, req, res, { base, readRaw, json, tooLarge, log = () => {} }) {
   if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' }, { allow: 'POST' });
   if (route === '/hooks/telegram') {
-    if (!isHub() || !telegram.configured()) return json(res, 404, { error: 'not found' });
+    if (!isHub() || !telegram.configured() || telegram.inboundMode({ publicBase: base }) !== 'webhook') return json(res, 404, { error: 'not found' });
     if (!(await telegram.webhookAuthentic(req.headers['x-telegram-bot-api-secret-token']))) return json(res, 401, { error: 'unauthorized' });
     let update;
     try { update = JSON.parse(await readRaw(req, TELEGRAM_LIMIT)); }
@@ -38,7 +40,7 @@ export async function serveHook(route, req, res, { base, readRaw, json, tooLarge
     return undefined;
   }
   if (route === '/hooks/twilio/sms') {
-    if (!isHub() || !sms.configured()) return json(res, 404, { error: 'not found' });
+    if (!isHub() || !sms.configured() || sms.inboundMode({ publicBase: base }) !== 'webhook') return json(res, 404, { error: 'not found' });
     let raw;
     try { raw = await readRaw(req, SMS_LIMIT); } catch (e) { return e.status === 413 ? tooLarge(res) : json(res, 400, { error: 'bad body' }); }
     const fields = formFields(raw);

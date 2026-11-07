@@ -4,6 +4,7 @@
 //   b, yes, ship it the only open ask           K7 ship it  free text for K7
 //   K7 1a 2b 3 yes  a multi-question ask        1a 2b 3 yes the same, when K7 is the only open ask or replied to
 //   K7 b M8 a       two asks in one reply       7b 8a       the same, by number
+//   K7 1 x; 2 y     two answers, split          one per line  a ; or a line break splits answers the same way
 //   stop | resume | start (after a stop: resume) | pause [asks] [for] 2h | status | help   (Telegram's /stop, /help too)
 //
 // A number is a sub-question when the ask in hand has several questions and the number is one of them, else the
@@ -66,6 +67,9 @@ export function parseReply(text, { asks = [], target = null } = {}) {
   // A reply tied to an ask's message (Telegram, iMessage) is that ask's, open or not: never another's.
   const targetAsk = target ? asks.find((a) => a.askId === target) ?? null : null;
   if (target && !targetAsk) { out.ambiguous = { why: 'the message replied to belongs to no ask here', codes: open.map((a) => a.code) }; return out; }
+  // Bound to one ask's message, a code or number may only mean that ask itself: naming any other is never a guess.
+  const targetCode = targetAsk ? targetAsk.code.toUpperCase() : null;
+  const targetNumber = targetAsk ? numberOf(targetAsk.code) : null;
   const implicit = targetAsk ?? (open.length === 1 ? open[0] : null);
 
   const results = new Map();   // askId -> { ask, per: Map q -> {q, option, text: []} }
@@ -100,15 +104,33 @@ export function parseReply(text, { asks = [], target = null } = {}) {
     slot(cur.ask, cur.q);
     canSwitch = false; canSub = true;
   };
-  for (const tok of raw.split(/\s+/)) {
+  // A semicolon or a line break unambiguously ends an answer's words (a bare number never does: numbers inside
+  // answers are common), so the sentinel below marks one as its own token and resets the switching flags on it,
+  // letting a sub-question number, a code or an ask's number start a fresh reference right after, exactly as at
+  // the start of a reply ("K7 1 Lantern; 2 tomorrow", or one answer per line).
+  const SEP = '\0';
+  const toks = raw.replace(/;/g, ` ${SEP} `).replace(/\r?\n+/g, ` ${SEP} `).split(/\s+/).filter(Boolean);
+  let sepAfter = null;   // the answer a separator ended: if its words simply go on, the separator stays in them
+  for (let ti = 0; ti < toks.length; ti++) {
+    const tok = toks[ti];
+    if (tok === SEP) { canSwitch = canSub = true; sepAfter = cur ? results.get(cur.ask.askId)?.per.get(cur.q) ?? null : null; continue; }
+    const sep = sepAfter; sepAfter = null;
     const clean = tok.replace(TRIM, '');
     if ((canSwitch || canSub) && !unknown) {
       // A code: K7, K7b.
       let m = /^([a-z])(\d{1,2})([a-z])?$/i.exec(clean);
       if (canSwitch && m && CODE_RE.test(`${m[1].toUpperCase()}${Number(m[2])}`)) {
-        const a = byCode.get(`${m[1].toUpperCase()}${Number(m[2])}`);
-        if (a) { take({ ask: a, q: 0 }, m[3]); continue; }
-        unknown = clean; continue;
+        const code = `${m[1].toUpperCase()}${Number(m[2])}`;
+        // Bound to an ask's message, a code naming a different ask is never a guess: the whole reply is unclear.
+        if (target && code !== targetCode) {
+          const other = byCode.get(code);
+          if (other) { out.ambiguous = { why: `the message replied to is ${targetCode}; ${other.code} is a different ask`, codes: open.map((a) => a.code) }; return out; }
+          // A code-like word that names no ask here ("B2 works", a seat) is the answer's words: the reply says which ask.
+        } else {
+          const a = target ? targetAsk : byCode.get(code);
+          if (a) { take({ ask: a, q: 0 }, m[3]); continue; }
+          unknown = clean; continue;
+        }
       }
       // A number: a question of a multi-question ask in hand, else an open ask's number, else a just-closed one's.
       m = /^(\d{1,2})([a-z])?$/i.exec(clean);
@@ -116,16 +138,54 @@ export function parseReply(text, { asks = [], target = null } = {}) {
         const n = Number(m[1]);
         const inHand = cur?.ask;
         if (canSub && inHand && inHand.questions.length > 1 && n >= 1 && n <= inHand.questions.length) { take({ ask: inHand, q: n - 1 }, m[2]); continue; }
-        const a = canSwitch ? byNumber.get(n) ?? (m[2] ? closedByNumber.get(n) : null) : null;
-        if (a) { take({ ask: a, q: 0 }, m[2]); continue; }
-        if (canSwitch && m[2]) { unknown = clean; continue; }
-        // A bare number that names no ask is a number answering the ask in hand ("how many days?" "3").
+        if (canSwitch) {
+          // A letter may be glued ("8b") or, at a position a reference may start, sit in the next token alone
+          // ("8 b"): the two read the same, so a late reply need not remember to glue it on.
+          let letterTok = m[2] ?? null;
+          let tookNext = false;
+          if (!letterTok) {
+            const nextClean = ti + 1 < toks.length ? toks[ti + 1].replace(TRIM, '') : null;
+            // Only when nothing but the reply's end, a separator or another reference follows the letter: "8 b" and
+            // "8 b M9 a" are references, "2 a day" is words ("a" is also a word).
+            const after = toks[ti + 2];
+            const refAfter = after === undefined || after === SEP || /^(?:[a-z]\d{1,2}[a-z]?|\d{1,2}[a-z]?)$/i.test(after.replace(TRIM, ''));
+            if (nextClean && /^[a-z]$/i.test(nextClean) && refAfter) { letterTok = nextClean; tookNext = true; }
+          }
+          // Bound to an ask's message, a number naming a different ask (open, or closed with a letter attached,
+          // the same late-reply case as below) is never a guess: the whole reply is unclear, not a switch.
+          // A bare number there ("how many?" "3") is the answer's words, whichever ask holds that number.
+          if (target && n !== targetNumber && letterTok) {
+            const other = byNumber.get(n) ?? closedByNumber.get(n);
+            if (other) { out.ambiguous = { why: `the message replied to is ${targetCode}; ${other.code} is a different ask`, codes: open.map((a) => a.code) }; return out; }
+          }
+          const found = target ? (n === targetNumber ? targetAsk : null) : (byNumber.get(n) ?? (letterTok ? closedByNumber.get(n) : null));
+          // The ask already in hand's own number, with no letter to pick an option, is part of the answer's
+          // words, not a no-op re-pick of the ask we are already answering: "how many retries?" "1 more" keeps
+          // its "1" (and a bare "1" alone is still an answer), while "7b" (a letter is attached) still picks K7's
+          // option b.
+          if (found && inHand && found.askId === inHand.askId && !letterTok) {
+            // Fall through: leave the number for the word handling below.
+          } else if (found) {
+            if (tookNext) ti++;
+            take({ ask: found, q: 0 }, letterTok);
+            continue;
+          } else if (letterTok && !target) {
+            if (tookNext) ti++;
+            unknown = tookNext ? `${clean} ${letterTok}` : clean;
+            continue;
+          }
+        }
+        // A bare number that names no ask (or is the ask in hand's own number) is a number answering the ask in hand.
       }
     }
     // An option letter for the question in hand.
     if (cur && /^[a-z]$/i.test(clean) && pickOption(cur, clean)) { canSwitch = canSub = true; continue; }
     // Anything else is the answer's words.
-    if (cur) { slot(cur.ask, cur.q).text.push(tok); canSwitch = canSub = false; }
+    if (cur) {
+      const x = slot(cur.ask, cur.q);
+      if (sep && sep === x && x.text.length) x.text[x.text.length - 1] += ';';   // "ship it; after lunch" keeps its ;
+      x.text.push(tok); canSwitch = canSub = false;
+    }
     else loose.push(tok);
   }
   if (unknown) { out.ambiguous = { why: `no open ask is ${unknown.toUpperCase()}`, codes: open.map((a) => a.code) }; return out; }

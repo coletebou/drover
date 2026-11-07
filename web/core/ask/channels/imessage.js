@@ -112,16 +112,34 @@ export async function start(onInbound, { log = () => {}, env = _deps.env } = {})
   if (rpc) return () => {};
   let since = null;
   try { since = Number((await readFile(cursorFile(), 'utf8')).trim()) || null; } catch { /* first run */ }
-  let saving = Promise.resolve();
+  // The highest rowid ever queued, kept only in memory: it drops a duplicate or stale replay notification (imsg's
+  // own internal reconnect can redeliver one) without waiting on the chain below. It is not what gets persisted.
+  let highest = since ?? 0;
+  // Every message is handed to onInbound, and the cursor advanced, strictly in the order messages arrived: chaining
+  // onto this one promise is what keeps a later reply from ever being checkpointed before an earlier one finishes.
+  let chain = Promise.resolve();
   const onMessage = (m) => {
     const r = readMessage(m, { env });
-    if (r.rowid && r.rowid > (rpc?.sinceRowid ?? 0)) {
-      rpc.sinceRowid = r.rowid;
-      saving = saving.then(async () => { await mkdir(path.dirname(cursorFile()), { recursive: true, mode: 0o700 }); const tmp = `${cursorFile()}.tmp`; await writeFile(tmp, `${r.rowid}\n`, { mode: 0o600 }); await rename(tmp, cursorFile()); }).catch(() => {});
-    }
+    if (!r.rowid || r.rowid <= highest) return; // no new rowid: already queued or already finished
+    highest = r.rowid;
     // Only the one-to-one chat with the owner is read. Every other chat is this account's own business: never passed
     // on, never recorded (a Telegram bot's or an SMS number's strangers are recorded as untrusted; these are not).
-    if (!r.fromMe && dmHandle(m?.chat_guid) === cfg(env).to) onInbound(r);
+    const isOwner = !r.fromMe && dmHandle(m?.chat_guid) === cfg(env).to;
+    chain = chain.then(async () => {
+      if (isOwner) {
+        // A handler that throws on every call must not wedge the channel forever: log it and still advance (the
+        // router dedupes a replay by provider message id, so holding the cursor back would not get it answered).
+        try { await onInbound(r); } catch (e) { log('imsg onInbound', e.message); }
+      }
+      // Only once this message's processing has settled does the cursor move: the value persisted to disk, and the
+      // since_rowid a restarted child subscribes with, must be the last rowid whose processing finished, never one
+      // still in flight behind a slow send or a busy router lock.
+      if (rpc) rpc.sinceRowid = r.rowid;
+      await mkdir(path.dirname(cursorFile()), { recursive: true, mode: 0o700 });
+      const tmp = `${cursorFile()}.tmp`;
+      await writeFile(tmp, `${r.rowid}\n`, { mode: 0o600 });
+      await rename(tmp, cursorFile());
+    }).catch((e) => { log('imsg cursor', e.message); });
   };
   rpc = new Rpc({ bin: cfg(env).bin, log, onMessage, sinceRowid: since });
   rpc.start();
@@ -144,8 +162,31 @@ const run = (bin, args, timeoutMs) => new Promise((resolve, reject) => {
 });
 
 /**
+ * The complete handles `imsg account` names (its "Account:" line and its "Aliases:" line), one per element. Split on
+ * commas and newlines, never on plain whitespace, so a phone number's own spaces ("+1 (500) 555-0123") stay one
+ * token and two aliases on the same line can never run together into one longer digit string.
+ */
+function accountHandles(out) {
+  const text = String(out ?? '');
+  // Emails as whole tokens wherever they stand, whatever labels the line; the rest per item with any "Label:" off.
+  const emails = (text.match(/[^\s,;:<>()"']+@[^\s,;:<>()"']+/g) ?? []).map((e) => e.replace(/\.+$/, ''));
+  const items = text.split('\n').map((line) => line.replace(/^\s*[A-Za-z][A-Za-z ]*:\s*/, ''))
+    .flatMap((line) => line.split(',')).map((tok) => tok.trim()).filter((tok) => tok && !tok.includes('@'));
+  return [...emails, ...items];
+}
+
+/** Whether a handle named by `imsg account` is the same handle as the owner's: a whole-token match, never a substring. */
+function sameHandle(handle, owner) {
+  if (handle.includes('@') || owner.includes('@')) return handle.includes('@') && owner.includes('@') && handle.toLowerCase() === owner.toLowerCase();
+  const hd = handle.replace(/[^\d]/g, ''), od = owner.replace(/[^\d]/g, '');
+  return hd.length >= 10 && od.length >= 10 && hd.slice(-10) === od.slice(-10);
+}
+
+/**
  * Health: imsg answers `account`, and that account is not the owner's own (a self-chat would raise no alert and
- * leave replies unverifiable). The aliases are compared, never returned.
+ * leave replies unverifiable). Handles are compared whole (never as a substring of the raw text, which would call a
+ * bot-owner@example.com account the owner's own owner@example.com, or match two phone numbers run together on one
+ * line). The aliases are compared, never returned.
  */
 export async function health({ env = _deps.env } = {}) {
   const miss = missing(env);
@@ -154,8 +195,7 @@ export async function health({ env = _deps.env } = {}) {
   let out;
   try { out = await run(c.bin, ['account'], 15_000); } catch (e) { return { ok: false, configured: true, error: `imsg account failed: ${String(e.message).slice(0, 200)}` }; }
   if (!out.trim()) return { ok: false, configured: true, error: 'Messages is signed out of iMessage on this account (imsg account printed nothing)' };
-  const digits = c.to.replace(/[^\d]/g, '');
-  const mine = c.to.includes('@') ? out.toLowerCase().includes(c.to) : digits.length >= 10 && out.replace(/[^\d\n]/g, '').includes(digits.slice(-10));
+  const mine = accountHandles(out).some((h) => sameHandle(h, c.to));
   if (mine) return { ok: false, configured: true, error: 'this Mac account\'s iMessage is the owner\'s own Apple ID: a text to the owner would be a note to self. Sign it into another Apple ID, or run the daemon as another macOS user' };
   return { ok: true, configured: true, watching: Boolean(rpc?.child) };
 }
