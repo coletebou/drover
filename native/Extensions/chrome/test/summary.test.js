@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { normalizeSummary, targetSessions, sessionKey, isOwner, OWNER_ACTOR } from '../lib/summary.js';
+import { normalizeSummary, targetSessions, sessionKey, isOwner, OWNER_ACTOR, normalizeBoard } from '../lib/summary.js';
 
 const fx = (n) => JSON.parse(readFileSync(new URL(`./fixtures/${n}`, import.meta.url), 'utf8'));
 
@@ -57,6 +57,13 @@ test('normalizeSummary: a Grok bot keeps its engine', () => {
   const s = normalizeSummary({ waiting: [{ id: 'grok:alpha', name: 'Alpha', host: 'local', engine: 'grok', kind: 'decision', headline: 'publish the notes?' }], working: [{ id: 'grok:beta', name: 'Beta', engine: 'grok' }] });
   assert.equal(s.waiting[0].engine, 'grok');
   assert.equal(s.working[0].engine, 'grok');
+});
+
+test('normalizeSummary and normalizeBoard: a Hermes session keeps its engine, and its approval its keys', () => {
+  const s = normalizeSummary({ waiting: [{ id: 'local-ab12', name: 'fixer', host: 'local', engine: 'hermes', kind: 'decision', headline: 'Run make deploy?', answer: 'keys', hash: 'p1', keys: ['1', '2', 'Enter', 'Escape'], dialog: { question: 'Run make deploy?', options: [{ n: 1, label: 'Allow once', selected: true }, { n: 2, label: 'Deny' }] } }] });
+  assert.equal(s.waiting[0].engine, 'hermes');
+  const b = normalizeBoard({ strips: [{ key: 'local|local-ab12', id: 'local-ab12', name: 'fixer', host: 'local', engine: 'hermes', lane: 'wait', reported: true, answer: 'keys', hash: 'p1', keys: ['1', '2', 'Enter', 'Escape'], dialog: { question: 'Run make deploy?', options: [{ n: 1, label: 'Allow once' }, { n: 2, label: 'Deny' }] } }] });
+  assert.equal(b.strips[0].engine, 'hermes');
 });
 
 test('normalizeSummary: negative counts become 0', () => {

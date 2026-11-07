@@ -9,12 +9,14 @@
 //   max or xhigh). Codex itself accepts any string, even a typo, and sends it.
 // So Drover validates here, before anything is picked, started or recorded. A launch effort only ever reaches the
 // agent as a setting of that one session (claude --effort, codex -c model_reasoning_effort, or the same key in
-// a headless thread's thread/start config), never as /effort or /model typed inside it, which in Claude Code
+// a headless thread's thread/start config, hermes --reasoning), never as /effort or /model typed inside it, which in Claude Code
 // overwrite the user's global default in ~/.claude/settings.json.
 
 export const EFFORT_LEVELS = Object.freeze({
   claude: Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']),
   codex: Object.freeze(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']),
+  // Hermes Agent 2026.9.24: `hermes chat --reasoning LEVEL` lists none, minimal, low, medium, high, xhigh, max, ultra.
+  hermes: Object.freeze(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']),
 });
 
 /** Every level any engine accepts (for a schema enum); the per-engine check is checkEffort(). */

@@ -181,6 +181,7 @@ select { padding-right: 24px; }
 .engine.codex { color: var(--lilac); background: var(--lilac-bg); }
 .engine.headless, .engine.grok { color: var(--ink-2); background: var(--bg-4); }
 .engine.openclaw { color: var(--lilac); background: var(--lilac-bg); }
+.engine.hermes { color: var(--moss); background: var(--moss-bg); }
 .engine.shell { color: var(--ink-3); background: var(--bg-3); }
 .state-amber { color: var(--amber); } .state-steel { color: var(--steel); } .state-moss { color: var(--moss); } .state-brick { color: var(--brick); }
 

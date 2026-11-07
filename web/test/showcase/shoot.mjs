@@ -142,8 +142,8 @@ async function web() {
       await t.until(text('Needs a decision') + ' && ' + text('claude-opus-5-5'));
       await sleep(1200);
       await t.shot('web-session-dark');
-      // A Codex thread and a Grok bot: the same drawer, their own transcripts.
-      for (const [name, file, wait] of [['demo-flaky', 'web-codex-dark', 'priceUpdated'], ['Scout', 'web-grok-dark', 'release notes are drafted']]) {
+      // A Codex thread, a Grok bot and a Hermes session waiting on an approval: the same drawer, their own transcripts.
+      for (const [name, file, wait] of [['demo-flaky', 'web-codex-dark', 'priceUpdated'], ['Scout', 'web-grok-dark', 'release notes are drafted'], ['Draft the 0.9 release notes', 'web-hermes-dark', 'Allow this session']]) {
         await t.evaluate(`[...document.querySelectorAll('.strip')].find((x) => x.querySelector('.name')?.textContent === ${JSON.stringify(name)}).click()`);
         await t.until(text(wait));
         await sleep(1000);
