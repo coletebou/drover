@@ -215,6 +215,8 @@ async function main() {
     }
     case 'rpc': {
       const { dispatchLocal } = await import(path.join(ROOT, 'core', 'api.js'));
+      // The ask hub's calls to this host (ask.deliver, ask.mark) are served only for an ssh session from the hub.
+      (await import(path.join(ROOT, 'core', 'ask', 'ops.js'))).serveRpcFrom(process.env.SSH_CONNECTION);
       // A front keeps this process while it uses it, past later pulls: host.version reports the commit it started on,
       // and once the checkout has moved off it every reply says stale, so the front retires this process for a fresh one
       // with the new code (core/remote.js). Checked every minute (DROVER_RPC_STALE_CHECK_MS); two git calls each time (checkoutHead).

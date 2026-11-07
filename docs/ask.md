@@ -9,7 +9,7 @@ the **hub** (`DROVER_ASK_HUB`, a host alias), sends every text and reads every r
 |---|---|
 | `ask.create` (`drover_ask`, `drover ask "…" --options a,b`) | `{question, options?}` or `questions: [{question, options?}]`, `sessionId` (MCP and the CLI default to the calling Claude Code session), `urgency: normal\|urgent`, `expiresAt` or `ttlMinutes` (default 24 h, at most 14 days), `channels?`. Returns at once: `askId`, `status`, and on the hub the `code` (`K7`). |
 | `ask.get` / `ask.list` / `ask.cancel` / `ask.status` | One ask with its answer and provenance; asks on a host; withdraw one; settings, hub and each channel's state (missing setting names, never values). |
-| `ask.deliver`, `ask.mark` | The hub's own calls to the asking host, over the ssh rpc peer it holds. Refused by MCP, `drover op` and the HTTP API. |
+| `ask.deliver`, `ask.mark` | The hub's own calls to the asking host, over the ssh rpc peer it holds. Refused by MCP, `drover op` and the HTTP API; a `drover rpc` serves them only for an ssh session from the hub machine (its ssh alias's address, or `DROVER_ASK_HUB_ADDRS`). |
 
 The answer arrives in the asking session as a message: `[Owner via telegram, verified] K7 → b (no)`, the question,
 and the `askId` to check with `ask.get`. The owner replies `K7 b`, `7b`, `b` (one ask open), free text, `1a 2b 3 yes`
@@ -49,8 +49,10 @@ refuses `type: ask`.
   (`source: <owner>:<channel>`, the provider message id, the sender, the raw text, `untrusted: false`).
 - Anything else is `inbound` with `untrusted: true`: never delivered, never acknowledged (no reply to strangers),
   rate-limited in the log. A reply relayed by another agent (a chat bot forwarding "he said yes") is never an answer.
-- Trust boundary: Drover trusts processes of its own user on each host, as for every op. What asks verify is that
-  the owner answered on a channel.
+- Trust boundary: no op can plant an answer. `events.append` refuses ask events, and the hub's calls to the asking
+  host are served only to the hub machine's ssh session, so a shell on that host cannot pipe a forged answer into a
+  local `drover rpc`; the answer records the address it was relayed from. A process of the same user that rewrites the
+  truth file or Drover's own code is beyond what any op can stop, as for every Drover record.
 - No secrets in texts: a question is plain text; work-looking questions (`DROVER_WORK_CONTEXT`) and machines of the work
   identity are refused, and the hub never reads another identity's hosts.
 

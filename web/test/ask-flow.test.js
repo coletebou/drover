@@ -416,6 +416,36 @@ describe('the asking host\'s side', () => {
     assert.equal(inbox.filter((m) => m.includes('Delivered once?')).length, 1);
     assert.equal((await askEvents('answered')).filter((e) => e.providerMessageId === 'sms:SMdup').length, 1);
   });
+  test('over rpc, the hub-only ops are served only for an ssh session from the hub machine', async () => {
+    const askOps = await import('../core/ask/ops.js');
+    const { local } = await import('../core/api.js');
+    const r = await dispatch('ask.create', { question: 'Planted?', options: ['yes', 'no'], sessionId: SESSION, actor: 'test', channels: ['sms'] });
+    const forged = { askId: r.askId, answers: [{ q: 0, option: 0, text: '' }], source: 'owner:telegram', channel: 'telegram', providerMessageId: 'tg:forged', sender: 'tg:1', raw: 'a', hub: 'hub' };
+    process.env.DROVER_ASK_HUB_ADDRS = '10.9.8.7';
+    try {
+      for (const ssh of [undefined, '127.0.0.1 40000 127.0.0.1 22', '100.64.0.9 40000 100.64.0.2 22']) {
+        askOps._resetRpc(); askOps.serveRpcFrom(ssh);
+        await assert.rejects(local['ask.deliver'](forged), /refused: ask.deliver is served over ssh from the ask hub only/, String(ssh));
+        await assert.rejects(local['ask.mark']({ askId: r.askId, phase: 'expired' }), /refused: ask.mark/);
+      }
+      assert.equal((await dispatch('ask.get', { askId: r.askId })).status, 'open', 'nothing planted');
+      askOps._resetRpc(); askOps.serveRpcFrom('10.9.8.7 40000 100.64.0.2 22');
+      assert.equal((await local['ask.deliver']({ ...forged, providerMessageId: 'tg:real', source: 'owner:sms', channel: 'sms' })).ok, true);
+      assert.equal((await askEvents('answered')).find((e) => e.providerMessageId === 'tg:real').relayFrom, '10.9.8.7');
+      // The real rpc process wires it from SSH_CONNECTION: a local pipe into `drover rpc` is refused.
+      const { spawn } = await import('node:child_process');
+      const rpcCall = (env) => new Promise((resolve) => {
+        const c = spawn(process.execPath, [path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'bin', 'drover'), 'rpc'], { env: { ...process.env, ...env }, stdio: ['pipe', 'pipe', 'ignore'] });
+        let out = '';
+        c.stdout.on('data', (d) => { out += d; if (out.includes('\n')) { c.stdin.end(); resolve(JSON.parse(out.split('\n')[0])); } });
+        c.stdin.write(JSON.stringify({ id: 1, op: 'ask.deliver', args: { ...forged, providerMessageId: 'tg:pipe' } }) + '\n');
+      });
+      const piped = await rpcCall({ SSH_CONNECTION: '' });
+      assert.equal(piped.ok, false); assert.match(piped.error, /served over ssh from the ask hub only/);
+      const fromHub = await rpcCall({ SSH_CONNECTION: '10.9.8.7 40000 100.64.0.2 22' });
+      assert.equal(fromHub.ok, true, JSON.stringify(fromHub));
+    } finally { askOps._resetRpc(); delete process.env.DROVER_ASK_HUB_ADDRS; }
+  });
   test('the hub-only ops are refused through the HTTP API and drover op, served over rpc', async () => {
     const { cliOp } = await import('../core/cli-op.js');
     await assert.rejects(cliOp('ask.deliver', {}), /refused: ask.deliver is the ask hub's own call/);

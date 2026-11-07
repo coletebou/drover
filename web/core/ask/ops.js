@@ -1,6 +1,9 @@
 // The ask ops (docs/ask.md). ask.create records a question where it is asked; the hub (DROVER_ASK_HUB) texts it and
 // routes the answer back (core/ask/router.js). ask.deliver and ask.mark are the hub's calls to the asking host, over
 // the ssh rpc peer it already holds; agents use ask.create, ask.get, ask.list, ask.cancel and ask.status.
+import { execFile } from 'node:child_process';
+import { lookup as dnsLookup } from 'node:dns/promises';
+import { isIP } from 'node:net';
 import * as events from '../events.js';
 import * as hosts from '../hosts.js';
 import * as placement from '../placement.js';
@@ -20,6 +23,35 @@ const MAX_LIFE_MS = 14 * 86_400_000;
  * through them. (A process of the same user can still write the truth file itself: docs/ask.md, trust.)
  */
 export const HUB_ONLY_OPS = new Set(['ask.deliver', 'ask.mark']);
+
+// In a `drover rpc` process (bin/drover sets it), the ssh session that started it: a hub-only op is served there only
+// when that session comes from the hub machine, so a shell on this host cannot pipe a forged answer into a local rpc.
+// Null in the daemon and in-process callers, which reach the ops only through the router (every public surface
+// refuses them first). A process of the same user that rewrites the truth file or Drover itself is past any op's reach:
+// docs/ask.md, trust.
+let rpcCaller = null;
+const bareIp = (a) => { let t = String(a ?? '').trim().replace(/^\[|\]$/g, '').replace(/%.*$/, '').toLowerCase(); if (t.startsWith('::ffff:') && isIP(t.slice(7)) === 4) t = t.slice(7); return t; };
+/** bin/drover rpc: this process serves ops for the ssh session SSH_CONNECTION names ("<client ip> <port> <server ip> <port>"). */
+export function serveRpcFrom(sshConnection) { const ip = String(sshConnection ?? '').trim().split(/\s+/)[0]; rpcCaller = { client: ip && isIP(bareIp(ip)) ? bareIp(ip) : null }; }
+export const _resetRpc = () => { rpcCaller = null; hubAddrs = null; };
+let hubAddrs = null;   // { hub, at, list }
+/** The hub machine's addresses: its ssh alias's HostName resolved, plus DROVER_ASK_HUB_ADDRS. Cached ten minutes. */
+export async function hubAddresses() {
+  const hub = config().hub;
+  const extra = String(envvar('ASK_HUB_ADDRS', _deps.env) ?? '').split(',').map((x) => bareIp(x)).filter((x) => isIP(x));
+  if (!hub) return extra;
+  const now = _deps.now();
+  if (!hubAddrs || hubAddrs.hub !== hub || now - hubAddrs.at > 10 * 60_000) {
+    const name = isIP(hub) ? hub : (await _deps.sshHostname(hub).catch(() => null)) ?? hub;
+    hubAddrs = { hub, at: now, list: isIP(name) ? [bareIp(name)] : await _deps.lookupAll(name).catch(() => []) };
+  }
+  return [...new Set([...hubAddrs.list, ...extra])];
+}
+async function assertFromHub(op) {
+  if (!rpcCaller) return;
+  if (rpcCaller.client && (await hubAddresses()).includes(rpcCaller.client)) return;
+  throw new Error(`refused: ${op} is served over ssh from the ask hub only, and this rpc came ${rpcCaller.client ? `from ${rpcCaller.client}` : 'from no ssh session'} (an address the hub reaches this host through: DROVER_ASK_HUB_ADDRS)`);
+}
 export const hubOnlyRefusal = (op) => new Error(`refused: ${op} is the ask hub's own call to the asking host; ask with ask.create (drover_ask)`);
 
 export const _deps = {
@@ -31,6 +63,8 @@ export const _deps = {
   now: () => Date.now(),
   hostName: () => hosts.localShortName().toLowerCase(),
   env: process.env,
+  sshHostname: (alias) => new Promise((resolve) => execFile('ssh', ['-G', alias], { timeout: 5000 }, (e, out) => resolve(e ? null : (/^hostname (\S+)$/m.exec(String(out))?.[1] ?? null)))),
+  lookupAll: async (name) => (await dnsLookup(name, { all: true })).map((x) => bareIp(x.address)),
 };
 
 const sameHost = (a, b) => String(a ?? '').toLowerCase() === String(b ?? '').toLowerCase();
@@ -208,12 +242,13 @@ export const ops = {
    * with sessions.message (a handoff chain's live successor included). Not for agents.
    */
   async 'ask.deliver'({ askId, code, answers, source, channel, providerMessageId, sender, raw, followUp = false, hub } = {}) {
+    await assertFromHub('ask.deliver');
     if (typeof askId !== 'string' || !Array.isArray(answers) || !answers.length) throw new Error('askId and answers required');
     const st = await state();
     const a = st.asks.get(askId);
     if (!a) return { ok: false, final: true, error: 'this host has no such ask' };
     const again = [...a.answers, ...a.followUps].some((x) => x.providerMessageId && x.providerMessageId === providerMessageId && x.source === source);
-    if (!again) await _deps.append({ type: 'ask', phase: 'answered', askId, answers, source, channel, providerMessageId, sender, raw: clip(String(raw ?? ''), 2000), untrusted: false, relayedBy: hub ?? null }, 'ask');
+    if (!again) await _deps.append({ type: 'ask', phase: 'answered', askId, answers, source, channel, providerMessageId, sender, raw: clip(String(raw ?? ''), 2000), untrusted: false, relayedBy: hub ?? null, ...(rpcCaller ? { relayFrom: rpcCaller.client } : {}) }, 'ask');
     if (a.deliveries.some((d) => d.ok && d.providerMessageId === providerMessageId)) return { ok: true, deduped: true };
     if (!a.sessionId) return { ok: true, delivered: false, note: 'the ask names no session; the answer is recorded for ask.get' };
     const late = followUp || (a.status !== 'open' && !(a.status === 'answered' && a.answers[0]?.providerMessageId === providerMessageId));
@@ -231,6 +266,7 @@ export const ops = {
 
   /** The hub tells the asking host the ask's code, or that it expired (then the session hears so). Not for agents. */
   async 'ask.mark'({ askId, phase, code, hub, why } = {}) {
+    await assertFromHub('ask.mark');
     const st = await state();
     const a = st.asks.get(askId);
     if (!a) return { ok: false, error: 'this host has no such ask' };

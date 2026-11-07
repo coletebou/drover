@@ -380,8 +380,9 @@ rate limit, and escalate to the next channel after `DROVER_ASK_ESCALATE_MINUTES`
 Only a reply its channel authenticated (the webhook's secret or signature, or the Messages database) and that comes
 from the owner's own id counts as an answer; anything else is recorded as an untrusted `inbound` and never delivered
 or acknowledged. `ask.get` returns the answer with its source, provider message id and sender. `events.append`
-refuses `ask` events, and the hub's own calls to the asking host (`ask.deliver`, `ask.mark`) are served only over its
-ssh rpc. Questions that look like work (`DROVER_WORK_CONTEXT`) and machines of the work identity are refused.
+refuses `ask` events, and the hub's own calls to the asking host (`ask.deliver`, `ask.mark`) are served only to an ssh
+session from the hub machine (the address its ssh alias resolves to; `DROVER_ASK_HUB_ADDRS` adds one, say for a hub
+that reaches a host through a jump host). Questions that look like work (`DROVER_WORK_CONTEXT`) and machines of the work identity are refused.
 
 ## Browser terminals
 
