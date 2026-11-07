@@ -118,6 +118,9 @@ export async function monitorPolicy({ shortName } = {}) {
 export const DEFAULT_CLASSES = Object.freeze({
   'claude-session': { needMemGB: 3.5, needCores: 0.5 },
   'codex-session': { needMemGB: 2, needCores: 0.5 },
+  // A Hermes session's TUI plus its share of the profile's gateway (about 50 MiB and 40 MiB resident when idle,
+  // measured 2026-10-25); the model runs remotely. Room for tool runs on top.
+  'hermes-session': { needMemGB: 1.5, needCores: 0.5 },
   'heavy-build': { needMemGB: 6, needCores: 4, minFreeDiskGB: 20 },
   'macos-only': { needMemGB: 2, needCores: 1, os: 'darwin', maxPressure: 'warn' },
 });

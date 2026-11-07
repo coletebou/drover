@@ -18,6 +18,7 @@ process.env.DROVER_STATE = path.join(tmp, 'state');
 process.env.DROVER_DOTFILES = path.join(tmp, 'dotfiles');
 process.env.DROVER_EVENTS = path.join(tmp, 'dotfiles', 'claude', 'drover-events.jsonl');
 process.env.CLAUDE_CONFIG_DIR = path.join(tmp, 'claude');
+process.env.HERMES_HOME = path.join(tmp, 'hermes');   // no Hermes sessions (the user's ~/.hermes is never read)
 await mkdir(path.join(tmp, 'dotfiles', 'claude'), { recursive: true });
 await writeFile(path.join(tmp, 'dotfiles', 'claude', 'fleet-hosts.txt'), 'oldbox\n');
 await mkdir(path.join(tmp, 'claude', 'sessions'), { recursive: true });

@@ -1,16 +1,18 @@
 // The showcase world: what test/devworld.js --showcase builds on top of the dev world, for screenshots and demos of
 // every client. Three hosts: studio runs the daemon, devbox is reached through the stand-in ssh (fake-ssh.js) and
 // spare is down. Every engine Drover drives: Claude Code sessions in tmux (test/fake-agent.js), Codex threads
-// (fake-codex.js), two Grok bots and the OpenClaw manager (test/fake-gateway.js). Docker compose stacks (fake-docker.js,
+// (fake-codex.js), two Grok bots, the OpenClaw manager (test/fake-gateway.js) and two Hermes Agent sessions on studio,
+// one waiting on an approval (test/fake-hermes.js). Docker compose stacks (fake-docker.js,
 // from test/fixtures/docker-inspect.jsonl, with git checkouts behind them) and a truth file with features, notes,
 // launches and messages. It all runs on this machine under one directory, with a HOME of its own; every name and every
 // line in it is invented.
 import { mkdirSync, mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { uuidv7 } from '../../core/ids.js';
+import { randomUUID, createHash } from 'node:crypto';
+import { makeHome } from '../fake-hermes.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = path.join(HERE, '..', 'fixtures', 'docker-inspect.jsonl');
@@ -59,7 +61,7 @@ const CODEX = {
 
 /** What the manager (the fake gateway) answers, in turn: about this world, so a reply matches the board beside it. */
 export const REPLIES = [
-  'Three things are waiting on you: **demo-build** on studio wants to run `npm test` (a permission prompt), **demo-review** on devbox asked whether the review should cover the test fixtures, and the Grok bot **Scout** wants your OK to publish the v0.4 release notes.\n\nEverything else is moving: demo-docs is rewriting the setup guide, demo-lint is fixing lint on devbox, and the Codex thread demo-parser is running the parser tests.',
+  'Four things are waiting on you: **demo-build** on studio wants to run `npm test` (a permission prompt), **demo-review** on devbox asked whether the review should cover the test fixtures, the Hermes session **Draft the 0.9 release notes** wants to run `rm -rf build/`, and the Grok bot **Scout** wants your OK to publish the v0.4 release notes.\n\nEverything else is moving: demo-docs is rewriting the setup guide, demo-lint is fixing lint on devbox, and the Codex thread demo-parser is running the parser tests.',
   'Since your last look: demo-notes finished reorganising the notes, the Codex thread demo-flaky fixed the flaky checkout test and asks whether to open a pull request, and the `webapp` stack on studio has one unhealthy service (web-app-reports fails its health check).',
   'studio and devbox answer; spare has not answered ssh since this morning. studio runs 2 Claude Code sessions, a Codex thread, both Grok bots and me; devbox runs 3 Claude Code sessions and a Codex thread.',
 ];
@@ -114,6 +116,8 @@ export function prepare({ dir, root, base, home = path.join(dir, 'home'), now = 
   // ---- the hosts: the front one is this daemon, the others answer through the stand-in ssh
   const env = (name, hostDir) => ({
     HOME: home, DROVER_HOST: name, DROVER_VITALS: 'off',
+    // Hermes lives on studio, in its HOME; another host names a home of its own that does not exist, so it lists none.
+    HERMES_HOME: hostDir ? path.join(hostDir, 'hermes') : path.join(home, '.hermes'),
     DROVER_DOCKER: path.join(bin, 'docker'), DEVWORLD_CONTAINERS: path.join(dir, `containers-${name}.jsonl`),
     DROVER_DOCKER_KINDS: JSON.stringify([{ kind: 'app', match: '^web-app-', label: 'apps' }, { kind: 'ml', match: '^web-ml-', label: 'ML' }, { kind: 'core', match: '^web-' }]),
     // Another host runs no manager: its state dir is its own and empty, so the HOME it shares with studio (where
@@ -194,8 +198,38 @@ export function prepare({ dir, root, base, home = path.join(dir, 'home'), now = 
   const hostsFile = path.join(dir, 'hosts.json');
   writeFileSync(hostsFile, JSON.stringify({ drover: path.join(root, 'bin', 'drover'), hosts: Object.fromEntries(remotes.map((r) => [r.name, r.down ? { down: r.down } : { settings: r.settings }])) }, null, 1), { mode: 0o600 });
 
+  // ---- Hermes on studio: its state.db (what the daemon reads) and what its gateway holds live (devworld starts it)
+  const hermesHome = path.join(home, '.hermes');
+  const at = (minutesAgo) => now / 1000 - minutesAgo * 60;
+  // Ids shaped like Hermes' own ("local-" and 64 hex), made from a word so every run has the same ones.
+  const hermesId = (word) => `local-${createHash('sha256').update(`showcase ${word}`).digest('hex')}`;
+  const release = hermesId('release'), triage = hermesId('triage');
+  const call = (id, name, args) => [{ id, function: { name, arguments: JSON.stringify(args) } }];
+  makeHome(hermesHome, {
+    sessions: [
+      { id: release, title: 'Draft the 0.9 release notes', cwd: path.join(home, 'code', 'demo'), model: 'claude-sonnet-5-5', started_at: at(9), last_activity_at: at(1), message_count: 8 },
+      { id: triage, title: 'Triage the flaky tests', cwd: path.join(home, 'code', 'demo'), model: 'claude-haiku-5-5', started_at: at(30), last_activity_at: at(22), message_count: 2 },
+    ],
+    messages: [
+      { session_id: release, role: 'user', content: 'Draft the 0.9 release notes from what merged since 0.8, then clean out the build folder.', timestamp: at(9) },
+      { session_id: release, role: 'assistant', content: '', tool_calls: call('c1', 'terminal', { command: 'git log --oneline v0.8..HEAD' }), timestamp: at(8.5) },
+      { session_id: release, role: 'tool', tool_call_id: 'c1', content: JSON.stringify({ output: 'a41c2e9 feat(lexer): line numbers in errors\n7f30b18 feat(parser): trailing commas\n2c9d0aa fix(cli): exit code on a parse error', exit_code: 0, error: null }), timestamp: at(8.4) },
+      { session_id: release, role: 'assistant', content: '', tool_calls: call('c2', 'write_file', { path: 'docs/release-notes-0.9.md', content: '...' }), timestamp: at(6) },
+      { session_id: release, role: 'tool', tool_call_id: 'c2', content: JSON.stringify({ output: 'wrote 34 lines', exit_code: 0, error: null }), timestamp: at(5.9) },
+      { session_id: release, role: 'assistant', content: 'The notes are in `docs/release-notes-0.9.md`: two features (line numbers in errors, trailing commas) and one fix. Now the build folder.', timestamp: at(2) },
+      { session_id: release, role: 'assistant', content: '', tool_calls: call('c3', 'terminal', { command: 'rm -rf build/' }), timestamp: at(1) },
+      { session_id: triage, role: 'user', content: 'Which tests failed most this week?', timestamp: at(30) },
+      { session_id: triage, role: 'assistant', content: 'Three: trailing commas in the parser (4 runs), lexer line numbers (2) and the docs link checker (1). The first two share one fixture, so I would fix that first.', timestamp: at(22) },
+    ],
+  });
+  const hermes = { home: hermesHome, live: {
+    [release]: { status: 'waiting', title: 'Draft the 0.9 release notes', prompts: [{ kind: 'approval', prompt_id: 'showcase-approval-1', execution_generation: 1, command: 'rm -rf build/', description: 'recursive delete', choices: ['once', 'deny', 'session', 'always'], timeout_s: 300 }] },
+    [triage]: { status: 'idle', title: 'Triage the flaky tests' },
+  } };
+
   return {
     home,
+    hermes,
     front: { name: front.name, agents: front.agents.map((a) => ({ ...a, cwd: path.join(home, a.cwd) })), env: env(front.name, null) },
     remotes: remotes.filter((r) => !r.down),
     hostsFile,

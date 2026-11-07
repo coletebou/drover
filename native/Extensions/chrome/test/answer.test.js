@@ -154,3 +154,12 @@ test('keyName', () => {
   assert.equal(keyName('Escape'), 'Esc');
   assert.equal(keyName('3'), '3');
 });
+
+test('a Hermes approval strip (its own dialog, reported) is pressed through sessions.answer with its prompt id, never tmux', async () => {
+  const item = { id: 'local-ab12', host: 'local', engine: 'hermes', reported: true, tmux: 'agents:@7', answer: 'keys', hash: 'prompt-1', keys: ['1', '2', '3', '4', 'Enter', 'Escape'], dialog: { question: 'Run rm -rf scratch (recursive delete)?', options: [{ n: 1, label: 'Allow once', selected: true }, { n: 2, label: 'Allow this session' }, { n: 3, label: 'Always allow' }, { n: 4, label: 'Deny' }] } };
+  const calls = [];
+  const out = await pressKey({ op: async (op, args) => { calls.push([op, args.id, args.key, args.expect]); return { ok: true, key: args.key, choice: 'deny' }; } }, item, '4', { actor: 'chrome' });
+  assert.deepEqual(calls, [['sessions.answer', 'local-ab12', '4', 'prompt-1']]);
+  assert.ok(out);
+  await assert.rejects(() => pressKey({ op: async () => ({ ok: true }) }, item, 'y'), /not a key this dialog takes/);
+});
