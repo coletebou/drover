@@ -14,7 +14,7 @@ import * as codex from './codex.js';
 import { append } from './events.js';
 import { checkEffort, checkModelEffort } from './effort.js';
 import { loginShellPath } from './proc.js';
-import { trustFolder } from './trust.js';
+import { trustFolder, onboardClaude } from './trust.js';
 // Cycle: credpool.js imports loadProfiles from here. Neither module uses the
 // other at module load, so the cycle is safe.
 import * as credentials from './credpool.js';
@@ -49,7 +49,7 @@ export async function resolveProfile(engine, profileId) {
 const SAFE_NAME = (s) => String(s ?? '').replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'agent';
 
 /** Test seams: the tmux window spawner, the headless Claude class, the Codex thread starter, the Codex model catalog, the agent PATH and the folder trust step. Default to the real adapters. */
-export const _deps = { newWindow: (opts) => tmux.newWindow(opts), HeadlessClaude: claude.HeadlessClaude, startCodexThread: (opts) => codex.startThread(opts), codexModelEfforts: () => codex.modelEfforts(), agentPath: () => loginShellPath(), trustFolder: (engine, dir, opts) => trustFolder(engine, dir, opts) };
+export const _deps = { newWindow: (opts) => tmux.newWindow(opts), HeadlessClaude: claude.HeadlessClaude, startCodexThread: (opts) => codex.startThread(opts), codexModelEfforts: () => codex.modelEfforts(), agentPath: () => loginShellPath(), trustFolder: (engine, dir, opts) => trustFolder(engine, dir, opts), onboardClaude: (opts) => onboardClaude(opts) };
 
 /**
  * A tmux window cannot be watched for exit from here, so a tmux launch counts
@@ -231,8 +231,12 @@ export async function launch(req, { actor = 'drover' } = {}) {
     // would leave the token readable in #{pane_start_command}); the event stores only the bare argv.
     const childEnv = { ...(engine === 'claude' ? UNATTENDED_CLAUDE_ENV : {}), PATH: agentPath, ...Object.fromEntries(Object.entries(profile.env).map(([k, v]) => [k, expandHome(v)])), ...credEnv };
     // Before the window opens: the agent reads its trust as it starts. The env decides which config file it reads.
-    const trust = req.trust === false || req.trust === 'false' ? null : await _deps.trustFolder(engine, cwd, { env: { ...process.env, ...childEnv } });
-    const withTrust = trust ? { trust } : {};
+    const trustOff = req.trust === false || req.trust === 'false';
+    // A config that never finished first-run onboarding shows two screens before the trust dialog: finish it too,
+    // and say so only when something was written.
+    const onboarding = trustOff || engine !== 'claude' ? null : await _deps.onboardClaude({ env: { ...process.env, ...childEnv } });
+    const trust = trustOff ? null : await _deps.trustFolder(engine, cwd, { env: { ...process.env, ...childEnv } });
+    const withTrust = { ...(trust ? { trust } : {}), ...(onboarding && onboarding.changed !== false ? { onboarding } : {}) };
     const { target } = await _deps.newWindow({ session, name, cwd, argv, env: childEnv });
     if (cred) await credentials.acquire(cred.id, `tmux:${target}`, { ttlMs: TMUX_ACTIVE_TTL_MS });
     const ev = await append({ ...base, argv, ...withTrust, result: { tmux: target, name } }, { actor });
