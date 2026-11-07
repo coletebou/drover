@@ -16,7 +16,7 @@ import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { envvar } from './envvars.js';
-import { DEFAULT_THRESHOLDS, mergeThresholds, PRESSURE_RANK, vitalsSwitch } from './vitals.js';
+import { DEFAULT_THRESHOLDS, memoryIsShort, mergeThresholds, PRESSURE_RANK, vitalsSwitch } from './vitals.js';
 
 const HOST_RE = /^[A-Za-z0-9_.-]{1,80}$/;
 const isObj = (v) => v && typeof v === 'object' && !Array.isArray(v);
@@ -132,6 +132,7 @@ export function classesOf(catalog) {
  * multiplier on its score: below 1 for a production box or a machine to spare), reserveMemGB it must keep available
  * after the new workload, caps on load (per core and absolute), the worst memory pressure (macOS) or stall share
  * (Linux PSI) it may be at, swap caps, and the free space its work volume (diskPath, else the root or data volume) needs.
+ * maxSwapIoPerSec caps pages swapped out; pages in plus out count against it only while memory is short.
  */
 export const DEFAULT_POLICY = Object.freeze({
   classes: null, weight: 1, reserveMemGB: 2, maxLoadPerCore: 1.5, maxLoad: null, maxPressure: 'normal', maxPsiSome60: 25,
@@ -151,7 +152,7 @@ function workDisk(v, mount) {
  * headroom), each left after the workload and the reserve as a share of the host, scaled down for heavy swap use and
  * for macOS memory pressure at warn. A host that fails any rule scores 0 and says why.
  */
-export function judge({ vitals, policy = {}, cls = {}, className = 'claude-session', error = null, pendingMemGB = 0 } = {}) {
+export function judge({ vitals, policy = {}, cls = {}, className = 'claude-session', error = null, pendingMemGB = 0, thresholds = DEFAULT_THRESHOLDS } = {}) {
   const p = { ...DEFAULT_POLICY, ...(isObj(policy) ? policy : {}) };
   if (!vitals) return { eligible: false, score: 0, why: [`unreachable${error ? `: ${String(error).slice(0, 160)}` : ''}`], facts: {} };
   const why = [];
@@ -174,7 +175,10 @@ export function judge({ vitals, policy = {}, cls = {}, className = 'claude-sessi
   const sw = vitals.swap;
   if (sw && !sw.dynamic && Number.isFinite(p.maxSwapPct) && sw.usedPct > p.maxSwapPct) why.push(`swap ${sw.usedPct}% used, over its cap of ${p.maxSwapPct}%`);
   if (sw && Number.isFinite(p.maxSwapGB) && sw.usedMB / 1024 > p.maxSwapGB) why.push(`swap ${r1(sw.usedMB / 1024)} GB used, over its cap of ${p.maxSwapGB} GB`);
-  if (sw && Number.isFinite(sw.ioPerSec) && Number.isFinite(p.maxSwapIoPerSec) && sw.ioPerSec > p.maxSwapIoPerSec) why.push(`swapping ${sw.ioPerSec} pages/s`);
+  // Swap-in with memory to spare is recovery, not a storm (the monitor grades it the same way). A sample
+  // from before in and out were split only has ioPerSec, which stays the rate.
+  const swapWhy = swapStormWhy(sw, memoryIsShort(vitals.mem, thresholds), p.maxSwapIoPerSec);
+  if (swapWhy) why.push(swapWhy);
   const disk = workDisk(vitals, p.diskPath);
   const minDisk = Math.max(Number(p.minFreeDiskGB) || 0, Number(cls.minFreeDiskGB) || 0);
   if (p.diskPath && !disk) why.push(`its work volume ${p.diskPath} was not measured`);
@@ -190,6 +194,18 @@ export function judge({ vitals, policy = {}, cls = {}, className = 'claude-sessi
   const facts = { availGB: r1(availGB), totalGB: r1(totalGB), load, cores, ...(pr ? { pressure: pr.level ?? pr.some60 } : {}), ...(sw ? { swapPct: sw.usedPct, swapGB: r1(sw.usedMB / 1024) } : {}), ...(disk ? { disk: disk.mount, diskFreeGB: r1(disk.availGB) } : {}) };
   const score = Math.round(weight * (0.6 * memHead + 0.4 * cpuHead) * factor * 1000) / 1000;
   return { eligible: why.length === 0, score: why.length ? 0 : score, why, facts };
+}
+
+/**
+ * Why this swap rate refuses more work, or null when it does not. Pages swapped out count on their own. Pages in
+ * plus out count only while memory is short. Without outPerSec, ioPerSec (in plus out, as older hosts report it) counts.
+ */
+function swapStormWhy(sw, memShort, maxIo) {
+  if (!sw || !Number.isFinite(maxIo)) return null;
+  if (!Number.isFinite(sw.outPerSec)) return Number.isFinite(sw.ioPerSec) && sw.ioPerSec > maxIo ? `swapping ${sw.ioPerSec} pages/s` : null;
+  if (sw.outPerSec > maxIo) return `swapping out ${sw.outPerSec} pages/s`;
+  if (memShort && Number.isFinite(sw.ioPerSec) && sw.ioPerSec > maxIo) return `swapping ${sw.ioPerSec} pages/s in and out while memory is short`;
+  return null;
 }
 
 /**
