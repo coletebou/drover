@@ -9,7 +9,7 @@
 // rendered by this module from the same strips the board uses.
 import { h, clear, engine, ago, btn, empty } from './dom.js';
 import { waitingStrips, finishedStrips } from './strips.js';
-import { answerModel, pressKey, pressedLabel, announceAnswered, pressApproval, oneTap } from './answer-model.js';
+import { answerModel, pressKey, pressedLabel, announceAnswered, pressApproval, oneTap, approvalToast } from './answer-model.js';
 
 /** Render the waiting list into `root`; returns { update(), destroy() }. */
 export function mountWaiting(root, ctx, { compact = true, onOpen } = {}) {
@@ -37,7 +37,8 @@ export function mountWaiting(root, ctx, { compact = true, onOpen } = {}) {
     busy.add(s.key); paint();
     try {
       const r = await pressApproval(ctx.answerApproval, m, n);
-      ctx.toast(`${s.name}: ${r?.decision?.label ?? 'answered'}${r?.delivery?.ok === false ? ` (not delivered: ${r.delivery.error ?? 'failed'})` : ''}`, r?.delivery?.ok === false ? 'error' : 'ok', 6000);
+      const [text, kind] = approvalToast(s.name, r);
+      ctx.toast(text, kind, 6000);
       sent.set(s.key, { approval: m.id, at: Date.now() }); setTimeout(paint, 6100);
       globalThis.document?.dispatchEvent(new CustomEvent('drover:answered', { detail: { host: m.host, approval: m.id } }));
     } catch (e) { ctx.toast(`${s.name}: not answered, ${e.message}`, 'error', 7000); }

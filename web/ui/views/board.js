@@ -6,7 +6,7 @@
 // place too (one button per option). Click a strip for the drawer; j/k move, Enter opens, m talks to the manager.
 import { h, clear, engine, ago, dot, empty, loading, fmtTime, plural } from '../dom.js';
 import { mountManagerChat } from '../manager-chat.js';
-import { answerModel, pressKey, pressedLabel, pressApproval, oneTap } from '../answer-model.js';
+import { answerModel, pressKey, pressedLabel, pressApproval, oneTap, approvalToast } from '../answer-model.js';
 import { mdText } from '../markdown.js';
 import { receiptText, approvalText } from '../chat-model.js';
 
@@ -174,7 +174,8 @@ export default {
       busy.add(s.key); render();
       try {
         const r = await pressApproval(ctx.answerApproval, m, n);
-        ctx.toast(`${s.name}: ${r?.decision?.label ?? 'answered'}${r?.delivery?.ok === false ? ` (not delivered: ${r.delivery.error ?? 'failed'})` : ''}`, r?.delivery?.ok === false ? 'error' : 'ok', 6000);
+        const [text, kind] = approvalToast(s.name, r);
+        ctx.toast(text, kind, 6000);
         sent.set(s.key, { approval: m.id, at: Date.now() }); setTimeout(() => render(), SENT_MS + 100);
       } catch (e) { ctx.toast(`${s.name}: not answered, ${e.message}`, 'error', 7000); }
       busy.delete(s.key); render();

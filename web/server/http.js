@@ -21,6 +21,7 @@ import * as pair from '../core/pair.js';
 import * as botAuth from '../core/bots/oauth.js';
 import * as grok from '../core/bots/grok.js';
 import * as approvals from '../core/bots/approvals.js';
+import * as channels from '../core/bots/channels.js';
 import * as clients from '../core/clients.js';
 import { markDaemon as markSearchDaemon, startService as startSearch } from '../core/search/service.js';
 import * as plugins from '../core/plugins.js';
@@ -268,6 +269,7 @@ export async function startServer({ port = 7337, bind = '127.0.0.1' } = {}) {
           if (route === 'pending') return json(res, 200, { ok: true, result: botAuth.pendingList() });
           if (route === 'grants') return json(res, 200, { ok: true, result: await botAuth.grantsList({ includeRevoked: url.searchParams.get('all') === 'true' }) });
           if (route === 'routines') return json(res, 200, { ok: true, result: await grok.routines() });
+          if (route === 'channels') return json(res, 200, { ok: true, result: await channels.list() });
           return json(res, 404, { ok: false, error: 'no such route' });
         }
         if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'use POST' });
@@ -283,10 +285,14 @@ export async function startServer({ port = 7337, bind = '127.0.0.1' } = {}) {
           else if (route === 'routine') result = await grok.setRoutine(body.bot, { url: body.url, key: body.key, title: body.title });
           else if (route === 'routine/remove') result = await grok.removeRoutine(body.bot);
           else if (route === 'routine/test') result = await grok.sendTest(body.bot);
+          // Channels a bot may post to (core/bots/channels.js): where every post the owner approves goes.
+          else if (route === 'channels/add') result = await channels.setChannel(body.name, { kind: body.kind, url: body.url, format: body.format, argv: body.argv, title: body.title, bots: body.bots });
+          else if (route === 'channels/remove') result = await channels.removeChannel(body.name);
+          else if (route === 'channels/test') result = await channels.test(body.name);
           else return json(res, 404, { ok: false, error: 'no such route' });
           if (route === 'approve' || route === 'deny') broadcast('botauth', { code: String(body.code).replace(/[\s-]/g, ''), resolved: route === 'approve' ? 'approved' : 'denied' });
           return json(res, 200, { ok: true, result });
-        } catch (e) { if (e instanceof botAuth.OAuthError) return json(res, e.status ?? 400, { ok: false, error: e.message }); throw e; }
+        } catch (e) { if (e instanceof botAuth.OAuthError || e instanceof channels.ChannelError) return json(res, e.status ?? 400, { ok: false, error: e.message }); throw e; }
       }
       // A Grok bot's approval request (core/bots/approvals.js) is answered here only: the main token, off the op table,
       // so no agent with MCP or ssh rpc can approve a purchase for the owner. The widget token stops above (WIDGET_PATHS).

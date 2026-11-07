@@ -54,6 +54,17 @@ export function standsFor(expiresAt, now = Date.now()) {
   return left < 90 * 60_000 ? `${Math.max(1, Math.round(left / 60_000))} min` : left < 48 * 3600_000 ? `${Math.round(left / 3600_000)} h` : `${Math.round(left / 86_400_000)} days`;
 }
 
+/**
+ * What answering a request did, for a toast: [text, kind]. The option picked; what Drover did for it (a post sent or
+ * not: outcome); whether the bot was told (delivery).
+ */
+export function approvalToast(who, r) {
+  const done = !r?.outcome ? '' : r.outcome.ok === true ? `, ${r.outcome.done ?? 'done'}`
+    : r.outcome.unknown ? `, but Drover cannot tell whether it went out: ${r.outcome.error ?? 'it did not finish'}` : `, but Drover could not do it: ${r.outcome.error ?? 'failed'}`;
+  const told = r?.delivery?.ok === false ? ` (${who ?? 'the bot'} was not reached: ${r.delivery.error ?? 'failed'})` : '';
+  return [`${who ?? 'The bot'}: ${r?.decision?.label ?? 'answered'}${done}${told}`, (r?.outcome && r.outcome.ok !== true) || r?.delivery?.ok === false ? 'error' : 'ok'];
+}
+
 /** Answer the approval request a card shows with option n. answer(id, n, { host }) -> the daemon's result. */
 export async function pressApproval(answer, m, n) {
   if (m?.mode !== 'approval' || !m.buttons.some((b) => b.n === n)) throw new Error(`not an option of that request: ${n}`);

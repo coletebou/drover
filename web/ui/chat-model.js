@@ -359,7 +359,7 @@ export function receiptText(e) {
  * "cole answered ap_… for grok:alpha: Approve", "grok:alpha withdrew ap_…". The question carries the bot's mark.
  */
 export function approvalText(e) {
-  if (e?.state === 'decided') return `${e.actor ?? '?'} answered ${e.aid ?? '?'} for ${e.bot ?? 'a bot'}: ${e.decision?.label ?? '?'}${e.via ? ` (${e.via})` : ''}`;
+  if (e?.state === 'decided') return `${e.actor ?? '?'} answered ${e.aid ?? '?'} for ${e.bot ?? 'a bot'}: ${e.decision?.label ?? '?'}${e.via ? ` (${e.via})` : ''}${e.outcome ? (e.outcome.ok ? '; done' : e.outcome.unknown ? `; not known whether done: ${e.outcome.error ?? 'it did not finish'}` : `; not done: ${e.outcome.error ?? 'failed'}`) : ''}`;
   if (e?.state === 'withdrawn') return `${e.bot ?? 'a bot'} withdrew ${e.aid ?? '?'}`;
   return `${e?.bot ?? 'a bot'} asks for approval (${e?.aid ?? '?'}): ${e?.question ?? ''}${Array.isArray(e?.options) ? ` [${e.options.map((o) => o?.label).filter(Boolean).join(' / ')}]` : ''}`;
 }
