@@ -117,6 +117,16 @@ describe('iMessage', () => {
       assert.deepEqual(r.usable({ order: ['imessage'] }), []);
     } finally { r.stop(); rd.channels = real; }
   });
+  test('no watch, no iMessage: a failed subscribe refuses sends until the restarted child subscribes', async () => {
+    const flag = path.join(tmp, 'subscribe-fails');
+    await writeFile(flag, '1');
+    process.env.FAKE_IMSG_SUBSCRIBE_FAIL = flag;
+    stop(); stop = await imessage.start((m) => router.inbound(m), { log: () => {} });
+    await assert.rejects(imessage.send({ text: 'x' }), /not watching for replies/);
+    await rm(flag);
+    assert.ok(await until(async () => { try { await imessage.send({ text: 'back' }); return true; } catch { return false; } }, 6000), 'recovers after the restart');
+    delete process.env.FAKE_IMSG_SUBSCRIBE_FAIL;
+  });
   test('who counts as the owner, as read from a message', () => {
     assert.equal(imessage.readMessage(msg({ text: 'x' })).verified, true);
     assert.equal(imessage.readMessage(msg({ sender: 'OWNER@Example.com', chat_guid: 'iMessage;-;owner@example.com' }), { env: { DROVER_ASK_IMESSAGE_TO: 'owner@example.com' } }).verified, true);

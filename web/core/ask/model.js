@@ -103,7 +103,7 @@ export function validateAskEvent(ev) {
 
 /** A blank ask, filled by the events that name it. */
 function blank(askId) {
-  return { askId, status: 'open', code: null, origin: null, deliverTo: null, sessionId: null, sessionName: null, questions: [], urgency: 'normal', expiresAt: null, channels: null, createdAt: null, createdBy: null, routedAt: null, closedAt: null, answers: [], followUps: [], deliveries: [], sends: [], inbound: [], why: null };
+  return { askId, answeredQs: new Set(), merged: [], status: 'open', code: null, origin: null, deliverTo: null, sessionId: null, sessionName: null, questions: [], urgency: 'normal', expiresAt: null, channels: null, createdAt: null, createdBy: null, routedAt: null, closedAt: null, answers: [], followUps: [], deliveries: [], sends: [], inbound: [], why: null };
 }
 
 /** The ask's own fields from a created or routed event (routed carries a copy for asks made on another host). */
@@ -151,9 +151,14 @@ export function foldAsks(events = []) {
         const ans = { ts: e.ts, answers: e.answers, source: e.source, channel: e.channel ?? null, providerMessageId: e.providerMessageId ?? null, sender: e.sender ?? null, raw: e.raw ?? null, untrusted: false };
         // The same provider message recorded twice (the hub's event and the asking host's copy): one answer.
         if (a.answers.some((x) => x.providerMessageId && x.providerMessageId === ans.providerMessageId && x.source === ans.source)) break;
-        if (a.status === 'open') { a.status = 'answered'; a.closedAt = e.ts; a.answers.push(ans); }
-        else if (a.status === 'answered') a.followUps.push(ans);
-        else a.followUps.push(ans);   // after a cancel or expiry: kept, and still passed on (router), never reopening it
+        // Each question takes its first answer; the ask is answered once every question has one. An answer that adds no
+        // question (or comes after a cancel or expiry) is a follow-up: kept, still passed on, never reopening the ask.
+        const fresh = a.status === 'open' ? e.answers.filter((x) => !a.answeredQs.has(x.q)) : [];
+        if (fresh.length) {
+          a.answers.push(ans);
+          for (const x of fresh) { a.answeredQs.add(x.q); a.merged[x.q] = x; }
+          if (a.answeredQs.size >= Math.max(1, a.questions.length)) { a.status = 'answered'; a.closedAt = e.ts; }
+        } else a.followUps.push(ans);
         break;
       }
       case 'delivered': get(e.askId).deliveries.push({ ts: e.ts, ok: e.ok !== false, final: e.final === true, error: e.error ?? null, to: e.to ?? null, kind: e.kind ?? 'answer', providerMessageId: e.providerMessageId ?? null }); break;
@@ -252,15 +257,16 @@ export function answerWords(q, x) {
   return `"${clip(oneLine(x.text ?? ''), 600)}"`;
 }
 
-/** What the asking session receives: provenance first, then the answer, then how to check it. */
-export function deliveryText(a, ans, { followUp = false, channel, ownerName = OWNER_NAME } = {}) {
+/** What the asking session receives: provenance first, then the answer, then how to check it. remaining: open questions. */
+export function deliveryText(a, ans, { followUp = false, channel, ownerName = OWNER_NAME, remaining = [] } = {}) {
   const via = channel ?? ans.channel ?? String(ans.source ?? '').split(':')[1] ?? 'text';
   const parts = a.questions.length === 1
     ? [answerWords(a.questions[0], ans.answers[0] ?? {})]
     : ans.answers.map((x) => `${x.q + 1}: ${answerWords(a.questions[x.q], x)}`);
   const head = `[${ownerName} via ${via}, verified${followUp ? ', follow-up' : ''}] ${a.code ?? 'ask'} → ${parts.join(' · ')}`;
   const q = a.questions.length === 1 ? `Question: ${clip(a.questions[0].question, 300)}` : `Questions: ${a.questions.map((x, i) => `${i + 1}) ${clip(x.question, 120)}`).join(' ')}`;
-  return `${head}\n${q}\n(ask ${a.askId}; check it with drover_ask_get)`;
+  const still = remaining.length ? `\nStill open: ${remaining.map((i) => `${i + 1}) ${clip(a.questions[i]?.question ?? '', 80)}`).join(' ')}` : '';
+  return `${head}\n${q}${still}\n(ask ${a.askId}; check it with drover_ask_get)`;
 }
 
 /** What the asking session receives when nobody answered in time, or the owner stopped asks. */

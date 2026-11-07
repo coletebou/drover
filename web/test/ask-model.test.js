@@ -62,6 +62,15 @@ describe('the fold', () => {
     assert.equal(a.answers.length, 1); assert.equal(a.answers[0].answers[0].option, 1);
     assert.equal(a.followUps.length, 1);
   });
+  test('a multi-question ask is answered question by question: open until every question has its first answer', () => {
+    const q3 = { ...created, questions: [{ question: 'A?', options: [] }, { question: 'B?', options: [] }] };
+    const part = (id, ts, msg, qs) => ({ ...answered(id, ts, msg, null), answers: qs.map((q) => ({ q, option: null, text: `t${q}` })) });
+    const one = foldAsks([q3, routed, part('p1', T0 + 1000, 'SMp1', [0])]).asks.get('a1');
+    assert.equal(one.status, 'open'); assert.deepEqual([...one.answeredQs], [0]);
+    const both = foldAsks([q3, routed, part('p1', T0 + 1000, 'SMp1', [0]), part('p2', T0 + 2000, 'SMp2', [0, 1]), part('p3', T0 + 3000, 'SMp3', [1])]).asks.get('a1');
+    assert.equal(both.status, 'answered'); assert.equal(both.answers.length, 2); assert.equal(both.followUps.length, 1);
+    assert.deepEqual(both.merged.map((x) => x.text), ['t0', 't1'], 'each question keeps its first answer');
+  });
   test('a cancel after the answer does not undo it; an answer after a cancel is kept as a follow-up', () => {
     const cancel = (ts) => ({ id: `c${ts}`, ts: iso(ts), type: 'ask', phase: 'cancelled', askId: 'a1' });
     assert.equal(foldAsks([created, answered('e3', T0 + 5000, 'SM1', 0), cancel(T0 + 6000)]).asks.get('a1').status, 'answered');

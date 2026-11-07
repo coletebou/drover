@@ -125,7 +125,9 @@ function inboundModes() {
 
 /** An ask as the ops return it: what it asks, where it stands, the answer with its provenance. */
 export function view(a, { full = false } = {}) {
-  const ans = a.answers[0] ?? null;
+  // The answer is every question's first answer (several replies may have answered a multi-question ask).
+  const merged = (a.merged ?? []).filter(Boolean);
+  const ans = a.answers[0] ? { ...a.answers[0], answers: merged.length ? merged : a.answers[0].answers } : null;
   return {
     askId: a.askId, code: a.code, status: a.status, origin: a.origin, sessionId: a.sessionId, sessionName: a.sessionName,
     questions: a.questions, urgency: a.urgency, channels: a.channels ?? null, createdAt: a.createdAt, createdBy: a.createdBy, expiresAt: a.expiresAt, routedAt: a.routedAt, closedAt: a.closedAt, ...(a.why ? { why: a.why } : {}),
@@ -275,8 +277,11 @@ export const ops = {
     if (!again) await _deps.append({ type: 'ask', phase: 'answered', askId, answers, source, channel, providerMessageId, sender, raw: clip(String(raw ?? ''), 2000), untrusted: false, relayedBy: hub ?? null, ...(rpcCaller ? { relayFrom: rpcCaller.client } : {}) }, 'ask');
     if (a.deliveries.some((d) => d.ok && d.providerMessageId === providerMessageId)) return { ok: true, deduped: true };
     if (!a.sessionId) return { ok: true, delivered: false, note: 'the ask names no session; the answer is recorded for ask.get' };
-    const late = followUp || (a.status !== 'open' && !(a.status === 'answered' && a.answers[0]?.providerMessageId === providerMessageId));
-    const text = deliveryText({ ...a, code: a.code ?? code ?? null }, { answers, source, channel }, { followUp: late });
+    // Late: the hub says so, or this host had every one of these questions answered by other messages already.
+    const late = followUp || (a.status !== 'open' && !a.answers.some((x) => x.providerMessageId === providerMessageId)) || (!again && a.status === 'open' && answers.every((x) => a.answeredQs.has(x.q)));
+    const after = (await state()).asks.get(askId) ?? a;
+    const remaining = late ? [] : after.questions.map((_q, i) => i).filter((i) => !after.answeredQs.has(i));
+    const text = deliveryText({ ...a, code: a.code ?? code ?? null }, { answers, source, channel }, { followUp: late, remaining });
     try {
       const r = await _deps.dispatch('sessions.message', { id: a.sessionId, text, actor: source });
       await _deps.append({ type: 'ask', phase: 'delivered', askId, ok: true, providerMessageId, to: { sessionId: a.sessionId, resolvedTo: r?.resolvedTo?.id ?? null }, kind: late ? 'follow-up' : 'answer' }, 'ask');

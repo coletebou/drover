@@ -190,6 +190,23 @@ describe('answers by Telegram', () => {
     await settle();
     assert.match(inbox.at(-1), new RegExp(`${r.code} → 1: a \\(go\\) · 2: b \\(there\\) · 3: "yes, ship"`));
   });
+  test('a multi-question ask answered with its buttons, one tap per question', async () => {
+    const r = await ask({ questions: [{ question: 'Plan?', options: ['a1', 'b1'] }, { question: 'When?', options: ['now', 'later'] }] });
+    const msgId = lastAskMessageId();
+    const tap = (id, data) => tgUpdate({ update_id: 400 + Number(id.slice(2)), callback_query: { id, from: { id: Number(OWNER_CHAT) }, message: { message_id: msgId, chat: { id: Number(OWNER_CHAT) } }, data } }, secret);
+    await tap('cb41', `ask:${r.code}:0:1`); await settle();
+    assert.equal((await dispatch('ask.get', { askId: r.askId })).status, 'open');
+    assert.match(inbox.at(-1), /Still open: 2\) When\?/);
+    assert.ok(tg.calls.some((c) => c.method === 'answerCallbackQuery' && /1 more to answer/.test(c.args.text)));
+    assert.equal(tg.calls.some((c) => c.method === 'editMessageText' && c.args.message_id === msgId), false, 'the buttons stay');
+    await tap('cb42', `ask:${r.code}:0:0`); await settle();
+    assert.ok(tg.calls.some((c) => c.method === 'answerCallbackQuery' && /question 1 is already answered/.test(c.args.text)));
+    await tap('cb43', `ask:${r.code}:1:0`); await settle();
+    const got = await dispatch('ask.get', { askId: r.askId });
+    assert.equal(got.status, 'answered'); assert.deepEqual(got.answer.answers.map((x) => [x.q, x.option]), [[0, 1], [1, 0]]);
+    assert.equal(/follow-up/.test(inbox.at(-1)), false);
+    assert.ok(tg.calls.some((c) => c.method === 'editMessageText' && c.args.message_id === msgId && /✓ Answered: 1: b \(b1\) · 2: a \(now\)/.test(c.args.text)));
+  });
   test('two asks open and a bare answer: asked which one, nothing delivered', async () => {
     const a = await ask({ question: 'One?', options: ['yes', 'no'] });
     const b = await ask({ question: 'Two?', options: ['yes', 'no'] });

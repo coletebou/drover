@@ -240,9 +240,11 @@ export class Router {
     const open = [...st.asks.values()].filter((a) => a.status === 'open' && a.code);
     for (const a of open) {
       if (a.expiresAt && Date.parse(a.expiresAt) <= now) {
-        await _deps.append({ type: 'ask', phase: 'expired', askId: a.askId, reason: 'nobody answered in time' });
-        await this.markMessages(a, 'Expired: no answer in time.');
-        await this.tellAsker(a, 'expired without an answer');
+        const left = a.questions.length - a.answeredQs.size;
+        const why = a.answeredQs.size ? `expired with ${left} of ${a.questions.length} questions unanswered` : 'expired without an answer';
+        await _deps.append({ type: 'ask', phase: 'expired', askId: a.askId, reason: a.answeredQs.size ? why : 'nobody answered in time' });
+        await this.markMessages(a, a.answeredQs.size ? `Expired: ${left} of ${a.questions.length} questions unanswered.` : 'Expired: no answer in time.');
+        await this.tellAsker(a, why);
         report.expired.push(a.code);
       }
     }
@@ -324,9 +326,13 @@ export class Router {
     const ans = { answers, source: ev.source, channel: msg.channel, providerMessageId: msg.providerMessageId, sender: msg.sender, raw: ev.raw };
     const d = await this.deliver(a, ans, { followUp });
     const words = a.questions.length === 1 ? answerWords(a.questions[0], answers[0]) : answers.map((x) => `${x.q + 1}: ${answerWords(a.questions[x.q], x)}`).join(' · ');
-    if (!followUp) await this.markMessages(a, `✓ Answered: ${words}`);
+    // A multi-question ask stays open (its buttons too) until every question has an answer.
+    const after = (await this.state()).asks.get(a.askId) ?? a;
+    const left = after.questions.length - after.answeredQs.size;
+    if (!followUp && after.status !== 'open') await this.markMessages(after, `✓ Answered: ${after.questions.length === 1 ? words : after.merged.map((x, i) => `${i + 1}: ${answerWords(after.questions[i], x)}`).join(' · ')}`);
     const where = whoLabel(a);
-    return d.ok ? `${a.code} → ${words}${followUp ? ' (follow-up)' : ''}: sent to ${where}` : d.final ? `${a.code} → ${words}: recorded, but ${where} is not running (${clip(d.error ?? '', 120)})` : `${a.code} → ${words}: recorded; ${where} is out of reach, retrying`;
+    const more = !followUp && after.status === 'open' && left > 0 ? ` (${left} more to answer)` : '';
+    return d.ok ? `${a.code} → ${words}${followUp ? ' (follow-up)' : ''}: sent to ${where}${more}` : d.final ? `${a.code} → ${words}: recorded, but ${where} is not running (${clip(d.error ?? '', 120)})` : `${a.code} → ${words}: recorded; ${where} is out of reach, retrying`;
   }
 
   /**
@@ -368,6 +374,7 @@ export class Router {
       const q = Number(m[2]), o = Number(m[3]);
       if (!a.questions[q]?.options?.[o]) { await this.ack(msg.channel, 'That option does not exist.', { button: msg.button }); return { stale: true }; }
       if (a.status !== 'open' && a.answers.length) { await this.ack(msg.channel, `${a.code} is already answered.`, { button: msg.button }); return { already: true }; }
+      if (a.answeredQs.has(q)) { await this.ack(msg.channel, `${a.code}${a.questions.length > 1 ? ` question ${q + 1}` : ''} is already answered.`, { button: msg.button }); return { already: true }; }
       if (a.status !== 'open') { await this.ack(msg.channel, `${a.code} is ${a.status}.`, { button: msg.button }); return { closed: a.status }; }
       const line = await this.#answer(a, [{ q, option: o, text: '' }], msg, { followUp: false });
       await this.ack(msg.channel, line, { button: msg.button });
@@ -455,7 +462,7 @@ export class Router {
     this.running = true;
     const cfg = this.config();
     const env = _deps.env;
-    if (_deps.channels.imessage?.configured(env) && cfg.order.includes('imessage')) {
+    if (_deps.channels.imessage?.configured(env)) {   // also when only an ask's own channels name it
       // Checked before anything is read or sent: an account that is the owner's own Apple ID, or one signed out, is
       // not used at all (a text to yourself raises no alert, and a reply could not be told from Drover's own).
       this.disabled.set('imessage', 'checking');

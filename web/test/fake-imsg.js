@@ -11,6 +11,8 @@ if (cmd !== 'rpc') { process.stderr.write(`fake imsg: unknown command ${cmd}\n`)
 const log = (o) => { if (process.env.FAKE_IMSG_LOG) appendFileSync(process.env.FAKE_IMSG_LOG, JSON.stringify(o) + '\n'); };
 const out = (o) => process.stdout.write(JSON.stringify(o) + '\n');
 let rowid = 1000, seen = 0, subscribed = false;
+// FAKE_IMSG_SUBSCRIBE_FAIL names a file: while it exists, watch.subscribe fails.
+const require0 = () => existsSync(process.env.FAKE_IMSG_SUBSCRIBE_FAIL);
 let buf = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', (d) => {
@@ -21,7 +23,8 @@ process.stdin.on('data', (d) => {
     if (!line.trim()) continue;
     const req = JSON.parse(line);
     log({ method: req.method, params: req.params });
-    if (req.method === 'watch.subscribe') { subscribed = true; out({ id: req.id, result: { subscription: 1 }, jsonrpc: '2.0' }); }
+    if (req.method === 'watch.subscribe' && process.env.FAKE_IMSG_SUBSCRIBE_FAIL && require0()) out({ jsonrpc: '2.0', id: req.id, error: { code: -32000, message: 'database not readable (Full Disk Access)' } });
+    else if (req.method === 'watch.subscribe') { subscribed = true; out({ id: req.id, result: { subscription: 1 }, jsonrpc: '2.0' }); }
     else if (req.method === 'send') { rowid++; out({ jsonrpc: '2.0', id: req.id, result: { ok: true, rowid, guid: `FAKE-GUID-${rowid}` } }); }
     else out({ jsonrpc: '2.0', id: req.id, error: { code: -32601, message: 'Method not found', data: req.method } });
   }

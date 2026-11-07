@@ -55,7 +55,7 @@ export function readMessage(m, { env = _deps.env } = {}) {
 class Rpc {
   constructor({ bin, log, onMessage, sinceRowid }) {
     Object.assign(this, { bin, log, onMessage, sinceRowid });
-    this.next = 1; this.waiting = new Map(); this.child = null; this.buf = ''; this.stopped = false; this.backoff = 1000; this.ready = null;
+    this.next = 1; this.waiting = new Map(); this.child = null; this.buf = ''; this.stopped = false; this.backoff = 1000; this.ready = null; this.subscribed = false;
   }
   start() {
     if (this.stopped) return;
@@ -67,14 +67,16 @@ class Rpc {
     child.on('error', (e) => this.log('imsg spawn', e.message));
     child.on('exit', (code) => {
       for (const w of this.waiting.values()) w.reject(new Error(`imsg rpc exited (${code})`));
-      this.waiting.clear(); this.child = null; this.ready = null;
+      this.waiting.clear(); this.child = null; this.ready = null; this.subscribed = false;
       if (this.stopped) return;
       this.log('imsg rpc exited', code, `restarting in ${this.backoff / 1000} s`);
       setTimeout(() => this.start(), this.backoff).unref?.();
       this.backoff = Math.min(60_000, this.backoff * 2);
     });
     const params = { attachments: false, include_reactions: false, ...(this.sinceRowid ? { since_rowid: this.sinceRowid } : {}) };
-    this.ready = this.request('watch.subscribe', params, { timeoutMs: 30_000 }).then(() => { this.backoff = 1000; }, (e) => { this.log('imsg watch.subscribe', e.message); });
+    // No watch, no channel: sending a question nobody can read the answer to helps no one. A failed subscribe restarts
+    // the child (with its backoff), which subscribes again.
+    this.ready = this.request('watch.subscribe', params, { timeoutMs: 30_000 }).then(() => { this.backoff = 1000; this.subscribed = true; }, (e) => { this.log('imsg watch.subscribe failed', e.message); try { child.kill('SIGTERM'); } catch { /* gone */ } });
   }
   #line(line) {
     let m; try { m = JSON.parse(line); } catch { return; }
@@ -131,6 +133,7 @@ export async function send({ text }, { env = _deps.env } = {}) {
   const c = cfg(env);
   if (!rpc) throw new Error('imsg is not running on this host (only the hub sends iMessages)');
   await rpc.ready;
+  if (!rpc.subscribed) throw new Error('imsg is not watching for replies (watch.subscribe failed), so no question goes out on iMessage');
   const r = await rpc.request('send', { to: c.to, text, service: 'imessage', transport: 'applescript' }, { timeoutMs: 60_000 });
   const id = r?.guid ?? r?.rowid ?? r?.id ?? r?.message_id ?? '';
   return { providerId: `imsg:${id}`, messageIds: id ? [`imsg:${id}`] : [] };
