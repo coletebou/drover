@@ -12,6 +12,7 @@ import { createHash } from 'node:crypto';
 import { connect } from 'node:net';
 import path from 'node:path';
 import { pidAlive, run, startLines } from './proc.js';
+import { listWindows } from './tmux.js';
 import { uuidv7 } from './ids.js';
 import { checkEffort } from './effort.js';
 import { toolSummary, toolDescription, resultEntry } from './toolcalls.js';
@@ -79,11 +80,30 @@ export async function listSessions() {
   return [...byId.values()];
 }
 
-export async function findSession(idOrName) {
+export async function findSession(idOrName, { windows = listWindows } = {}) {
   const all = await listSessions();
   const hit = (s) => s.sessionId === idOrName || s.name === idOrName || s.sessionId.startsWith(idOrName);
   // A name or an id prefix can also match sessions that ended: a running one answers first.
-  return all.find((s) => running(s) && hit(s)) ?? all.find(hit) ?? null;
+  const found = all.find((s) => running(s) && hit(s)) ?? all.find(hit);
+  if (found) return found;
+  // Else the name of the tmux window a session runs in: the name a launch gave, for a session launched before
+  // launches passed --name, or one started by hand in a window someone named.
+  return byWindowName(all, idOrName, await windows().catch(() => []));
+}
+
+/**
+ * The one running session whose registry tmux field (`<session>:@<window id>.%<pane>`, or `<session>:<index>…`)
+ * is in a window called `name`; null when none is, or when several are (a message must not guess between them).
+ */
+export function byWindowName(sessions, name, windows) {
+  const keys = new Set();
+  for (const w of windows ?? []) if (w.name === name) { keys.add(`${w.session}:${w.windowId}`); keys.add(`${w.session}:${w.index}`); }
+  if (!keys.size) return null;
+  const inThem = sessions.filter((s) => {
+    const m = running(s) && String(s.tmux ?? '').match(/^(.+?):(@?\d+)/);
+    return Boolean(m) && keys.has(`${m[1]}:${m[2]}`);
+  });
+  return inThem.length === 1 ? inThem[0] : null;
 }
 
 async function readPeerToken(pid, socketPath) {
