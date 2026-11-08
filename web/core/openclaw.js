@@ -6,7 +6,7 @@
 // a stable `user` so the conversation continues (the same request shape as
 // bin/manager-say). The gateway token comes from the environment or the
 // state dir's .env and never leaves this module: not in results, not in events.
-import { readFile, stat } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { run as runProc, tryRun } from './proc.js';
@@ -92,7 +92,8 @@ const ownAppends = new Map();
 async function conversation() {
   const host = _deps.host();
   let sig = null;
-  try { const st = await stat(eventsMod.EVENTS_PATH); sig = `${st.size}:${st.mtimeMs}`; } catch { /* no truth file yet */ }
+  // Every file of the truth file: with daily segments the base file no longer changes.
+  try { sig = await eventsMod.signature(eventsMod.EVENTS_PATH); } catch { /* no truth file yet */ }
   if (sig !== wal.sig && Date.now() - wal.at > REREAD_MS) {
     const events = new Map();
     const mine = (await _deps.readEvents().catch(() => [])).filter((e) => isConversationEvent(e, host));

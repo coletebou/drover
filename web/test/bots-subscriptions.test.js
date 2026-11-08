@@ -431,6 +431,67 @@ describe('push subscriptions: Drover runs a bot\'s routine when what it cares ab
     assert.deepEqual(await look(), ['e']);
   });
 
+  test('with daily segments the tail follows the day\'s file, and neither the switch nor the turn of a day loses a line', async () => {
+    const dir = EVENTS.slice(0, -'.jsonl'.length);
+    const day = (d) => path.join(dir, `${d}.jsonl`);
+    const msg = (ref) => line({ type: 'message', to: { kind: 'grok', id: 'grok:*' }, actor: 'cli', ref, delivery: { ok: true, queued: true } });
+    const look = async () => { const evs = await subs.newEvents(); await subs.collect(evs.map(subs.fromEvent), { through: subs.position() }); return evs.map((e) => e.ref).filter(Boolean); };
+    const kept = async () => JSON.parse(await readFile(path.join(STATE, 'bots', 'subscriptions.json'), 'utf8')).cursor;
+    try {
+      await subscribed('alpha', ['inbox'], 5);
+      subs._deps.date = () => new Date('2026-11-08T23:59:00Z');
+      await mkdir(dir, { recursive: true });
+      // Switched on, no segment yet: still the base file.
+      await appendFile(EVENTS, msg('base-1'));
+      assert.deepEqual(await look(), ['base-1']);
+      // The first segment appears while the base got one more line (a box on older code): both, in order.
+      await appendFile(EVENTS, msg('base-2'));
+      await writeFile(day('2026-11-08'), msg('d1'));
+      assert.deepEqual(await look(), ['base-2', 'd1']);
+      await appendFile(day('2026-11-08'), msg('d2'));
+      assert.deepEqual(await look(), ['d2']);
+      // A segment dated ahead (a host whose clock runs fast) is not followed.
+      await writeFile(day('2026-11-10'), msg('ahead'));
+      await appendFile(day('2026-11-08'), msg('d3'));
+      assert.deepEqual(await look(), ['d3']);
+      // Midnight: a last line in the old day's file, then the new day's first: both.
+      subs._deps.date = () => new Date('2026-11-09T00:00:30Z');
+      await appendFile(day('2026-11-08'), msg('d4'));
+      await writeFile(day('2026-11-09'), msg('n1'));
+      assert.deepEqual(await look(), ['d4', 'n1']);
+      assert.equal((await kept()).file, day('2026-11-09'), 'the stored position names its file');
+      // A restart carries on in that file from where it was.
+      stop(); await subs._reset();
+      await appendFile(day('2026-11-09'), msg('n2'));
+      stop = subs.start({ notifier, tailMs: 1e9 });
+      await stop.ready;
+      assert.deepEqual(await look(), ['n2']);
+      await fire();
+      assert.deepEqual(pushes().flatMap((p) => p.body.events.map((e) => e.messageId)), ['base-1', 'base-2', 'd1', 'd2', 'd3', 'd4', 'n1', 'n2']);
+    } finally {
+      subs._deps.date = () => new Date();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('a position stored before segments (no file) is the base file\'s, and is read on from', async () => {
+    const msg = (ref) => line({ type: 'message', to: { kind: 'grok', id: 'grok:*' }, actor: 'cli', ref, delivery: { ok: true, queued: true } });
+    const look = async () => { const evs = await subs.newEvents(); await subs.collect(evs.map(subs.fromEvent), { through: subs.position() }); return evs.map((e) => e.ref).filter(Boolean); };
+    const file = path.join(STATE, 'bots', 'subscriptions.json');
+    await subscribed('alpha', ['inbox'], 5);
+    await appendFile(EVENTS, msg('a'));
+    assert.deepEqual(await look(), ['a']);
+    stop(); await subs._reset();
+    // The store as older code wrote it: the same position without a file.
+    const c = JSON.parse(await readFile(file, 'utf8'));
+    delete c.cursor.file;
+    await writeFile(file, JSON.stringify(c));
+    await appendFile(EVENTS, msg('b'));
+    stop = subs.start({ notifier, tailMs: 1e9 });
+    await stop.ready;
+    assert.deepEqual(await look(), ['b']);
+  });
+
   test('the read position is stored from the subscription on, so a restart reads what came while it was down, and only that', async () => {
     const file = path.join(STATE, 'bots', 'subscriptions.json');
     const kept = async () => JSON.parse(await readFile(file, 'utf8')).cursor;
