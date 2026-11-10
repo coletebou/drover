@@ -4,6 +4,7 @@
 // the pool in core/credpool.js (profiles.json "credentials"); only the
 // credential id is recorded (event, headless entry, result), never a value.
 import { readFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import path, { dirname } from 'node:path';
 import { envvar } from './envvars.js';
 import { fileURLToPath } from 'node:url';
@@ -197,8 +198,19 @@ async function failover(entry, detail) {
   entry.status = 'busy';
 }
 
+/** A launch's completion text (done), checked before anything starts: a trimmed string of 1 to 200 characters, or null. */
+export function checkDone(engine, req) {
+  if (req.done === undefined || req.done === null || req.done === '') return null;
+  if (typeof req.done !== 'string' || !req.done.trim()) throw new Error('done must be a non-empty string: the text the final reply holds when the work is finished');
+  const done = req.done.trim();
+  if (done.length > 200) throw new Error('done is at most 200 characters');
+  if (engine !== 'claude') throw new Error('done is supported for Claude launches only: their session can be found again by id; nothing was started');
+  if (req.resume) throw new Error('done cannot be used with resume: the resumed session keeps the id it had; nothing was started');
+  return done;
+}
+
 /**
- * @param {object} req {engine:'claude'|'codex'|'hermes', mode:'tmux'|'headless', profile, model, effort, cwd, prompt, tmuxSession, name, resume, credential:'auto'|<id>|'none', trust}
+ * @param {object} req {engine:'claude'|'codex'|'hermes', mode:'tmux'|'headless', profile, model, effort, cwd, prompt, tmuxSession, name, resume, credential:'auto'|<id>|'none', trust, done}
  *
  * effort (core/effort.js) is the reasoning effort of this one session: claude `--effort <level>`, codex
  * `-c model_reasoning_effort="<level>"` (a headless Codex thread gets the same key in thread/start config), hermes
@@ -209,6 +221,11 @@ async function failover(entry, detail) {
  * event carry the title. A headless Hermes session runs each turn as one `hermes chat --oneshot` (core/hermes.js).
  * It is checked before anything else happens, so an invalid value starts, picks and records nothing; omitted,
  * the launch is exactly what it was before efforts existed (same argv, env, event and result).
+ *
+ * done (Claude only, not with resume): the text the session's final reply holds when its work is finished, at most
+ * 200 characters. The launch records it, and a tmux launch also fixes the session id (--session-id), so the board can
+ * find the session and report it as unfinished when it dies, or sits idle, without that text (ui/stalls.js). The
+ * agent is not told it: put it in the prompt. Omitted, the launch is exactly what it was before.
  *
  * trust (default on, tmux only; core/trust.js): before the window opens, cwd is recorded as trusted in the agent's
  * own config, as accepting its first-run trust dialog would, so the agent starts at its prompt instead of at that
@@ -224,6 +241,8 @@ export async function launch(req, { actor = 'drover' } = {}) {
   // config picks it) or when the catalog does not know it, the engine list above is the rule.
   if (effort && engine === 'codex' && model) checkModelEffort('codex', model, effort, (await _deps.codexModelEfforts())?.get(model));
   const withEffort = effort ? { effort } : {};
+  const done = checkDone(engine, req);
+  const withDone = done ? { done } : {};
   const cwd = expandHome(req.cwd) || process.env.HOME;
   const profile = await resolveProfile(engine, req.profile);
   const credMode = req.credential == null || req.credential === '' ? await credentials.defaultMode() : String(req.credential);
@@ -238,7 +257,7 @@ export async function launch(req, { actor = 'drover' } = {}) {
   const agentPath = mode === 'tmux' || engine !== 'codex' ? await _deps.agentPath() : undefined;
   // A Hermes launch with no hermes to run would open a window that only says "command not found", or a headless session whose every turn fails.
   if (engine === 'hermes' && !hermes.findBin(profile.env.PATH ?? agentPath)) throw new Error(`hermes is not on this host's PATH (${hermes.hermesBin()}): install Hermes Agent there, or set DROVER_HERMES_BIN to it; nothing was started`);
-  const base = { type: 'launch', engine, mode, profile: profile.id, model: model ?? null, ...withEffort, cwd, prompt: req.prompt ? String(req.prompt).slice(0, 2000) : null, credential: cred?.id ?? null };
+  const base = { type: 'launch', engine, mode, profile: profile.id, model: model ?? null, ...withEffort, cwd, prompt: req.prompt ? String(req.prompt).slice(0, 2000) : null, credential: cred?.id ?? null, ...withDone };
 
   if (mode === 'tmux') {
     const session = tmux.assertName(req.tmuxSession || defaultTmuxSession(await loadProfiles()));
@@ -249,8 +268,10 @@ export async function launch(req, { actor = 'drover' } = {}) {
     // is the one newWindow sets on the tmux client from env.PATH. The effort is a value from the allowlist in
     // core/effort.js, never text from the request.
     const title = engine === 'hermes' && !req.resume ? hermes.launchTitle(name) : null;
+    // A completion text needs the session found again later: its id is fixed here instead of picked by Claude Code.
+    const sessionId = done ? randomUUID() : null;
     const argv = engine === 'claude'
-      ? claude.interactiveArgv(profile, { model, effort, resume: req.resume, prompt: req.prompt, ...(req.name ? { name } : {}) })
+      ? claude.interactiveArgv(profile, { model, effort, resume: req.resume, prompt: req.prompt, ...(req.name ? { name } : {}), ...(sessionId ? { extra: ['--session-id', sessionId] } : {}) })
       : engine === 'hermes'
         ? hermes.interactiveArgv(profile, { model, effort, cwd, prompt: req.prompt, resume: req.resume, title })
         : codex.interactiveArgv(profile, { model, effort, prompt: req.prompt, resume: req.resume });
@@ -273,8 +294,9 @@ export async function launch(req, { actor = 'drover' } = {}) {
     // Which window the titled Hermes session is in: a failure here costs only the strip's link to its pane.
     if (title) { try { await _deps.rememberHermesPane(title, target); } catch (e) { console.error(`[launch] hermes pane for ${title}: ${e.message}`); } }
     const withTitle = title ? { title } : {};
-    const ev = await append({ ...base, argv, ...withTrust, result: { tmux: target, name, ...withTitle } }, { actor });
-    return { ok: true, mode, target, name, argv, ...withTitle, ...withEffort, ...withTrust, credential: cred?.id ?? null, credentialReason, event: ev.id };
+    const withSession = sessionId ? { sessionId } : {};
+    const ev = await append({ ...base, argv, ...withTrust, result: { tmux: target, name, ...withTitle, ...withSession } }, { actor });
+    return { ok: true, mode, target, name, argv, ...withTitle, ...withSession, ...withEffort, ...withDone, ...withTrust, credential: cred?.id ?? null, credentialReason, event: ev.id };
   }
 
   // headless
@@ -290,7 +312,7 @@ export async function launch(req, { actor = 'drover' } = {}) {
     if (cred) await credentials.acquire(cred.id, id);
     if (req.prompt) { h.send(req.prompt); entry.status = 'busy'; }
     const ev = await append({ ...base, argv: ['claude', ...h.argv], result: { headlessId: id, sessionId: h.sessionId } }, { actor });
-    return { ok: true, mode, headlessId: id, sessionId: h.sessionId, ...withEffort, credential: cred?.id ?? null, credentialReason, event: ev.id };
+    return { ok: true, mode, headlessId: id, sessionId: h.sessionId, ...withEffort, ...withDone, credential: cred?.id ?? null, credentialReason, event: ev.id };
   }
   if (engine === 'hermes') {
     const h = new _deps.HeadlessHermes({

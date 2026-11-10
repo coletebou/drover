@@ -150,11 +150,13 @@ function alertMaps(alerts) {
 /**
  * The board. stoppedWithinMs > 0 adds `stopped`: agent sessions in a tmux window, idle (not waiting, not
  * working), that stopped within that window, newest first; never an SDK helper (entrypoint sdk-cli) or the
- * manager. What a manager drives forward: id, cleaned name, host, engine and when it stopped.
+ * manager. What a manager drives forward: id, cleaned name, host, engine and when it stopped. stalled: true adds
+ * `stalled`, the fleet summary's stalls (ui/stalls.js) without paths or windows: kind, id, name, host, engine, since,
+ * minutes, headline (the text to read), ended for an unfinished launch; oldest first.
  */
-export function buildSummary(fleet, alerts = [], { now = Date.now(), managerLastNoteAt = null, stoppedWithinMs = 0 } = {}) {
+export function buildSummary(fleet, alerts = [], { now = Date.now(), managerLastNoteAt = null, stoppedWithinMs = 0, stalled: withStalled = false } = {}) {
   const { notifyMap, finishedMap } = alertMaps(alerts);
-  const waiting = [], working = [], stopped = [], hosts = [];
+  const waiting = [], working = [], stopped = [], stalled = [], hosts = [];
   let managerUp = false;
   for (const hs of fleet?.hosts ?? []) {
     const strips = stripsFor(hs, notifyMap, now, finishedMap);
@@ -177,6 +179,8 @@ export function buildSummary(fleet, alerts = [], { now = Date.now(), managerLast
         }
       }
     }
+    // Stalled work (fleet.summary stalls, ui/stalls.js), path-free: what it is, whose, since when, and the text to read.
+    if (withStalled) for (const it of hs.stalls ?? []) stalled.push({ kind: it.kind, id: it.sessionId ?? it.id, name: clean(it.name ?? String(it.id ?? '').slice(0, 8), 80), host: hs.host, engine: it.engine ?? 'claude', since: toIso(it.since), minutes: it.minutes ?? null, headline: headline(it.text ?? (it.kind === 'unfinished' ? `ended without "${it.done}"` : '')), ...(it.kind === 'unfinished' ? { ended: Boolean(it.ended) } : {}) });
     if ((hs.sessions ?? []).some((s) => s.engine === 'openclaw' && s.live !== false)) managerUp = true;
     hosts.push({ name: hs.host, up: hs.ok !== false, ...counts });
   }
@@ -192,6 +196,8 @@ export function buildSummary(fleet, alerts = [], { now = Date.now(), managerLast
     manager: { up: managerUp, lastNoteAt: last ? new Date(last).toISOString() : null },
     // Not capped: live tmux sessions bound it, and a cap would starve older stops and other managers' hosts.
     ...(stoppedWithinMs > 0 ? { stopped: stopped.sort((a, b) => Date.parse(b.stoppedAt) - Date.parse(a.stoppedAt)) } : {}),
+    // Oldest first: the longest stall is the one most likely forgotten.
+    ...(withStalled ? { stalled: stalled.sort((a, b) => (a.since === null) - (b.since === null) || (a.since && b.since ? Date.parse(a.since) - Date.parse(b.since) : 0)) } : {}),
   };
 }
 
@@ -360,13 +366,14 @@ async function boardInputs() {
 }
 
 export const ops = {
-  'native.summary': async ({ stopped, stoppedHours } = {}) => {
+  'native.summary': async ({ stopped, stoppedHours, stalled } = {}) => {
     if (stopped != null && typeof stopped !== 'boolean') throw new Error('stopped must be a boolean');
+    if (stalled != null && typeof stalled !== 'boolean') throw new Error('stalled must be a boolean');
     const hours = numish(stoppedHours, 'stoppedHours') ?? 12;
     if (hours < 1 || hours > 48) throw new Error('stoppedHours must be 1 to 48');
     const { fleet, alerts, managerLastNoteAt } = await boardInputs();
     // owner: the actor the owner's own clients write as (core/owner.js), so an app shows their turns as "you".
-    return { ...buildSummary(fleet, alerts, { now: _deps.now(), managerLastNoteAt, stoppedWithinMs: stopped ? hours * 3600_000 : 0 }), owner: OWNER };
+    return { ...buildSummary(fleet, alerts, { now: _deps.now(), managerLastNoteAt, stoppedWithinMs: stopped ? hours * 3600_000 : 0, stalled: stalled === true }), owner: OWNER };
   },
   'native.board': async () => {
     const { fleet, alerts, managerLastNoteAt } = await boardInputs();
