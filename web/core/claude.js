@@ -21,8 +21,13 @@ export const CLAUDE_HOME = process.env.CLAUDE_CONFIG_DIR ?? path.join(process.en
 const SESSIONS_DIR = path.join(CLAUDE_HOME, 'sessions');
 export const PROJECTS_DIR = path.join(CLAUDE_HOME, 'projects');
 
+/**
+ * The ~/.claude/projects folder of a working directory, as Claude Code names it: every character that is not a letter
+ * or a digit becomes '-' (so ~/code/app/.claude/worktrees/feat_x is -home-me-code-app--claude-worktrees-feat-x).
+ * Replacing only separators left a worktree's '.claude' and any '_' in place, and its transcript was never found.
+ */
 export function projectSlug(cwd) {
-  return cwd.replace(/[\\/:]/g, '-');
+  return cwd.replace(/[^A-Za-z0-9]/g, '-');
 }
 
 export function transcriptPath(cwd, sessionId) {
