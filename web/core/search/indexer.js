@@ -25,6 +25,7 @@ import { KINDS } from './query.js';
 import { envvar } from '../envvars.js';
 import { reflectionsBin, reflectionsExport } from '../memory.js';
 import * as plugins from '../plugins.js';
+import { storeFiles } from '../segments.js';
 
 /**
  * Bump when extraction changes what a transcript yields: every transcript is then read again once, its chunks
@@ -192,7 +193,8 @@ export async function listSources(roots, { homes = {}, scope = {}, docs = [] } =
     };
     await walk(roots.codex, 0);
   }
-  if (roots.wal && existsSync(roots.wal)) await add(roots.wal, 'wal');
+  // The truth file and its daily segments (claude/drover-events/<day>.jsonl, core/events.js): each is its own source.
+  if (roots.wal) for (const f of await storeFiles(roots.wal)) await add(f, 'wal');
   for (const [repo, home] of Object.entries(homes ?? {})) {
     if (!home || !existsSync(home) || !homeInIdentity(home, scope)) continue;
     const walk = async (dir, depth) => {

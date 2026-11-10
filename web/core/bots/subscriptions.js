@@ -62,6 +62,7 @@ export const _deps = {
   file: () => path.join(stateDir(), 'bots', 'subscriptions.json'),
   eventsPath: () => eventsMod.EVENTS_PATH,
   now: () => Date.now(),
+  date: () => new Date(),   // the calendar day, for which segment of the truth file is followed (now is the timers' clock)
   post: (name, body) => grok.postEvents(name, body),
   hasRoutine: (name) => grok.hasRoutine(name),
   grants: () => botAuth.grantsList(),
@@ -333,7 +334,7 @@ export async function collect(found, { through } = {}) {
   // Stored when anything came in, or when the file was read past lines that matter (muted ones too: a restart reads
   // them again only to skip them again), and while someone subscribes at least every CURSOR_EVERY_MS that it moved:
   // lines that matter to no one are only read again for nothing, but their bytes count toward READ_MAX after a restart.
-  const moved = through && (storedPos?.ino !== through.ino || storedPos?.size !== through.size);
+  const moved = through && (storedPos?.file !== through.file || storedPos?.ino !== through.ino || storedPos?.size !== through.size);
   const due = moved && _deps.now() - storedAt >= CURSOR_EVERY_MS;
   if (added || (through !== undefined && anyone && (list.length || due))) await update((c2) => remember(c2)).catch(() => { /* kept in memory; stored with the next change */ });
   return added;
@@ -484,7 +485,7 @@ export async function flush(name) {
 
 // ---------------------------------------------------------------- the truth file, as it grows
 const ANCHOR = 64;   // the bytes before the read position, checked each time: a rewrite under the same inode shows
-let cursor = null;   // { ino, size, tail }: how far this daemon has read, and the bytes just before that
+let cursor = null;   // { file, ino, size, tail }: the file followed, how far this daemon has read, and the bytes just before that
 let partial = Buffer.alloc(0);   // the start of a line still being written, as bytes (a character may be cut)
 let lineTail = Buffer.alloc(0);  // the bytes before the end of the last complete line read (where position() is)
 // Event ids already handed on: a line the file gets again (a union merge, a legacy import) is told once.
@@ -505,14 +506,25 @@ async function readAt(file, pos, len) {
 }
 
 /**
- * The complete lines appended since the last look. A file rewritten in place (another inode, shorter, or other bytes
- * where the last look ended) restarts at its end, so nothing is told twice.
+ * The complete lines appended since the last look. The file followed is the one this host appends to now
+ * (eventsMod.currentFile: today's segment of the truth file, or the base before segments). When that changes (the
+ * first event of a new day), the rest of the old file is read and the new one from its start, so the turn of a day
+ * loses nothing. A file rewritten in place (another inode, shorter, or other bytes where the last look ended)
+ * restarts at its end, so nothing is told twice.
  */
 export async function newEvents() {
-  const file = _deps.eventsPath();
+  const file = await eventsMod.currentFile(_deps.eventsPath(), _deps.date());
+  if (!cursor || cursor.file === file) return readNew(file);
+  const out = await readNew(cursor.file);
+  const st = await stat(file).catch(() => null);
+  if (st) { cursor = { file, ino: st.ino, size: 0, mtimeMs: 0, tail: Buffer.alloc(0) }; partial = Buffer.alloc(0); lineTail = Buffer.alloc(0); }
+  return [...out, ...(await readNew(file))];
+}
+
+async function readNew(file) {
   const st = await stat(file).catch(() => null);
   if (!st) { cursor = null; partial = Buffer.alloc(0); lineTail = Buffer.alloc(0); return []; }
-  const restart = async () => { cursor = { ino: st.ino, size: st.size, mtimeMs: st.mtimeMs, tail: Buffer.from(await readAt(file, Math.max(0, st.size - ANCHOR), Math.min(ANCHOR, st.size))) }; partial = Buffer.alloc(0); lineTail = cursor.tail; return []; };
+  const restart = async () => { cursor = { file, ino: st.ino, size: st.size, mtimeMs: st.mtimeMs, tail: Buffer.from(await readAt(file, Math.max(0, st.size - ANCHOR), Math.min(ANCHOR, st.size))) }; partial = Buffer.alloc(0); lineTail = cursor.tail; return []; };
   if (!cursor || st.ino !== cursor.ino || st.size < cursor.size) return restart();
   // The same size but written since: rewritten in place (reordered) unless the bytes before the cursor are the same.
   if (st.size === cursor.size) {
@@ -547,7 +559,7 @@ export async function newEvents() {
  * after a restart. Null before the first look.
  */
 export function position() {
-  return cursor ? { ino: cursor.ino, size: cursor.size - partial.length, mtimeMs: cursor.mtimeMs, tail: lineTail.toString('base64') } : null;
+  return cursor ? { file: cursor.file, ino: cursor.ino, size: cursor.size - partial.length, mtimeMs: cursor.mtimeMs, tail: lineTail.toString('base64') } : null;
 }
 
 /** Whether a stored entry is one a push can carry: every field its kind has, of the right type (a store can be old or edited). */
@@ -586,8 +598,10 @@ async function restore() {
     const k = c.cursor;
     const anchor = typeof k?.tail === 'string' ? Buffer.from(Buffer.from(k.tail, 'base64').subarray(-ANCHOR)) : null;
     if (!cursor && Object.keys(c.bots).length && Number.isFinite(k?.ino) && Number.isInteger(k.size) && k.size >= 0 && anchor && anchor.length <= k.size) {
-      cursor = { ino: k.ino, size: k.size, mtimeMs: Number(k.mtimeMs) || 0, tail: anchor };
-      partial = Buffer.alloc(0); lineTail = cursor.tail; collected = { ino: k.ino, size: k.size, mtimeMs: cursor.mtimeMs, tail: lineTail.toString('base64') };
+      // A position stored before segments has no file: it was the base file's.
+      const file = typeof k.file === 'string' && k.file ? k.file : _deps.eventsPath();
+      cursor = { file, ino: k.ino, size: k.size, mtimeMs: Number(k.mtimeMs) || 0, tail: anchor };
+      partial = Buffer.alloc(0); lineTail = cursor.tail; collected = { file, ino: k.ino, size: k.size, mtimeMs: cursor.mtimeMs, tail: lineTail.toString('base64') };
       storedPos = collected; storedAt = _deps.now();
     }
     for (const id of Array.isArray(c.seen) ? c.seen.slice(-KEPT_IDS) : []) if (typeof id === 'string' && id && id.length <= 200) { keep(id); firstTime(id); }

@@ -1181,4 +1181,8 @@ profiles.json   default launch profiles (claude: default, plan, yolo; codex: def
 test/           node --test test/*.test.js
 ```
 
-The truth file is `claude/drover-events.jsonl` (append-only, `merge=union`).
+The truth file is `claude/drover-events.jsonl` (append-only, `merge=union`). When the directory
+`claude/drover-events/` exists (the dotfiles repository tracks it), every append goes to the segment for its own
+timestamp's UTC day, `claude/drover-events/<YYYY-MM-DD>.jsonl` (also `merge=union`), and `drover-events.jsonl`
+stays as a read-only base. Every read covers the base and every segment, deduped by id and sorted by ts
+(`core/events.js`, `core/segments.js`); `docs/wal-retention.md` has the why.

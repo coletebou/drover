@@ -9,9 +9,11 @@ One daemon per machine (`drover serve`, launchd/systemd), one op table, three fr
 that all expose the same ops: the browser UI (`drover open`), the `drover_*` MCP
 tools (registered for Claude Code and Codex by install.sh), and `drover op <op>
 '<json>'` on the command line. Everything mutating is appended to the truth
-file `~/.dotfiles/claude/drover-events.jsonl` (append-only, `merge=union`, synced
-by dotsync): features, notes, pins, messages, launches, drafts, audits, and an
-`op` record for every write with actor, args and result. Reads go through the
+file `~/.dotfiles/claude/drover-events.jsonl`, or, once `claude/drover-events/`
+exists, to its segment for the day, `claude/drover-events/<YYYY-MM-DD>.jsonl`
+(append-only, `merge=union`, synced by dotsync; reads cover all of them):
+features, notes, pins, messages, launches, drafts, audits, and an `op` record
+for every write with actor, args and result. Reads go through the
 daemon's stale-while-revalidate cache; pass `fresh: true` when you need the live
 value (`drover op` on the command line reads a stale value again before printing).
 Plugins add `drover_*` tools of their own (an integration one fleet needs); they are listed in resource `drover://ops`
