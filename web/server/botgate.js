@@ -1,9 +1,10 @@
 // The bot gateway: a second listener (127.0.0.1:7338 by default) that a public HTTPS front (Tailscale Funnel or a
 // Cloudflare Tunnel) exposes to the internet, so Grok Bot agents, which run in Cursor-hosted VMs off the tailnet,
-// can reach Drover. It serves exactly four things: the OAuth 2.1 endpoints and metadata (core/bots/oauth.js), the
+// can reach Drover. It serves exactly five things: the OAuth 2.1 endpoints and metadata (core/bots/oauth.js), the
 // authorize page (a 6-digit code the owner approves in Drover), a bot's routine setup page (/bots/<bot>/routine: the
-// owner pastes the routine's webhook there and approves its code in Drover, core/bots/routine-setup.js), and MCP over
-// Streamable HTTP at /mcp with the scoped bot tools (core/bots/tools.js). Never /api/, never the UI, never an op by
+// owner pastes the routine's webhook there and approves its code in Drover, core/bots/routine-setup.js), MCP over
+// Streamable HTTP at /mcp with the scoped bot tools (core/bots/tools.js), and on the ask hub the Telegram and Twilio
+// webhooks that carry the owner's replies (server/ask-hooks.js). Never /api/, never the UI, never an op by
 // name: the main listener stays on loopback and the tailnet. Enabled by DROVER_BOTS_URL, the public origin
 // (https://host[:port], no path).
 import { createServer as createHttpServer } from 'node:http';
@@ -19,6 +20,7 @@ import { botTools, instructionsFor } from '../core/bots/tools.js';
 import { TENANT_INSTRUCTIONS } from '../core/bots/tenant-tools.js';
 import { createServer as createMcpServer, SUPPORTED_PROTOCOLS } from '../mcp/server.js';
 import { appleString } from '../core/pair.js';
+import { serveHook, HOOK_ROUTES } from './ask-hooks.js';
 
 export const DEFAULT_PORT = oauth.DEFAULT_PORT;
 const BODY_LIMIT = 1024 * 1024;
@@ -331,6 +333,8 @@ export async function startBotGateway({ base, port = DEFAULT_PORT, bind = '127.0
       if (req.method === 'GET' && (route === '/.well-known/oauth-protected-resource' || route === '/.well-known/oauth-protected-resource/mcp')) return json(res, 200, oauth.protectedResourceMetadata(base, bot), { 'cache-control': 'max-age=300' });
       if (req.method === 'GET' && (route === '/.well-known/oauth-authorization-server' || route === '/.well-known/oauth-authorization-server/mcp' || route === '/.well-known/openid-configuration')) return json(res, 200, oauth.authServerMetadata(base, bot), { 'cache-control': 'max-age=300' });
       if (route === '/mcp') return await handleMcp(req, res, { base, dispatch, log, hasOp, bot });
+      // The ask hub's webhooks (server/ask-hooks.js): Telegram and Twilio replies, each checked by its provider's own proof.
+      if (bot === null && HOOK_ROUTES.has(route)) return await serveHook(route, req, res, { base, readRaw, json, tooLarge, log });
       if (route === '/oauth/register' && req.method === 'POST') {
         const raw = await readRaw(req, FORM_LIMIT);   // too large: the outer catch answers 413
         let body;

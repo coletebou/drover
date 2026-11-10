@@ -13,8 +13,8 @@ targets:
       path: Config/Info.plist
       properties:
         CFBundleDisplayName: Drover
-        CFBundleShortVersionString: "0.1.0"
-        CFBundleVersion: "1"
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         CFBundleIconName: AppIcon
         # Only HTTPS and the OS's own crypto (exempt), so TestFlight never asks for export compliance per build.
         ITSAppUsesNonExemptEncryption: false

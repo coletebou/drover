@@ -644,6 +644,7 @@ export const _deps = {
   run: (file, argv, opts) => runProc(file, argv, opts),
   tryRun: (file, argv, opts) => tryRunProc(file, argv, opts),
   uid: () => process.getuid?.() ?? 0,
+  user: () => os.userInfo().username,
   platform: () => process.platform,
   runningNode: () => ({ path: process.execPath, version: process.version }),
   now: () => Date.now(),
@@ -668,6 +669,49 @@ export function parseLaunchctlPrint(text) {
   return { state: get(/^\s*state = (\S+)/m), pid: Number(get(/^\s*pid = (\d+)/m)) || null, runs: Number.isFinite(runs) ? runs : null, lastExitCode: exit ? Number(exit[1]) : null, lastExitReason: exit?.[2]?.trim() ?? null };
 }
 
+// systemd linger: without it the user's systemd manager starts only at a login and stops with the last
+// session, so after a reboot the manager (and every other user unit) stays down until someone logs in.
+// Restart=always covers crashes, not this. launchd has no equivalent: a LaunchAgent needs the GUI login anyway.
+
+/** The command the owner runs when setup could not turn linger on itself. */
+export const lingerFix = (user = _deps.user()) => `sudo loginctl enable-linger ${user}`;
+
+/** Whether systemd keeps this user's manager running without a login: true, false, or null (no answer from loginctl). */
+export async function lingerState(user = _deps.user()) {
+  const r = await _deps.tryRun('loginctl', ['show-user', user, '-p', 'Linger', '--value'], { timeoutMs: 5000 });
+  const v = String(r.stdout ?? '').trim();
+  return r.code === 0 && (v === 'yes' || v === 'no') ? v === 'yes' : null;
+}
+
+/**
+ * Turn linger on when it is off: loginctl as this user first (logind allows it for a user with an active
+ * session), then passwordless sudo. Never throws: a host where neither works gets a 'failed' step naming
+ * the command for the owner, and setup carries on. Returns { action: on | enabled | would enable | failed, detail }.
+ */
+export async function ensureLinger({ user = _deps.user(), dryRun = false } = {}) {
+  if ((await lingerState(user)) === true) return { action: 'on', detail: user };
+  // --no-ask-password: a setup run from a terminal must not stop at a polkit password prompt; sudo -n never prompts.
+  const tries = [['loginctl', ['--no-ask-password', 'enable-linger', user]], ['sudo', ['-n', 'loginctl', 'enable-linger', user]]];
+  if (dryRun) return { action: 'would enable', detail: tries.map(([f, a]) => [f, ...a].join(' ')).join(', else ') };
+  const why = [];
+  for (const [file, argv] of tries) {
+    const r = await _deps.tryRun(file, argv, { timeoutMs: 30_000 });
+    // A zero exit that loginctl still reads as off (or cannot read) is not success.
+    if (r.code === 0 && (await lingerState(user)) !== false) return { action: 'enabled', detail: [file, ...argv].join(' ') };
+    const err = String(r.stderr ?? '').trim().split('\n')[0].replace(new RegExp(`^${file}: `), '');
+    why.push(`${file}: ${err || (r.code === 0 ? 'still off' : `exit ${r.code}`)}`);
+  }
+  return { action: 'failed', detail: `the manager will not start at boot until someone logs in; run: ${lingerFix(user)} (${why.join('; ')})` };
+}
+
+/** The status check for linger, shaped like the egress one: ok, unexpected[], and the fix when it is off. */
+export function lingerCheck(unit, user = _deps.user()) {
+  const ok = unit?.linger ?? null;
+  return ok === false
+    ? { ok, unexpected: [`systemd linger is off for ${user}: the manager will not start at boot until someone logs in (run ${lingerFix(user)})`], fix: lingerFix(user) }
+    : { ok, unexpected: [] };
+}
+
 /**
  * The supervisor's view of the gateway, the same shape for launchd and systemd. `active` is
  * systemd's vocabulary (active, inactive, failed, ...), so a running LaunchAgent reads "active".
@@ -683,9 +727,10 @@ export async function serviceState(lay = layout(), { now = _deps.now() } = {}) {
     if (p.pid) { const e = await _deps.tryRun('ps', ['-o', 'etime=', '-p', String(p.pid)], { timeoutMs: 5000 }); uptimeSec = e.code === 0 ? parseEtime(e.stdout) : null; }
     return { ...base, loaded: true, active: p.state === 'running' ? 'active' : p.state ?? 'unknown', state: p.state, since: uptimeSec != null ? new Date(now - uptimeSec * 1000).toISOString() : null, uptimeSec, pid: p.pid, restarts: p.runs ? p.runs - 1 : 0, lastExitCode: p.lastExitCode, lastExitReason: p.lastExitReason };
   }
-  const [act, show] = await Promise.all([
+  const [act, show, linger] = await Promise.all([
     _deps.tryRun('systemctl', ['--user', 'is-active', svc.name], { timeoutMs: 5000 }),
     _deps.tryRun('systemctl', ['--user', 'show', svc.name, '-p', 'ActiveEnterTimestamp', '-p', 'MainPID', '-p', 'NRestarts', '-p', 'ExecMainStatus', '-p', 'LoadState', '-p', 'SubState'], { timeoutMs: 5000 }),
+    lingerState(),
   ]);
   const kv = Object.fromEntries(String(show.stdout ?? '').split('\n').filter((l) => l.includes('=')).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]));
   const since = kv.ActiveEnterTimestamp ? Date.parse(kv.ActiveEnterTimestamp) : NaN;
@@ -695,6 +740,7 @@ export async function serviceState(lay = layout(), { now = _deps.now() } = {}) {
     ...base, loaded: kv.LoadState === 'loaded', active, state: kv.SubState || null,
     since: up ? new Date(since).toISOString() : null, uptimeSec: up ? Math.round((now - since) / 1000) : null,
     pid: Number(kv.MainPID) || null, restarts: Number(kv.NRestarts ?? 0) || 0, lastExitCode: kv.ExecMainStatus ? Number(kv.ExecMainStatus) : null, lastExitReason: null,
+    linger,
   };
 }
 
@@ -1002,6 +1048,8 @@ export async function setup({ role: name = 'manager', profile: profileName, over
   if (dryRun && !existsSync(rt.mjs)) step('approvals', 'would check', 'after the tree is installed');
   const rewritten = [launcherR !== 'unchanged' && 'launcher', svcR !== 'unchanged' && 'service file'].filter(Boolean);
   const restarted = await applyService(lay, { was, now: startedWith, rewritten, restart, dryRun, step, rt, waitIdleSec });
+  // Every run, restart or not: a host set up before this step, or one whose linger was turned off since, gets it back.
+  if (lay.service.kind === 'systemd') { const l = await ensureLinger({ dryRun }); step('linger', l.action, l.detail); }
 
   // 8. The manifest, before anything waits on the gateway: the status op reads its paths.
   const manifest = {
