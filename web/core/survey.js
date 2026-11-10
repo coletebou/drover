@@ -28,6 +28,10 @@ function stateOf(s, w) {
 async function itemsForHost(dispatch, h, { recentDays = 2, tailTurns = 12 } = {}) {
   const hostArg = h.host === 'local' ? {} : { host: h.host };
   const byWin = new Map(h.windows.filter((w) => w.agent?.sessionId).map((w) => [w.agent.sessionId, w]));
+  // The host's stalled work (fleet.summary stalls): an item carries its stalls, and says what the owner should look at.
+  const stallsOf = (sid, target) => (h.stalls ?? []).filter((x) => (sid && x.sessionId === sid) || (target && x.tmux === target)).map(({ kind, since, minutes, text, why, done, ended }) => ({ kind, since, minutes, text, ...(why ? { why } : {}), ...(done ? { done, ended } : {}) }));
+  const STALL_STEP = { 'unsent-input': 'submit or clear the text typed in its input box', 'owner-ask': 'answer what its last reply asks', unfinished: 'its work ended without its completion text: check it and resume' };
+  const stallStep = (st) => (st.length ? STALL_STEP[st[0].kind] : '');
   const items = [];
   // recent non-live sessions too (finished / cut off), from the host's full list
   let full = h.sessions;
@@ -51,15 +55,16 @@ async function itemsForHost(dispatch, h, { recentDays = 2, tailTurns = 12 } = {}
     const state = stateOf(s, w);
     const endedWithQuestion = /\?\s*$/.test(lastAssistant.trim());
     const cutOff = !s.live && (endedWithQuestion || (lastUser && !lastAssistant));
-    const evidenceBits = [w?.tail?.length ? `pane: ${w.tail.join(' | ')}` : null, lastAssistant ? `last reply: ${lastAssistant.slice(0, 240)}` : null].filter(Boolean);
+    const stalls = stallsOf(s.sessionId ?? s.id, w?.target);
+    const evidenceBits = [w?.tail?.length ? `pane: ${w.tail.join(' | ')}` : null, lastAssistant ? `last reply: ${lastAssistant.slice(0, 240)}` : null, ...stalls.map((x) => `stalled (${x.kind}, ${x.minutes} min): ${String(x.text ?? '').slice(0, 200)}`)].filter(Boolean);
     items.push({
       id: `${h.host}:${s.id}`, host: h.host, kind: s.kind === 'headless' ? 'headless' : `${s.engine ?? 'claude'}-session`,
       title: title || String(s.id).slice(0, 8), state: cutOff ? 'cut-off' : state, agent: s.engine, sessionId: s.id, tmux: w?.target ?? s.tmux ?? null, cwd: s.cwd ?? w?.cwd ?? null,
       last_activity: when ? new Date(Number(when) < 1e11 ? Number(when) * 1000 : Number(when)).toISOString() : null,
       activities: refs(`${title} ${lastAssistant} ${lastUser} ${w?.tail?.join(' ') ?? ''}`), mrs: mrs(`${title} ${lastAssistant} ${lastUser} ${w?.tail?.join(' ') ?? ''}`),
       summary: lastAssistant ? lastAssistant.slice(0, 400) : (w?.tail?.join(' ') ?? '').slice(0, 400),
-      next_step: state === 'waiting-on-user' ? 'answer the prompt on screen' : cutOff ? `resume: claude --resume ${s.id}` : state === 'active' ? 'let it finish' : '',
-      evidence: evidenceBits.join('\n'), tail, source: 'survey.run',
+      next_step: state === 'waiting-on-user' ? 'answer the prompt on screen' : cutOff ? `resume: claude --resume ${s.id}` : state === 'active' ? 'let it finish' : stallStep(stalls),
+      evidence: evidenceBits.join('\n'), tail, source: 'survey.run', ...(stalls.length ? { stalls } : {}),
     });
   };
   for (let i = 0; i < 8; i++) workers.push((async () => { while (queue.length) { const s = queue.shift(); await one(s); } })());
@@ -68,7 +73,8 @@ async function itemsForHost(dispatch, h, { recentDays = 2, tailTurns = 12 } = {}
   // shells and unmatched windows with agents
   for (const w of h.windows) {
     if (!w.agent || byWin.has(w.agent.sessionId) || items.some((i) => i.tmux === w.target)) continue;
-    items.push({ id: `${h.host}:${w.target}`, host: h.host, kind: 'tmux-window', title: w.agent.name ?? w.name, state: w.screen?.state === 'dialog' ? 'waiting-on-user' : w.screen?.state === 'busy' ? 'active' : 'idle', tmux: w.target, cwd: w.cwd, summary: (w.tail ?? []).join(' ').slice(0, 400), next_step: '', evidence: `pane: ${(w.tail ?? []).join(' | ')}`, activities: refs(w.tail?.join(' ')), mrs: mrs(w.tail?.join(' ')), source: 'survey.run' });
+    const wStalls = stallsOf(w.agent.sessionId, w.target);
+    items.push({ ...(wStalls.length ? { stalls: wStalls } : {}), id: `${h.host}:${w.target}`, host: h.host, kind: 'tmux-window', title: w.agent.name ?? w.name, state: w.screen?.state === 'dialog' ? 'waiting-on-user' : w.screen?.state === 'busy' ? 'active' : 'idle', tmux: w.target, cwd: w.cwd, summary: (w.tail ?? []).join(' ').slice(0, 400), next_step: '', evidence: `pane: ${(w.tail ?? []).join(' | ')}`, activities: refs(w.tail?.join(' ')), mrs: mrs(w.tail?.join(' ')), source: 'survey.run' });
   }
   return items;
 }

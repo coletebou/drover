@@ -295,6 +295,42 @@ filter the answer carries `matched`, the count before `limit`. A host on Drover 
 ignores them and answers without `matched`; `drover_sessions` then applies them itself and adds a `note` (except a
 `~` cwd for another host, whose home it cannot know: pass it absolute).
 
+## Stalled work
+
+The board's wait lane holds what a screen shows as waiting (a dialog, a held peer message) and, for 20 minutes, a
+reply that ended on a question. Three other ways for work to wait on the owner showed no dialog at all, so nothing
+flagged them: an instruction pasted into an agent's input box whose Enter never landed; a final reply that handed the
+owner a decision ("Decision for you", "say go") in a session that then sat idle for days; a launched worker that died
+(a lost credential, a reboot) with its task half done. `fleet.summary` now reports these per answering host as
+`stalls`, judged from the board data the host already sends (`ui/stalls.js`, pure). It only reads: what to do about
+an item stays with the owner, or with the agent reading the summary.
+
+| kind | signal | default |
+|---|---|---|
+| `unsent-input` | a Claude Code input box (the 2.1.3xx box between two rules at the bottom, or the older `│ > │` box) holds plain text, not the faint predicted prompt or placeholder Claude Code draws there (`tmux.windows` reads the box again with escapes, `capture-pane -e`, only when it holds text); the agent is not working; its window has not changed since | 5 min |
+| `owner-ask` | an idle Claude session's final reply ends on a question, or one of its last 8 lines hands over (opens with "Decision(s) for you", "Question(s) for you", "Needs you", "Waiting on you", or the owner's name, `DROVER_OWNER_NAME`, in place of "you"; or asks for a go in the imperative: "say go", "reply yes", "your call", "need your OK"). `text` is the asking line; a heading that ends in a colon brings its first item. "Needs you: none" and "you said go" are not asks | 10 min |
+| `unfinished` | a session launched with `done` (below) that died, or has been idle since, and whose final reply's last 300 characters do not hold that text | 30 min |
+
+Each item: `kind, host, id, sessionId, name, engine, tmux, since, minutes, text`, and `why` (owner-ask: question,
+handoff or go), `done`, `ended`, `launchedAt` (unfinished). `fleet.summary({ stalls: { inputMinutes, askMinutes,
+unfinishedMinutes } })` changes the thresholds for that call. `native.summary({ stalled: true })` lists them without
+windows or paths, and `survey.run` items carry theirs.
+
+- **The completion text.** `launch.start` takes `done`: the text the session's final reply holds when its work is
+  finished (Claude only, not with `resume`, at most 200 characters). The launch event records it, and a tmux launch
+  fixes the session id with `--session-id`, so the session is found again by id, alive or dead. The agent is not told
+  the text: put it in the prompt ("end your final message with STATE: DONE"). A launch that a front forwards is
+  matched through that front's record of it (the `op` event), once the host echoed `done` back; a host whose Drover
+  predates `done` starts the session anyway, and the result says, in `doneIgnored`, that it is not tracked.
+- **What the hosts send.** `tmux.windows` adds `input: { text }`; `sessions.list` with `compact` (the board's call)
+  adds `reply: { ts, end, ask }` to a Claude session that is not working, read from its transcript tail once per
+  change of the file. No new op travels between hosts: a host that answered "unknown op" would have its ssh peer
+  restarted (`core/remote.js`). A host on older code sends neither field, and nothing is judged for it.
+- **Not covered.** Codex: its `›` prompt has no frame that tells the live input from the scrollback, and its rollouts
+  are not read for asks. A launched session is judged only on a final reply its host could read: one that exited
+  cleanly (`/exit`, a parked session) is no longer listed, and one whose transcript is not found sends no reply. Hand-overs phrased any other way ("this part is still open on your side", "once you have
+  decided") are missed on purpose: a few clear signals over a long list of phrases.
+
 ## Waiting on files
 
 `files.wait` (`core/filewait.js`) blocks until a file, or the direct entries of a directory, are added, removed or
@@ -1048,7 +1084,8 @@ The list lives in the daemon's memory (`core/clients.js`). It keeps at most 64 c
 - `native.summary` returns `{ generatedAt, hosts[{name, up, waiting, working, idle}], waiting[{id, name, host, engine, since, kind, headline}], working[...], totals, manager{up, lastNoteAt} }`.
   Headlines are 140 characters, with secrets redacted and no paths. Cached 5 s. A waiting item with a dialog or held
   message on screen also carries `answer: "keys"`, `dialog {question, options}`, `hash` and `keys` (the keys that dialog
-  takes; y and n only where the prompt takes them); one that asked in text carries `answer: "reply"`.
+  takes; y and n only where the prompt takes them); one that asked in text carries `answer: "reply"`. `stalled: true`
+  adds `stalled[{kind, id, name, host, engine, since, minutes, headline, ended}]`, oldest first ([Stalled work](#stalled-work)).
 - `sessions.answer({ id, key, expect })` presses one key on the dialog a session shows, by session id or window target,
   with tmux.answer's guards (no dialog, a changed screen, a key the dialog does not take: refused, nothing typed). Pass
   the `hash` as `expect`. On a host that predates the op the front looks the window up there and uses tmux.answer.

@@ -451,6 +451,12 @@ describe('drover_launch and folder trust', () => {
     await s.handleMessage(req(2, 'tools/call', { name: 'drover_launch', arguments: { engine: 'claude', cwd: '~/code/x' } }));
     assert.deepEqual(dispatch.calls.map((c) => c.args), [{ engine: 'claude', cwd: '~/code/x', trust: false, actor: 'mcp' }, { engine: 'claude', cwd: '~/code/x', actor: 'mcp' }]);
   });
+  test('drover_launch passes a completion text (done) through to launch.start', async () => {
+    const dispatch = fakeDispatch();
+    const s = createServer({ dispatch, log: quiet });
+    await s.handleMessage(req(1, 'tools/call', { name: 'drover_launch', arguments: { engine: 'claude', cwd: '~/code/x', prompt: 'end with STATE: DONE', done: 'STATE: DONE' } }));
+    assert.deepEqual(dispatch.calls.map((c) => [c.op, c.args]), [['launch.start', { engine: 'claude', cwd: '~/code/x', prompt: 'end with STATE: DONE', done: 'STATE: DONE', actor: 'mcp' }]]);
+  });
 });
 
 describe('search tools carry the calling session\'s working directory', () => {
