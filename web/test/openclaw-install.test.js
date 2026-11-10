@@ -351,7 +351,7 @@ describe('pure parts', () => {
 // ---------------------------------------------------------------- setup() in a sandbox
 /** A fake host: files are real (in a scratch HOME), every process is emulated and recorded. */
 function fakeHost(home) {
-  const host = { calls: [], loaded: false, active: false, enabled: false, restarts: 0, approvals: null, jobs: [], gitHead: null, busyPolls: 0, clock: Date.parse('2026-10-20T12:00:00Z'), startedAt: null };
+  const host = { linger: true, lingerSelf: false, lingerSudo: false, calls: [], loaded: false, active: false, enabled: false, restarts: 0, approvals: null, jobs: [], gitHead: null, busyPolls: 0, clock: Date.parse('2026-10-20T12:00:00Z'), startedAt: null };
   // The node running drover, below OpenClaw's range unless a test says otherwise, so the sandbox's fnm nodes decide
   // (the node running this suite would otherwise compete, and win wherever it is newer).
   host.runningNode = { path: path.join(home, 'running', 'bin', 'node'), version: 'v24.15.0' };
@@ -407,6 +407,10 @@ function fakeHost(home) {
       if (verb === 'stop') { host.active = false; return ok(); }
       if (verb === 'disable') { host.enabled = false; host.active = false; return ok(); }
     }
+    // logind: linger on by default; a test turns it off and says whether this user (polkit) or sudo -n may enable it.
+    if (file === 'loginctl' && argv[0] === 'show-user') return host.lingerUnknown ? { code: 1, stdout: '', stderr: `Failed to get user: User ${argv[1]} is not logged in or lingering` } : ok(host.linger ? 'yes\n' : 'no\n');
+    if (file === 'loginctl' && argv.join(' ') === `--no-ask-password enable-linger ${argv[2]}`) { if (!host.lingerSelf) return { code: 1, stdout: '', stderr: 'Could not enable linger: Access denied' }; host.linger = true; host.lingerUnknown = false; return ok(); }
+    if (file === 'sudo' && argv.join(' ') === `-n loginctl enable-linger ${argv[3]}`) { if (!host.lingerSudo) return { code: 1, stdout: '', stderr: 'sudo: a password is required' }; host.linger = true; host.lingerUnknown = false; return ok(); }
     if (file === 'plutil') return ok('OK');
     if (file === 'ps') { const t = Math.max(0, Math.round((host.clock - host.startedAt) / 1000)); return ok(`${String(Math.floor(t / 3600)).padStart(2, '0')}:${String(Math.floor(t / 60) % 60).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}\n`); }
     if (file === 'git') return host.gitHead ? ok(argv.includes('rev-parse') ? `${host.gitHead}\n` : '') : { code: 128, stdout: '', stderr: 'not a git repository' };
@@ -436,7 +440,7 @@ function fakeHost(home) {
       if (argv[0]?.endsWith('openclaw.mjs')) { host.cliEnvs = [...(host.cliEnvs ?? []), opts.env]; return cli(argv, opts); }
       return (await service(file, argv)) ?? { code: 127, stdout: '', stderr: 'not found' };
     },
-    uid: () => 501, platform: () => process.platform, runningNode: () => host.runningNode, now: () => host.clock, sleep: async (ms) => { host.clock += ms; }, alive: async () => host.active,
+    uid: () => 501, user: () => 'deploy', platform: () => process.platform, runningNode: () => host.runningNode, now: () => host.clock, sleep: async (ms) => { host.clock += ms; }, alive: async () => host.active,
   };
   return host;
 }
@@ -702,6 +706,93 @@ describe('setup in a sandbox', () => {
     await writeFile(path.join(home, '.env_secrets'), `export AWS_BEARER_TOKEN_BEDROCK=${BEARER}\nexport CLIPROXY_API_KEY=${PROXY}\n`);
     await assert.rejects(install.setup({ scope: 'all', exclude: ['laptop'], digest: true, actor: 'manager' }), (e) => /EXA_API_KEY not found in ~\/\.env_secrets \(profile default\)/.test(e.message) && !e.message.includes(BEARER));
     done();
+  });
+
+  describe('systemd linger, so the manager starts at boot', () => {
+    const first = { scope: 'all', exclude: ['laptop'], digest: true, actor: 'manager' };
+    const lingerStep = (r) => r.steps.find((x) => x.step === 'linger');
+    const enableCalls = (from = 0) => host.calls.slice(from).filter((c) => /enable-linger/.test(c));
+    beforeEach(() => { install._deps.platform = () => 'linux'; });
+
+    test('already on: reported, nothing enabled; the status unit says linger true', async () => {
+      const r = await install.setup(first);
+      assert.deepEqual(lingerStep(r), { step: 'linger', action: 'on', detail: 'deploy' });
+      assert.deepEqual(enableCalls(), []);
+      assert.ok(host.calls.includes('loginctl show-user deploy -p Linger --value'));
+      const st = await install.serviceState(lay());
+      assert.equal(st.linger, true);
+      assert.deepEqual(install.lingerCheck(st), { ok: true, unexpected: [] });
+      done();
+    });
+
+    test('off: loginctl enables it as this user, no sudo; a second run with the service unchanged still checks it', async () => {
+      host.linger = false; host.lingerSelf = true;
+      const r = await install.setup(first);
+      assert.deepEqual(lingerStep(r), { step: 'linger', action: 'enabled', detail: 'loginctl --no-ask-password enable-linger deploy' });
+      assert.deepEqual(enableCalls(), ['loginctl --no-ask-password enable-linger deploy']);
+      assert.equal(host.linger, true);
+      // Turned off again by hand: the next run, which restarts nothing, turns it back on.
+      host.linger = false;
+      const from = host.calls.length;
+      const r2 = await install.setup({});
+      assert.equal(r2.steps.find((x) => x.step === 'service').action, 'unchanged');
+      assert.equal(lingerStep(r2).action, 'enabled');
+      assert.deepEqual(enableCalls(from), ['loginctl --no-ask-password enable-linger deploy']);
+      done();
+    });
+
+    test('off, loginctl refused: sudo -n enables it', async () => {
+      host.linger = false; host.lingerSudo = true;
+      const r = await install.setup(first);
+      assert.deepEqual(lingerStep(r), { step: 'linger', action: 'enabled', detail: 'sudo -n loginctl enable-linger deploy' });
+      assert.deepEqual(enableCalls(), ['loginctl --no-ask-password enable-linger deploy', 'sudo -n loginctl enable-linger deploy']);
+      done();
+    });
+
+    test('off and neither works: setup still succeeds, the step says failed with the owner\'s command; status flags it', async () => {
+      host.linger = false;
+      const r = await install.setup(first);
+      const l = lingerStep(r);
+      assert.equal(l.action, 'failed');
+      assert.match(l.detail, /will not start at boot until someone logs in; run: sudo loginctl enable-linger deploy \(loginctl: Could not enable linger: Access denied; sudo: a password is required\)$/);
+      assert.equal(r.steps.find((x) => x.step === 'gateway').action, 'answering', 'the rest of setup ran');
+      assert.ok(existsSync(lay().manifest), 'the manifest was written');
+      const st = await install.serviceState(lay());
+      assert.equal(st.linger, false);
+      const c = install.lingerCheck(st);
+      assert.equal(c.ok, false);
+      assert.equal(c.fix, 'sudo loginctl enable-linger deploy');
+      assert.match(c.unexpected[0], /^systemd linger is off for deploy: the manager will not start at boot until someone logs in \(run sudo loginctl enable-linger deploy\)$/);
+      done();
+    });
+
+    test('loginctl cannot say (no session, not lingering): setup still tries to enable it; status reads null', async () => {
+      host.lingerUnknown = true; host.lingerSelf = true;
+      assert.equal(await install.lingerState('deploy'), null);
+      assert.deepEqual(install.lingerCheck({ kind: 'systemd', linger: null }), { ok: null, unexpected: [] });
+      const r = await install.setup(first);
+      assert.equal(lingerStep(r).action, 'enabled');
+      done();
+    });
+
+    test('a dry run reads linger and reports would enable, enabling nothing', async () => {
+      host.linger = false; host.lingerSelf = true;
+      const r = await install.setup({ ...first, dryRun: true });
+      assert.deepEqual(lingerStep(r), { step: 'linger', action: 'would enable', detail: 'loginctl --no-ask-password enable-linger deploy, else sudo -n loginctl enable-linger deploy' });
+      assert.deepEqual(enableCalls(), []);
+      assert.equal(host.linger, false);
+      done();
+    });
+
+    test('launchd has no linger: no step, no loginctl, no linger field', async () => {
+      install._deps.platform = () => 'darwin';
+      host.linger = false;
+      const r = await install.setup(first);
+      assert.equal(lingerStep(r), undefined);
+      assert.equal(host.calls.some((c) => c.startsWith('loginctl') || c.startsWith('sudo')), false);
+      assert.equal('linger' in (await install.serviceState(lay())), false);
+      done();
+    });
   });
 
   test('a hand-edited service file the supervisor already loaded is put back and re-read, not just restarted', async () => {

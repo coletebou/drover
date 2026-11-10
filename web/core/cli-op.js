@@ -4,6 +4,7 @@
 // cli unless the args name one. Tests: test/op-audit.test.js.
 import { dispatchRecorded, isWrite } from './api.js';
 import { daemonEndpoint, callDaemon } from './daemon-client.js';
+import { HUB_ONLY_OPS, hubOnlyRefusal } from './ask/ops.js';
 
 export const _deps = { daemonEndpoint, callDaemon, dispatchRecorded };
 // A search runs its remote sources (the brain) here, at the front (remote: true unless the args say otherwise), behind a
@@ -16,6 +17,7 @@ const SEEN_BY = new Set(['sessions.transcript', 'sessions.lastReply']);
 
 /** Run one op for the CLI; its result, as dispatch returns it. */
 export async function cliOp(op, args = {}) {
+  if (HUB_ONLY_OPS.has(op)) throw hubOnlyRefusal(op);
   if (CALLER_CWD.has(op)) args = { remote: true, ...args, callerCwd: process.cwd() };
   if (SEEN_BY.has(op)) args = { ...args, seenBy: 'cli' };
   if (op === 'sessions.seen') args = { ...args, actor: 'cli' };

@@ -18,13 +18,31 @@
 //  - its writers hold <the config path it uses>.lock (proper-lockfile: a directory made with mkdir, abandoned after
 //    10 s without an mtime refresh; Claude Code passes that lockfilePath, so a symlink is not resolved for it) and
 //    re-read the file under it.
+//
+// The custom API key question (Claude Code 2.1.319, read in its bundle): when the environment holds ANTHROPIC_API_KEY
+// and that key has no recorded answer, an interactive start asks "Detected a custom API key in your environment. Do
+// you want to use this API key?" with "No (recommended)" focused; a launched implementer on a new host sat at it
+// (2026-11-07). The answers live in the global config as customApiKeyResponses: { approved: [...], rejected: [...] },
+// each entry the key trimmed and cut to its last 20 characters. A key in approved is used, one in rejected is ignored
+// (the session falls back to its login), one in neither is "new" and asks. Yes appends to approved and removes it from
+// rejected; No does the reverse. answerClaudeApiKey answers it the way the host already answers: any approved key means
+// the host runs on API keys (a rotated key is approved); else any rejected key means it uses its subscription (reject,
+// Claude Code's own recommendation); on a host with no answers yet, a subscription login means reject and none means
+// approve, because the key is then the only way in. An explicit per-launch apiKey of approve, reject or ask wins.
+// This must never default to approve: approving a key silently moves every session on a subscription host (the Mac mini)
+// from the subscription to API billing. The key and its suffix are never logged, returned, or put in an event or error.
 // Codex 0.163.0 asks only inside a git repository ("Trusting will apply to the repository root") and writes
 // [projects."<root>"] trust_level = "trusted" to $CODEX_HOME/config.toml, <root> the main checkout, canonicalized.
 import { readFile, writeFile, rename, stat, lstat, chmod, mkdir, rmdir, realpath, unlink } from 'node:fs/promises';
 import { readFileSync, statSync, realpathSync, existsSync } from 'node:fs';
+import { execFile, spawnSync } from 'node:child_process';
 import path from 'node:path';
 
-export const _deps = { home: () => process.env.HOME, log: (m) => console.error(`[trust] ${m}`), now: () => Date.now(), lockWaitMs: 3000 };
+export const _deps = { home: () => process.env.HOME, log: (m) => console.error(`[trust] ${m}`), now: () => Date.now(), lockWaitMs: 3000,
+  /** The tmux server's global environment as text (NAME=value lines), or null when no server is up. Test seam. */
+  tmuxGlobalEnv: () => new Promise((resolve) => execFile('tmux', ['show-environment', '-g'], { encoding: 'utf8', timeout: 5000, maxBuffer: 4 << 20 }, (err, out) => resolve(err ? null : out))),
+  /** True when this host has a Claude subscription login. Existence only: the secret is never read. Test seam. */
+  hasSubscription: (env, home) => hasSubscriptionLogin(env, home) };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -288,5 +306,74 @@ export async function trustFolder(engine, dir, opts = {}) {
   } catch (e) {
     _deps.log(`${engine} ${dir}: ${e.message}`);
     return { engine, skipped: e.busy ? e.message : `${e.code ?? 'error'}: ${e.message}`.slice(0, 300) };
+  }
+}
+
+/** Claude Code's normalization of a key for customApiKeyResponses: trimmed, last 20 characters. */
+const normalizeKey = (key) => key.trim().slice(-20);
+
+/** Whether this host has a Claude subscription login: CLAUDE_CODE_OAUTH_TOKEN, a credentials file with claudeAiOauth.accessToken, or (macOS) the Keychain item. Reads no secret into memory beyond the file's JSON check. */
+function hasSubscriptionLogin(env, home) {
+  if (env.CLAUDE_CODE_OAUTH_TOKEN) return true;
+  const dir = path.isAbsolute(env.CLAUDE_CONFIG_DIR ?? '') ? env.CLAUDE_CONFIG_DIR : path.join(home, '.claude');
+  try { if (JSON.parse(readFileSync(path.join(dir, '.credentials.json'), 'utf8'))?.claudeAiOauth?.accessToken) return true; } catch { /* none */ }
+  if (process.platform === 'darwin' && !env.CLAUDE_CONFIG_DIR) {
+    return spawnSync('security', ['find-generic-password', '-s', 'Claude Code-credentials'], { stdio: 'ignore', timeout: 5000 }).status === 0;   // no -w: existence only
+  }
+  return false;
+}
+
+/**
+ * Answer Claude Code's "Detected a custom API key in your environment" question ahead of a launch (see the header for the
+ * policy). env is the launch's environment layered over this process's (the way onboardClaude gets it); childKey is whether
+ * the launch itself sets ANTHROPIC_API_KEY, in which case it alone decides (empty = none); otherwise the tmux server's global
+ * environment decides when one is up, and this process's env when not. apiKey 'approve' | 'reject' wins over the heuristic;
+ * 'ask' leaves the dialog alone. Never throws. Returns { file, answer, changed, reason } or { skipped }; nothing in it,
+ * in the log or in an error names the key or any part of it.
+ */
+export async function answerClaudeApiKey({ env = process.env, childEnv = {}, apiKey } = {}) {
+  const home = _deps.home();
+  try {
+    if (apiKey === 'ask') return { skipped: 'apiKey ask: the dialog is left to the session' };
+    let key;
+    if (Object.hasOwn(childEnv, 'ANTHROPIC_API_KEY')) key = childEnv.ANTHROPIC_API_KEY;
+    else {
+      const tmuxEnv = await _deps.tmuxGlobalEnv();
+      if (tmuxEnv === null) key = env.ANTHROPIC_API_KEY;
+      else { const line = tmuxEnv.split('\n').find((l) => l.startsWith('ANTHROPIC_API_KEY=')); key = line ? line.slice(18) : undefined; }
+    }
+    if (typeof key !== 'string' || !key.trim()) return { skipped: 'no ANTHROPIC_API_KEY in the agent\'s environment' };
+    const norm = normalizeKey(key);
+    const file = claudeConfigFile(env, home), real = await configTarget(file);
+    const out = { file: tilde(file, home) };
+    const linked = Boolean((await lstat(file).catch(() => null))?.isSymbolicLink());
+    return await withLocks(linked ? [`${file}.lock`, `${real}.lock`] : [`${file}.lock`], async () => {
+      const { text, mode } = await readConfig(real);
+      let cfg = {};
+      if (text.trim()) {
+        try { cfg = JSON.parse(text); } catch { _deps.log(`${file} does not parse: API key answer left as it is`); return { skipped: `${out.file} does not parse; left as it is` }; }
+      }
+      if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) return { skipped: `${out.file} is not a JSON object; left as it is` };
+      const r = cfg.customApiKeyResponses ?? {};
+      const list = (v) => (v === undefined ? [] : Array.isArray(v) && v.every((x) => typeof x === 'string') ? v : null);
+      if (!r || typeof r !== 'object' || Array.isArray(r) || list(r.approved) === null || list(r.rejected) === null) return { skipped: `${out.file} has customApiKeyResponses in a shape this does not edit; left as it is` };
+      const approved = list(r.approved), rejected = list(r.rejected);
+      if (approved.includes(norm)) return { ...out, answer: 'approved', changed: false, reason: 'already approved' };
+      if (rejected.includes(norm)) return { ...out, answer: 'rejected', changed: false, reason: 'already rejected' };
+      let answer, reason;
+      if (apiKey === 'approve' || apiKey === 'reject') { answer = apiKey === 'approve' ? 'approved' : 'rejected'; reason = 'requested by the launch'; }
+      else if (approved.length) { answer = 'approved'; reason = 'this host already approves API keys'; }
+      else if (rejected.length) { answer = 'rejected'; reason = 'this host already rejects API keys (it uses its subscription)'; }
+      else if (_deps.hasSubscription(env, home)) { answer = 'rejected'; reason = 'no answers yet and a subscription login exists'; }
+      else { answer = 'approved'; reason = 'no answers yet and no subscription login: the key is the only way in'; }
+      const next = answer === 'approved'
+        ? { ...r, approved: [...approved, norm], rejected: rejected.filter((k) => k !== norm) }
+        : { ...r, approved: approved.filter((k) => k !== norm), rejected: [...rejected, norm] };
+      await replaceFile(real, JSON.stringify({ ...cfg, customApiKeyResponses: next }, null, 2), mode);   // Claude Code's own layout: two spaces, no final newline
+      return { ...out, answer, changed: true, reason };
+    });
+  } catch (e) {
+    _deps.log(`claude API key answer: ${e.code ?? 'error'}`);
+    return { skipped: e.busy ? e.message : `${e.code ?? 'error'}: could not answer the API key question` };
   }
 }

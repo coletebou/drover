@@ -15,6 +15,9 @@ const claude = await import('../core/claude.js');
 test('projectSlug and transcriptPath follow the ~/.claude/projects layout', () => {
   assert.equal(claude.projectSlug('/Users/alice/code/webapp'), '-Users-alice-code-webapp');
   assert.ok(claude.transcriptPath('/Users/alice/code/webapp', 'abc').endsWith('/projects/-Users-alice-code-webapp/abc.jsonl'));
+  // A worktree under .claude/worktrees, an underscore, a space: Claude Code turns each into '-'.
+  assert.equal(claude.projectSlug('/home/me/code/app/.claude/worktrees/feat_x'), '-home-me-code-app--claude-worktrees-feat-x');
+  assert.equal(claude.projectSlug('/Users/a b/My.App'), '-Users-a-b-My-App');
 });
 
 test('parseTranscriptLine handles user text, tool results, assistant text+tools, titles', () => {

@@ -9,6 +9,7 @@ import { uuidv7 } from './ids.js';
 import { stateDir } from './paths.js';
 import { ownerActor } from './owner.js';
 import * as plugins from './plugins.js';
+import { validateAskEvent } from './ask/model.js';
 
 export const DOTFILES = envvar('DOTFILES') ?? path.join(process.env.HOME, '.dotfiles');
 const EVENTS_OVERRIDE = envvar('EVENTS');
@@ -20,7 +21,7 @@ export const LEGACY_EVENTS_PATH = path.join(DOTFILES, 'claude', 'apx-events.json
 export const LEGACY_FEATURE_LOG = process.env.DROVER_FEATURE_LOG ?? process.env.APX_FEATURE_LOG ?? path.join(DOTFILES, 'claude', 'feature-log.jsonl');
 
 export const FEATURE_STATES = ['not-started', 'in-progress', 'shipped', 'abandoned'];
-export const EVENT_TYPES = ['feature', 'note', 'pin', 'unpin', 'message', 'launch', 'survey', 'survey-item', 'handoff', 'chat', 'failover', 'review', 'op', 'notify', 'settings', 'file-write', 'upload', 'status', 'receipt', 'approval'];
+export const EVENT_TYPES = ['feature', 'note', 'pin', 'unpin', 'message', 'launch', 'survey', 'survey-item', 'handoff', 'chat', 'failover', 'review', 'op', 'notify', 'settings', 'file-write', 'upload', 'status', 'receipt', 'approval', 'ask'];
 // A plugin adds its own event types with a validator each (core/plugins.js eventTypes).
 
 export function shortHost() {
@@ -66,6 +67,8 @@ export function validateEvent(ev) {
       if (typeof ev.path !== 'string' || !Number.isFinite(ev.bytes)) throw new Error(`${ev.type}.path and ${ev.type}.bytes required`);
       if ('content' in ev || 'data' in ev) throw new Error(`${ev.type} records path and size only, never content`);
       break;
+    // A question to the owner by text and what came of it (core/ask: docs/ask.md).
+    case 'ask': validateAskEvent(ev); break;
     // An agent's own report of what it is doing (Grok bots through the bot gateway: core/bots/grok.js).
     case 'status':
       if (typeof ev.agent !== 'string' || !ev.agent || typeof ev.state !== 'string' || !ev.state) throw new Error('status.agent and status.state required');
