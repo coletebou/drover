@@ -21,7 +21,7 @@ drover manager setup --profile mine --overlay ~/private/openclaw-manager --scope
 drover manager setup                       # later: refresh from this checkout (scope, profile and overlay from the manifest)
 drover manager roles                       # the roles this checkout and the overlay define
 drover manager profiles                    # the profiles this checkout and the overlay define
-drover manager status                      # service, gateway, health, automations, cost, install, checks
+drover manager status                      # service, gateway, health, automations, cost, install, checks (egress; linger on Linux)
 drover manager check --live                # egress check against the profile, plus the gateway's TCP peers
 drover manager uninstall [--purge]         # --purge also deletes state, memory and secrets
 ```
@@ -40,7 +40,11 @@ sources; renders `openclaw.json` (keeping the keys OpenClaw writes itself: `meta
 `agents.entries`); refreshes the standing orders and seeds the other workspace files once; writes
 `bin/ro`, `bin/run-gateway` and `bin/oc`; writes the service (systemd unit or launchd plist); runs
 `openclaw config validate`; on a first install imports `exec-approvals.json` through `openclaw doctor
---fix`, later keeps the stored policy at that file's; (re)starts the service;
+--fix`, later keeps the stored policy at that file's; (re)starts the service; on Linux, every run,
+turns systemd linger on for the user (`loginctl --no-ask-password enable-linger`, else `sudo -n loginctl enable-linger`;
+step `linger`: `on`, `enabled`, `would enable` or `failed`), because without it the user's systemd only
+starts at a login, so after a reboot the manager stays down until someone logs in (a failure does not fail
+setup: the step names the command for the owner, and `drover manager status` keeps flagging it);
 writes the manifest `~/.openclaw-manager/drover-install.json`; then, once the gateway answers, creates the
 role's missing automations, edits the existing ones in place to the role's definition, and reads `openclaw health`.
 

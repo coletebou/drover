@@ -39,6 +39,9 @@ Around those agents:
   shows as buttons you can press, and alerts in the browser, on the Mac, on the phone and on the watch.
 - **Launch**: start Claude Code, Codex or Hermes on any host, in a tmux window or headless, with a profile, a model, an
   effort level and a prompt; folders are trusted for you so Claude Code and Codex do not stop at their first-run question.
+- **Asks**: an agent that needs you texts you the question (Telegram, iMessage or SMS), you answer with a tap or `K7 b`,
+  and the answer comes back into that agent's session, marked as yours and verified by the channel
+  ([docs/ask.md](docs/ask.md)).
 - **The truth file**: features, notes, pins, handoffs, messages and launches, appended by people and agents alike, synced
   with your dotfiles. The board, the Features view and the manager read it.
 - **MCP**: `drover mcp` gives Claude Code and Codex the same powers as the UI (the `drover_*` tools), so one agent can
