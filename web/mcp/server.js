@@ -15,6 +15,7 @@ import { isManagerActor, isOwnerClient, UPDATE_HINT } from '../core/util.js';
 import { daemonEndpoint, callDaemon } from '../core/daemon-client.js';
 import { ALL_EFFORTS, EFFORT_LEVELS } from '../core/effort.js';
 import { filterSessions, filtersGiven } from '../core/session-filter.js';
+import { callerSession } from '../core/ask/caller.js';
 
 export const SERVER_INFO = { name: 'drover', version: '0.1.0' };
 export const LATEST_PROTOCOL = '2025-06-18';
@@ -133,6 +134,25 @@ export const TOOLS = [
     run: (dispatch, args) => dispatch('sessions.message', { ...pick(args, ['id', 'text', 'host', 'thread']), actor: ACTOR }),
   },
   {
+    name: 'drover_ask',
+    title: 'Text the owner a question',
+    description: 'Put a question to the owner by text message (Telegram, iMessage or SMS, sent by the ask hub) instead of waiting in chat or writing it into a file they have to go read. Returns at once with an askId (and, on the hub, a code such as K7); the answer arrives later in THIS session as a message: "[<owner> via telegram, verified] K7 → b (no) ..." with the askId. End your turn or keep working; do not poll. Only a reply the channel verified as the owner\'s is ever delivered as an answer; for a consequential decision, confirm it with drover_ask_get <askId> (source, provider message id, verified). options make it a tap or a letter (a, b, ...); questions sends several at once ("1a 2b 3 yes"). Normal asks wait for the owner\'s quiet hours, a pause or the rate limit and then go out together; urgency urgent skips those and escalates to the next channel after 5 minutes: use it only when work is blocked and it cannot wait. Never put secrets in a question. The answer goes to your own session unless sessionId names another (a Codex thread must pass its own thread id). drover_ask_list, drover_ask_cancel and drover_ask_status cover the rest.',
+    inputSchema: schema({
+      question: { type: 'string', description: 'The question, plain and self-contained (600 characters max): the owner reads it on a phone, away from your context.' },
+      options: { type: 'array', items: { type: 'string' }, description: 'Two to nine short choices, answered by letter or a tap. Omit for a free-text answer.' },
+      questions: { type: 'array', description: 'Instead of question: several questions in one text, answered like "1a 2b 3 yes".', items: { type: 'object', properties: { question: { type: 'string' }, options: { type: 'array', items: { type: 'string' } } }, required: ['question'], additionalProperties: false } },
+      urgency: { type: 'string', enum: ['normal', 'urgent'], description: 'Default normal.' },
+      ttlMinutes: { type: 'number', description: 'Minutes until it expires (default 24 hours, at most 14 days). You get a message when it expires unanswered.' },
+      expiresAt: { type: 'string', description: 'Or an ISO 8601 expiry time.' },
+      channels: { type: 'array', items: { type: 'string', enum: ['telegram', 'imessage', 'sms'] }, description: 'Channels in order; default the hub\'s order (Telegram, iMessage, SMS).' },
+      sessionId: { type: 'string', description: 'Where the answer goes. Default: the session that runs this MCP server (yours).' },
+    }),
+    run: async (dispatch, args) => {
+      const me = args.sessionId ? null : await callerSession().catch(() => null);
+      return dispatch('ask.create', { ...pick(args, ['question', 'options', 'questions', 'urgency', 'ttlMinutes', 'expiresAt', 'channels', 'host']), sessionId: args.sessionId ?? me?.sessionId, ...(me?.name ? { sessionName: me.name } : {}), cwd: me?.cwd ?? process.cwd(), actor: ACTOR });
+    },
+  },
+  {
     name: 'drover_tmux_windows',
     title: 'tmux windows',
     description: 'List every tmux window across all tmux sessions on a machine: target ("session:index"), window name, active pane command and cwd, last activity, whether the session is attached, and the matched agent (Claude session id/name/status from the registry, or a Codex guess from the pane command). Targets feed drover_capture and drover_tmux_send.',
@@ -177,12 +197,14 @@ export const TOOLS = [
       name: { type: 'string', description: 'Window name (tmux mode) or label (headless mode). A tmux Claude launch also gives the session this name (claude --name), so drover_send to the name reaches it.' },
       resume: { type: 'string', description: 'Session id (Claude, Hermes) or thread id (Codex) to resume instead of starting fresh.' },
       trust: { type: 'boolean', description: 'tmux mode: record cwd as trusted in the agent\'s own config first, so it starts at its prompt instead of the first-run trust dialog. Default true.' },
+      apiKey: { type: 'string', enum: ['approve', 'reject', 'ask'], description: 'tmux Claude launch: answer "Detected a custom API key in your environment" this way instead of as the host already does; ask leaves the dialog.' },
+      done: { type: 'string', description: 'Claude only, not with resume: the text the session\'s final reply holds when its work is finished, at most 200 characters (say it in the prompt too, e.g. "end your final message with STATE: DONE"). drover_fleet_summary then reports the session in stalls as unfinished when it dies, or idles 30 minutes, without it.' },
       host: { type: 'string', description: 'ssh alias of another fleet machine, "auto" to let the fleet\'s placement choose one, or omit for this one' },
       placement: { type: 'string', description: 'With host "auto": the workload class to place (claude-session, codex-session, hermes-session, heavy-build, macos-only, or one the fleet catalog defines). Default: the engine\'s session class.' },
       placementExclude: { type: 'array', items: { type: 'string' }, description: 'With host "auto": hosts never to pick.' },
     }),
     async run(dispatch, args) {
-      const req = { ...pick(args, ['engine', 'mode', 'profile', 'model', 'effort', 'cwd', 'prompt', 'tmuxSession', 'name', 'resume', 'trust', 'host', 'placement', 'placementExclude']), actor: ACTOR };
+      const req = { ...pick(args, ['engine', 'mode', 'profile', 'model', 'effort', 'cwd', 'prompt', 'tmuxSession', 'name', 'resume', 'trust', 'apiKey', 'done', 'host', 'placement', 'placementExclude']), actor: ACTOR };
       // host "auto": the daemon in front checks the chosen host's efforts itself (core/api.js requireLaunchEfforts).
       if (req.effort !== undefined) await requireEffortSupport(dispatch, args.host === 'auto' ? undefined : args.host);
       return dispatch('launch.start', req);
@@ -377,6 +399,9 @@ function need(args, required, keys) {
 // fronts becomes a tool of its own (drover_<op with dots as underscores>), and
 // drover_op is the escape hatch for any op by name. Mutating calls carry actor mcp
 // and land in the WAL like UI actions do.
+// The ask hub's calls to the asking host (core/ask/ops.js): an agent that could make them could plant an answer, so
+// they are no tools, and drover_op refuses them.
+const HUB_ONLY = new Set(['ask.deliver', 'ask.mark']);
 const COVERED = new Set(TOOLS.flatMap((t) => [...String(t.run).matchAll(/dispatch\('([a-z.]+)'/g)].map((m) => m[1])));
 // A tool call holds its session until it returns, and the daemon call behind it gives up at 130 s, so over MCP a
 // files.wait waits at most this long (by name or through drover_op). A longer wait is `drover op files.wait` under
@@ -412,14 +437,14 @@ const generatedTool = (op) => ({
   run: (dispatch, args) => dispatch(op, mcpArgs(op, isMutating(op) ? { ...args, actor: writeActor(args.actor) } : args)),
 });
 /** One tool per op no hand-written tool covers, built from the op table as it is now (plugins included once loaded). */
-export const generatedTools = () => OPS_KNOWN.filter((op) => !COVERED.has(op)).map(generatedTool);
+export const generatedTools = () => OPS_KNOWN.filter((op) => !COVERED.has(op) && !HUB_ONLY.has(op)).map(generatedTool);
 export const GENERATED_TOOLS = generatedTools();
 export const GENERIC_TOOL = {
   name: 'drover_op',
   title: 'Run any Drover op by name',
   description: 'Escape hatch with full UI parity: run any op from the op table (see resource drover://ops for names, descriptions and schemas). Prefer the named tools; use this for ops added after this server was built.',
   inputSchema: { type: 'object', properties: { op: { type: 'string', description: 'op name like tmux.capture' }, args: { type: 'object', additionalProperties: true, description: 'op arguments' }, host: { type: 'string', description: 'ssh alias, or a host a plugin provides; merged into args' } }, required: ['op'], additionalProperties: false },
-  run: (dispatch, args) => dispatch(String(args.op), mcpArgs(String(args.op), { ...(args.args ?? {}), ...(args.host ? { host: args.host } : {}), ...(isMutating(args.op) ? { actor: writeActor((args.args ?? {}).actor) } : {}) })),
+  run: (dispatch, args) => (HUB_ONLY.has(String(args.op)) ? Promise.reject(new Error(`${args.op} is the ask hub's own call to the asking host, not a tool: ask with drover_ask`)) : dispatch(String(args.op), mcpArgs(String(args.op), { ...(args.args ?? {}), ...(args.host ? { host: args.host } : {}), ...(isMutating(args.op) ? { actor: writeActor((args.args ?? {}).actor) } : {}) }))),
 };
 export const ALL_TOOLS = [...TOOLS, ...GENERATED_TOOLS, GENERIC_TOOL];
 export const allTools = () => [...TOOLS, ...generatedTools(), GENERIC_TOOL];

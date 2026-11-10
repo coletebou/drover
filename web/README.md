@@ -248,6 +248,18 @@ finishing onboarding writes (`onboardClaude`; in 2.1.319 that key alone skips bo
 with the same rules as trust: nothing else changes, a file that does not parse is left as it is. The result and the
 launch event carry `onboarding` only when it wrote something. `trust: false` skips this too.
 
+A third screen appears when the agent's environment holds `ANTHROPIC_API_KEY` and Claude Code has no recorded answer for
+that key: "Detected a custom API key in your environment. Do you want to use this API key?", with "No (recommended)"
+focused (a launched implementer on hz-forge sat at it on 2026-11-07). A tmux Claude launch answers it ahead
+(`answerClaudeApiKey`), the way the host already answers, by writing the key's last 20 characters to
+`customApiKeyResponses.approved` or `.rejected` in the global config, exactly as Claude Code does. The key is the launch's
+own `ANTHROPIC_API_KEY`, else the tmux server's global environment, else the daemon's. Policy: an approved key on the host
+means approve (a rotated key); else a rejected key means reject (the host uses its subscription); on a host with no answers,
+reject when it has a subscription login and approve otherwise. It never approves on a subscription host, because that would
+move every session there to API billing. `apiKey: approve|reject|ask` (launch.start, `drover_launch`) overrides this; `ask`
+leaves the dialog. The result and event carry `apiKey: { file, answer, changed, reason }` only when it wrote, and never the
+key or any part of it.
+
 | engine | written | key |
 |---|---|---|
 | claude | `projects[<key>].hasTrustDialogAccepted = true` in `~/.claude.json` (`$CLAUDE_CONFIG_DIR/.claude.json`, or the legacy `.config.json` while in use) | the folder's real path (Claude Code keys its physical cwd: a symlinked cwd counts as its target), NFC; inside git the checkout root, and for a linked worktree its main checkout, plus the worktree's own root |
@@ -321,6 +333,42 @@ filter the answer carries `matched`, the count before `limit`. A host on Drover 
 ignores them and answers without `matched`; `drover_sessions` then applies them itself and adds a `note` (except a
 `~` cwd for another host, whose home it cannot know: pass it absolute).
 
+## Stalled work
+
+The board's wait lane holds what a screen shows as waiting (a dialog, a held peer message) and, for 20 minutes, a
+reply that ended on a question. Three other ways for work to wait on the owner showed no dialog at all, so nothing
+flagged them: an instruction pasted into an agent's input box whose Enter never landed; a final reply that handed the
+owner a decision ("Decision for you", "say go") in a session that then sat idle for days; a launched worker that died
+(a lost credential, a reboot) with its task half done. `fleet.summary` now reports these per answering host as
+`stalls`, judged from the board data the host already sends (`ui/stalls.js`, pure). It only reads: what to do about
+an item stays with the owner, or with the agent reading the summary.
+
+| kind | signal | default |
+|---|---|---|
+| `unsent-input` | a Claude Code input box (the 2.1.3xx box between two rules at the bottom, or the older `│ > │` box) holds plain text, not the faint predicted prompt or placeholder Claude Code draws there (`tmux.windows` reads the box again with escapes, `capture-pane -e`, only when it holds text); the agent is not working; its window has not changed since | 5 min |
+| `owner-ask` | an idle Claude session's final reply ends on a question, or one of its last 8 lines hands over (opens with "Decision(s) for you", "Question(s) for you", "Needs you", "Waiting on you", or the owner's name, `DROVER_OWNER_NAME`, in place of "you"; or asks for a go in the imperative: "say go", "reply yes", "your call", "need your OK"). `text` is the asking line; a heading that ends in a colon brings its first item. "Needs you: none" and "you said go" are not asks | 10 min |
+| `unfinished` | a session launched with `done` (below) that died, or has been idle since, and whose final reply's last 300 characters do not hold that text | 30 min |
+
+Each item: `kind, host, id, sessionId, name, engine, tmux, since, minutes, text`, and `why` (owner-ask: question,
+handoff or go), `done`, `ended`, `launchedAt` (unfinished). `fleet.summary({ stalls: { inputMinutes, askMinutes,
+unfinishedMinutes } })` changes the thresholds for that call. `native.summary({ stalled: true })` lists them without
+windows or paths, and `survey.run` items carry theirs.
+
+- **The completion text.** `launch.start` takes `done`: the text the session's final reply holds when its work is
+  finished (Claude only, not with `resume`, at most 200 characters). The launch event records it, and a tmux launch
+  fixes the session id with `--session-id`, so the session is found again by id, alive or dead. The agent is not told
+  the text: put it in the prompt ("end your final message with STATE: DONE"). A launch that a front forwards is
+  matched through that front's record of it (the `op` event), once the host echoed `done` back; a host whose Drover
+  predates `done` starts the session anyway, and the result says, in `doneIgnored`, that it is not tracked.
+- **What the hosts send.** `tmux.windows` adds `input: { text }`; `sessions.list` with `compact` (the board's call)
+  adds `reply: { ts, end, ask }` to a Claude session that is not working, read from its transcript tail once per
+  change of the file. No new op travels between hosts: a host that answered "unknown op" would have its ssh peer
+  restarted (`core/remote.js`). A host on older code sends neither field, and nothing is judged for it.
+- **Not covered.** Codex: its `›` prompt has no frame that tells the live input from the scrollback, and its rollouts
+  are not read for asks. A launched session is judged only on a final reply its host could read: one that exited
+  cleanly (`/exit`, a parked session) is no longer listed, and one whose transcript is not found sends no reply. Hand-overs phrased any other way ("this part is still open on your side", "once you have
+  decided") are missed on purpose: a few clear signals over a long list of phrases.
+
 ## Waiting on files
 
 `files.wait` (`core/filewait.js`) blocks until a file, or the direct entries of a directory, are added, removed or
@@ -387,6 +435,53 @@ drover op files.wait '{"host":"box-a","path":"~/runs/status","glob":"WS-*.md","s
   waiting board in Document Picture-in-Picture; `p` pops a drawer out; `?`
   lists every shortcut. Direct peers (Settings) let the browser call another
   daemon over a forwarded port or the tailnet instead of ssh rpc.
+
+## Asks: questions by text
+
+An agent blocked on the owner asks with `drover_ask` (or `drover ask "Ship it?" --options yes,no`) instead of waiting
+in chat. The **hub**, the daemon on the host `DROVER_ASK_HUB` names, texts the question by Telegram, iMessage or SMS
+with a code (`K7`), reads the reply, and delivers it to the asking session through `sessions.message` (a handoff
+chain's live successor included): `[Owner via telegram, verified] K7 → b (no)`. Asks made on other hosts are recorded
+there; the hub pulls them every 15 s from the fleet hosts of its own identity (`DROVER_ASK_HOSTS` to name them), so
+an asking host never needs to reach the hub. Design, events and failure modes: [docs/ask.md](../docs/ask.md).
+
+Set `DROVER_ASK_HUB` in a settings file every host reads, then, once the hub's daemon has run, `DROVER_ASK_HUB_KEY` in
+the same file: the public key `drover ask status` prints on the hub, without which no other host takes the hub's
+deliveries. Set each channel on the hub (secrets in `~/.env_secrets`, the rest in a settings file; `drover ask
+status` names what is missing, `--probe` asks each provider):
+
+- **Telegram**: a bot of your own from @BotFather (`DROVER_ASK_TELEGRAM_TOKEN`) and your numeric user id
+  (`DROVER_ASK_TELEGRAM_CHAT`); open the bot and press Start once. The hub long-polls for replies (no inbound port),
+  unless the bot gateway's public origin (`DROVER_BOTS_URL`) is on a port Telegram calls (443, 80, 88 or 8443): then
+  it sets the webhook `<public origin>/hooks/telegram` itself, with a secret header (a Funnel on :10000 is not one;
+  `DROVER_ASK_TELEGRAM_INBOUND=poll` or `webhook` decides). Options become buttons.
+- **SMS** (Twilio): `DROVER_ASK_TWILIO_ACCOUNT_SID`, `DROVER_ASK_TWILIO_AUTH_TOKEN`, `DROVER_ASK_SMS_FROM` (a number in
+  an approved US A2P 10DLC campaign), `DROVER_ASK_SMS_TO` (your phone). By default the hub reads your replies from the
+  account's message log every 15 s, asking Twilio only for messages from your number to that one, with nothing to
+  configure. `DROVER_ASK_SMS_INBOUND=webhook` takes them by webhook instead: point the number's incoming-message
+  webhook at `<public origin>/hooks/twilio/sms` (POST); every request's `X-Twilio-Signature` is checked against that
+  URL. Twilio signs webhooks with the auth token, so webhook mode trusts whoever holds it: keep the default where
+  agents' environments carry the token (the hook is then not served).
+- **iMessage** (a Mac): `DROVER_ASK_IMESSAGE_TO` (your handle) and the [imsg](https://github.com/steipete/imsg) CLI
+  (`DROVER_ASK_IMSG`, default `/opt/homebrew/bin/imsg`), as the macOS user the daemon runs as. That user's Messages
+  must be signed into an Apple ID that is not yours (a text to yourself raises no alert; the hub checks this at start
+  and keeps the channel off); the daemon needs the Automation permission for Messages, and nothing else may run
+  `imsg rpc` as that user. Only the one-to-one chat with your handle is read; no other chat is passed on or recorded.
+
+Policy: channels in `DROVER_ASK_CHANNELS` order (default `telegram,imessage,sms`), quiet hours `DROVER_ASK_QUIET`
+(default `22:00-08:00`, `off` for none) in `DROVER_ASK_TZ` (default `America/New_York`), at most `DROVER_ASK_RATE`
+texts an hour (default 6); held asks go out together when they may. Urgent asks skip quiet hours, a pause and the
+rate limit, and escalate to the next channel after `DROVER_ASK_ESCALATE_MINUTES` (5). Asks expire after
+`DROVER_ASK_TTL_HOURS` (24) unless they say otherwise, with one reminder first. The owner can reply `status`,
+`pause asks 2h`, `stop` (nothing until `resume`) and `resume`.
+
+Only a reply its channel authenticated (the webhook's secret or signature, or the Messages database) and that comes
+from the owner's own id counts as an answer; anything else is recorded as an untrusted `inbound` and never delivered
+or acknowledged. `ask.get` returns the answer with its source, provider message id and sender. `events.append`
+refuses `ask` events, and the hub's own calls to the asking host (`ask.deliver`, `ask.mark`) are served only with the
+hub's signature: the hub signs them with a key that never leaves it, and every other host checks it against
+`DROVER_ASK_HUB_KEY`, the public key `drover ask status` prints on the hub (no setting, no relayed answer; see
+`docs/ask.md`, trust). Questions that look like work (`DROVER_WORK_CONTEXT`) and machines of the work identity are refused.
 
 ## Browser terminals
 
@@ -1074,7 +1169,8 @@ The list lives in the daemon's memory (`core/clients.js`). It keeps at most 64 c
 - `native.summary` returns `{ generatedAt, hosts[{name, up, waiting, working, idle}], waiting[{id, name, host, engine, since, kind, headline}], working[...], totals, manager{up, lastNoteAt} }`.
   Headlines are 140 characters, with secrets redacted and no paths. Cached 5 s. A waiting item with a dialog or held
   message on screen also carries `answer: "keys"`, `dialog {question, options}`, `hash` and `keys` (the keys that dialog
-  takes; y and n only where the prompt takes them); one that asked in text carries `answer: "reply"`.
+  takes; y and n only where the prompt takes them); one that asked in text carries `answer: "reply"`. `stalled: true`
+  adds `stalled[{kind, id, name, host, engine, since, minutes, headline, ended}]`, oldest first ([Stalled work](#stalled-work)).
 - `sessions.answer({ id, key, expect })` presses one key on the dialog a session shows, by session id or window target,
   with tmux.answer's guards (no dialog, a changed screen, a key the dialog does not take: refused, nothing typed). Pass
   the `hash` as `expect`. On a host that predates the op the front looks the window up there and uses tmux.answer.
@@ -1133,18 +1229,23 @@ ops, so no MCP tool and no ssh rpc can approve a pairing.
 ## Layout
 
 ```
-bin/drover      CLI: serve (alias up) | open | status | clients | widget-token | pair | bots | rpc | mcp | op | ops | search | stacks | embed | import-survey | import-legacy
+bin/drover      CLI: serve (alias up) | open | status | clients | widget-token | pair | bots | ask | rpc | mcp | op | ops | search | stacks | embed | import-survey | import-legacy
 bin/drover-embed-setup  builds llama-server (pinned) and installs EmbeddingGemma 2 for search
 core/           api.js (op table) and adapters: tmux, claude, codex, hosts, events, memory (incl. the reflections CLI), launch, effort, trust (launch trust), remote, terminals, filewait (files.wait), session-filter (sessions.list filters), lineage (handoff successors); plugins (the plugin loader), owner (DROVER_OWNER), env (settings and secrets files)
 core/search/    the search index: extract, chunk, store (node:sqlite), indexer, embed (llama-server), query
+core/ask/       asks (docs/ask.md): model (events, fold, codes, texts), parse (the reply grammar), policy (quiet hours, rate, pause), router (the hub), ops, caller (the asking session), channels/ (telegram, sms, imessage)
 core/bots/      Grok bots: oauth (the gateway's OAuth server), tools (the bot tools), tenant-tools and access (native tenants), policy (what leaves for bots: cleaned, secrets redacted), grok (bots as sessions, Routines)
 core/docker.js  docker stacks and the docker.* verbs (core/docker-format.js: drover stacks text; ui/stacks-text.js: summaries both use)
 server/http.js  HTTP + SSE front, bearer token, static ui/
-server/botgate.js  the bot gateway: OAuth endpoints, authorize page, routine setup page, MCP over Streamable HTTP for Grok bots
+server/botgate.js  the bot gateway: OAuth endpoints, authorize page, routine setup page, MCP over Streamable HTTP for Grok bots; on the ask hub, the Telegram and Twilio webhooks (server/ask-hooks.js)
 ui/             single-page app, vanilla ES modules
 mcp/server.js   MCP over stdio, maps tools onto core/api.js
 profiles.json   default launch profiles (claude: default, plan, yolo; codex: default, read-only, workspace, yolo), model aliases, tmux sessions; DROVER_PROFILES points at a fleet's own copy
 test/           node --test test/*.test.js
 ```
 
-The truth file is `claude/drover-events.jsonl` (append-only, `merge=union`).
+The truth file is `claude/drover-events.jsonl` (append-only, `merge=union`). When the directory
+`claude/drover-events/` exists (the dotfiles repository tracks it), every append goes to the segment for its own
+timestamp's UTC day, `claude/drover-events/<YYYY-MM-DD>.jsonl` (also `merge=union`), and `drover-events.jsonl`
+stays as a read-only base. Every read covers the base and every segment, deduped by id and sorted by ts
+(`core/events.js`, `core/segments.js`); `docs/wal-retention.md` has the why.

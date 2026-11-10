@@ -6,7 +6,7 @@
 // a stable `user` so the conversation continues (the same request shape as
 // bin/manager-say). The gateway token comes from the environment or the
 // state dir's .env and never leaves this module: not in results, not in events.
-import { readFile, stat } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { run as runProc, tryRun } from './proc.js';
@@ -92,7 +92,8 @@ const ownAppends = new Map();
 async function conversation() {
   const host = _deps.host();
   let sig = null;
-  try { const st = await stat(eventsMod.EVENTS_PATH); sig = `${st.size}:${st.mtimeMs}`; } catch { /* no truth file yet */ }
+  // Every file of the truth file: with daily segments the base file no longer changes.
+  try { sig = await eventsMod.signature(eventsMod.EVENTS_PATH); } catch { /* no truth file yet */ }
   if (sig !== wal.sig && Date.now() - wal.at > REREAD_MS) {
     const events = new Map();
     const mine = (await _deps.readEvents().catch(() => [])).filter((e) => isConversationEvent(e, host));
@@ -504,7 +505,8 @@ export async function status() {
     install: manifest
       ? { managed: true, role: manifest.role, profile: manifest.profile, overlay: manifest.overlay ?? null, openclaw: manifest.openclaw?.version ?? null, node: manifest.node?.version ?? null, source: manifest.source ?? null, refreshedAt: manifest.refreshedAt ?? null, drift: expected ? install.diffPaths(cfg, expected) : null, legacy: install.legacyPaths(lay).filter((p) => existsSync(p)) }
       : { managed: false, runtime: rt?.from ?? null, hint: 'not installed by drover manager setup; run it (with --role) to manage this install' },
-    checks: { egress: egress?.error ? egress : { ok: egress?.ok ?? null, unexpected: egress?.unexpected ?? [] } },
+    // linger (systemd only): off means the manager stays down after a reboot until someone logs in.
+    checks: { egress: egress?.error ? egress : { ok: egress?.ok ?? null, unexpected: egress?.unexpected ?? [] }, ...(unit?.kind === 'systemd' ? { linger: install.lingerCheck(unit) } : {}) },
     langfuse: tracesInfo(cfg),
     // forward names this host by its hostname; a viewer elsewhere uses the ssh alias it reached this host by.
     dashboard: { port: port(), url: `http://127.0.0.1:${port()}/`, forward: `ssh -L ${port()}:127.0.0.1:${port()} ${host}`, tokenCommand, secretHint: tokenCommand ? `on ${host}: ${tokenCommand}` : null },

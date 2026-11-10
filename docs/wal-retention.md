@@ -1,7 +1,10 @@
 # Truth file (WAL) size: design proposal
 
-Status: step 1 implemented on branch `wal-retention-design` (not merged, daemon not
-restarted); steps 2 and 3 are proposals for review. Measured 2026-11-03 on the macbook.
+Status (2026-11-08): step 1 is merged. Step 3 is implemented as daily segments
+(below, "3. Daily segments"), which is the fix for GitHub's 100 MB limit. Step 2 is
+still a proposal and is no longer needed for the limit. Measured 2026-11-03 on the macbook;
+on 2026-11-08 the file was 72.8 MB (86,360 lines) and grew 2.4 to 5 MB a day, so GitHub's
+100 MB push rejection would have landed around 2026-11-13 to 11-20.
 
 ## The problem, measured
 
@@ -81,18 +84,71 @@ the synced file? The fleet summary asks each host live; if anything relies on th
 synced copy (a "waiting on you" view that works with a host offline, the openclaw
 feed), this option changes that behaviour.
 
-### 3. Monthly segments (only if 1 and 2 are not enough)
+### 3. Daily segments (implemented)
 
-On the first append of a new month (UTC), events whose `ts` is before the month start
-stop going to the live file: the live file keeps the current month, and closed months
-live in `claude/drover-events/<YYYY-MM>.jsonl.zst`, written once. Late events (a host
-offline across the boundary) still land in the live file and are found by id dedupe.
-Closed segments are immutable, so their folded state can be cached locally by content
-hash; that cache is derived and never synced.
+The first version of this step proposed monthly segments cut out of the live file, which
+needs one writer to do the cut while other hosts append: a lock or a designated host. Two
+things changed that:
 
-This needs one writer to cut a segment while other hosts keep appending, so it is
-the step that needs a lock or a single designated host. That is the architecture
-question, and why 1 and 2 come first.
+- **The segment is a pure function of the event.** An append goes to
+  `claude/drover-events/<YYYY-MM-DD>.jsonl`, the UTC day of the event's own `ts`. Every
+  host computes the same name with no shared state, so nothing is ever cut, moved or
+  rewritten, and no host is "the one that rotates". Two hosts writing the same day create
+  the same new file; git resolves that add/add with `merge=union` (tested: both sides'
+  lines are kept), exactly as it already merges the single file.
+- **Days, not months.** At 3 to 7 MB a day a month is 90 to 200 MB, the same wall. A day
+  is under 10 MB, a margin of more than ten times on the 100 MB limit.
+
+The existing `drover-events.jsonl` (72.8 MB) stays where it is as the **base**: read on
+every load, no longer appended to. Nothing is copied or moved out of it, so this adds no
+blobs to git history and needs no history rewrite. Its last version in git stays under
+100 MB.
+
+**The switch is the directory.** Drover appends to segments only when
+`claude/drover-events/` exists; the dotfiles repository tracks it (with a README), along
+with `merge=union` for `claude/drover-events/*.jsonl` and the dotsync change that commits
+a brand-new day file before a rebase (an untracked file that upstream also adds makes the
+rebase refuse to start: `error: could not detach HEAD`). The two changes can merge in
+either order:
+
+| Drover | dotfiles | appends go to | reads see |
+|---|---|---|---|
+| old | old | base | base |
+| new | old | base (no directory) | base + segments (none) |
+| old | new | base | base only: segments written by new hosts are missed until this host's drover-sync |
+| new | new | today's segment | base + every segment |
+
+The third row is the rollout window (one dotsync cycle, about 30 min, since dotsync runs
+drover-sync). Merging Drover first makes that window empty.
+
+**Reads.** `readAll()` lists the base and every `<YYYY-MM-DD>.jsonl` in the directory
+(other names, like the README, are ignored), reads each with step 1's incremental reader,
+and merges them deduped by id (a laggard host can still append to the base, a union merge
+can repeat a line) and sorted by ts. An unchanged file costs one `fstat`: its stat is
+trusted only if the mtime was already 2 s old when it was taken (git's racy-entry rule;
+file times tick about every 4 ms on ext4, so a same-size rewrite just after a read could
+keep the mtime). A file git replaces (a union merge) is parsed again alone, so a merge now
+re-parses one day (a few MB) instead of the whole log.
+
+Other readers moved with it:
+
+- `signature()` replaces `stat(EVENTS_PATH)` size+mtime in the openclaw conversation cache
+  and the Grok bot fold cache; with segments the base never changes, so those caches would
+  otherwise never refresh.
+- The push-subscription tail (`core/bots/subscriptions.js`) follows `currentFile()`: the
+  newest segment up to today (one dated ahead by a fast clock is not followed). When the
+  day turns it reads the rest of the old file, then the new one from byte 0, so no line is
+  lost at midnight. The stored position names its file; one stored by older code (no
+  file) is the base's.
+- The search indexer indexes each segment as its own `wal` source, so a change rescans one
+  day instead of the whole log.
+- Outside Drover, `scripts/agent-requests` and `scripts/reflect-implement` in the dotfiles
+  repository read the newest bytes across the base and the segments.
+
+**Not done (on purpose).** No retention: every day stays forever, as every line did
+before. Old segments could later be compressed or dropped on a host-local basis; that is a
+separate decision. Step 2 (host-local notify and op) would halve the bytes still going
+into git, and is still open.
 
 ## Existing git history
 

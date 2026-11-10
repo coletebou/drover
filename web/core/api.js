@@ -3,7 +3,7 @@
 // that host's `drover rpc` by callOn(); everything here runs on the local box.
 import { hostname } from 'node:os';
 import { existsSync } from 'node:fs';
-import { realpath } from 'node:fs/promises';
+import { realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import * as tmux from './tmux.js';
 import * as claude from './claude.js';
@@ -31,6 +31,7 @@ import * as botAuth from './bots/oauth.js';
 import * as native from './native.js';
 import { ops as settingsOps } from './settings.js';
 import { ops as notifyOps, notifier } from './notify.js';
+import { ops as askOps, _deps as askDeps } from './ask/ops.js';
 import { ops as uploadOps } from './uploads.js';
 import { ops as fileOps } from './files.js';
 import { ops as fileWaitOps, waitLimits } from './filewait.js';
@@ -42,9 +43,10 @@ import * as vitals from './vitals.js';
 import * as placement from './placement.js';
 import { mergeHosts } from './search/query.js';
 import * as remoteSearch from './search/remote.js';
-import { OWNER } from './owner.js';
+import { OWNER, OWNER_NAME } from './owner.js';
 import { UPDATE_HINT } from './util.js';
-import { classifyAsk, ASK_LABELS } from '../ui/notify-policy.js';
+import { classifyAsk, ASK_LABELS, ownerAsk } from '../ui/notify-policy.js';
+import { stallsFor, launchDeclarations } from '../ui/stalls.js';
 
 /**
  * What a stopped Claude session is waiting for: its pane (a dialog or held peer
@@ -351,6 +353,34 @@ export function slimSessions(list = []) {
 }
 
 /**
+ * What a Claude session that is not working said last, for the stall report (ui/stalls.js): reply { ts, end, ask? },
+ * end its last 300 characters (a launch's completion text is looked for there), ask the line that hands the owner a
+ * decision (ownerAsk). Board data (sessions.list compact) only. A transcript is read again only when it changed: the
+ * board asks every 15 s, and an idle session's file does not move.
+ */
+const replyMemo = new Map();   // transcript path -> { size, mtimeMs, value }
+const REPLY_MEMO_MAX = 500;
+export async function replyBrief(file) {
+  let st; try { st = await stat(file); } catch { return null; }
+  const hit = replyMemo.get(file);
+  if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return hit.value;
+  const a = await claude.askContext(file, { tailBytes: 256 * 1024 }).catch(() => null);
+  const ask = a?.text ? ownerAsk(a.text, { owner: OWNER_NAME }) : null;
+  const value = a?.text ? { ts: a.ts ?? null, end: a.text.slice(-300), ...(ask ? { ask } : {}) } : null;
+  replyMemo.delete(file);
+  replyMemo.set(file, { size: st.size, mtimeMs: st.mtimeMs, value });
+  if (replyMemo.size > REPLY_MEMO_MAX) replyMemo.delete(replyMemo.keys().next().value);
+  return value;
+}
+async function withReplies(list) {
+  return Promise.all(list.map(async (s) => {
+    if (s.engine !== 'claude' || s.status === 'busy' || !s.transcript || s.kind === 'headless') return s;
+    const reply = await replyBrief(s.transcript);
+    return reply ? { ...s, reply } : s;
+  }));
+}
+
+/**
  * A bot's session changed outside an op (a receipt was written, an approval was asked or answered): the cached session
  * lists and boards go, and in the daemon this host's board data is read again behind its cached copy (the other hosts'
  * stay: dropping them would make the next board wait on every ssh).
@@ -396,6 +426,8 @@ export const local = {
           const held = tmux.heldMessage(text);
           if (held) { w.held = true; w.heldFrom = held.from; }
           if (w.screen.state === 'dialog' || held) { w.dialog = tmux.dialogSummary(text); w.hash = tmux.screenHash(text); }
+          // Text in the input box: read again with escapes, only then, to tell typed text from a faint suggestion.
+          else if (tmux.inputBox(text)?.text) { const typed = tmux.typedInput(await tmux.capture(w.target, { lines: 40, escapes: true })); if (typed) w.input = typed; }
           // Last meaningful lines of the pane (skip Claude's footer/prompt box), for the board strips.
           const lines = text.split('\n').map((l) => l.trimEnd()).filter((l) => l.trim()
             && !/^[╭╰│╮╯─\s>›]+$/.test(l)
@@ -453,7 +485,7 @@ export const local = {
   // The filters (core/session-filter.js) run here, on the host that holds the sessions, so only what passes travels.
   async 'sessions.list'(args = {}) {
     const r = await listSessionsLocal(args);
-    const sessions = args.compact === true || args.compact === 'true' ? slimSessions(r.sessions) : r.sessions;
+    const sessions = args.compact === true || args.compact === 'true' ? await withReplies(slimSessions(r.sessions)) : r.sessions;
     if (!filtersGiven(args)) return sessions === r.sessions ? r : { ...r, sessions };
     return { ...r, ...filterSessions(sessions, args) };
   },
@@ -596,6 +628,8 @@ export const local = {
     // Approvals the same: a request is a bot's (drover_request_approval), a decision the owner's (a main-token route), and
     // a message that carries one is how the decision reaches the bot. An agent's append must pass for neither.
     if (event && typeof event === 'object' && (event.type === 'approval' || Object.hasOwn(event, 'approval'))) throw new Error('refused: approval events are written by Drover itself (a bot asks with drover_request_approval; the owner answers in Drover)');
+    // Asks the same: an answer counts as the owner's word only when a channel verified it (core/ask/router.js).
+    if (event?.type === 'ask') throw new Error('refused: ask events are written by Drover itself (ask.create asks; only a verified reply on a channel answers)');
     // Who, when and where are the op's to stamp: a body that named them could pass as another actor (the owner, a bot)
     // or sort itself before an earlier event.
     const { id: _id, ts: _ts, host: _host, actor: _actor, ...body } = event && typeof event === 'object' ? event : {};
@@ -708,6 +742,20 @@ function headlessTurns(evs = []) {
   return out.map(({ hermesText, ...t }) => t);
 }
 
+/** fleet.summary's stalls thresholds: { inputMinutes, askMinutes, unfinishedMinutes }, each 0 to 10080 when given. */
+function stallMinutes(v) {
+  if (v === undefined || v === null) return {};
+  if (typeof v !== 'object' || Array.isArray(v)) throw new Error('stalls must be an object: { inputMinutes, askMinutes, unfinishedMinutes }');
+  const out = {};
+  for (const [k, n] of Object.entries(v)) {
+    if (!['inputMinutes', 'askMinutes', 'unfinishedMinutes'].includes(k)) throw new Error(`stalls.${k} is not a threshold: inputMinutes, askMinutes or unfinishedMinutes`);
+    const x = Number(n);
+    if (!Number.isFinite(x) || x < 0 || x > 10080) throw new Error(`stalls.${k} must be 0 to 10080 minutes`);
+    out[k] = x;
+  }
+  return out;
+}
+
 /** Ops that must never be forwarded (they are about the front itself). */
 const FRONT_ONLY = new Set(['host.list', 'host.probe', 'fleet.summary', 'fleet.vitals', 'fleet.place', 'fleet.versions', 'native.summary', 'native.board', 'native.notifications', 'search.fleet', 'search.grepFleet', 'docker.fleet']);
 
@@ -777,15 +825,22 @@ export const front = {
    * host, in parallel, cached ~15 s. Hosts default to local plus whichever fleet
    * hosts answered the last probe (so a dead box does not stall the board).
    */
-  async 'fleet.summary'({ hosts: names, maxAgeMs = 15_000, includeUnprobed = false, fresh = false } = {}) {
+  async 'fleet.summary'({ hosts: names, maxAgeMs = 15_000, includeUnprobed = false, fresh = false, stalls: stallArgs } = {}) {
     const known = await hosts.knownHosts();
     let targets;
     if (names?.length) { for (const t of names) await hosts.assertKnownHost(t); targets = names; }
     else {
       targets = [hosts.LOCAL, ...known.filter((h) => h.name !== hosts.LOCAL && (includeUnprobed || lastProbe.get(h.name)?.up)).map((h) => h.name)];
     }
-    const results = await Promise.all(targets.map((h) => hostSummary(h === hosts.LOCAL ? '' : h, { maxAgeMs, fresh: fresh === true || fresh === 'true' }).then((r) => ({ ...r, host: h }))));
-    return { ts: new Date().toISOString(), hosts: results };
+    const [results, declared] = await Promise.all([
+      Promise.all(targets.map((h) => hostSummary(h === hosts.LOCAL ? '' : h, { maxAgeMs, fresh: fresh === true || fresh === 'true' }).then((r) => ({ ...r, host: h })))),
+      // The completion texts launches declared (launch.start done), from this machine's truth file.
+      events.readAll().then((all) => launchDeclarations(all, { now: Date.now() })).catch(() => new Map()),
+    ]);
+    // Stalled work per host (ui/stalls.js), judged here from the data each host sent: a host that did not answer has
+    // only its last known windows, and nothing is judged on those.
+    const now = Date.now(), minutes = stallMinutes(stallArgs);
+    return { ts: new Date(now).toISOString(), hosts: results.map((r) => (r.ok === false ? { ...r, stalls: [] } : { ...r, stalls: stallsFor(r, { now, declared, ...minutes }) })) };
   },
   /**
    * search.semantic on several hosts in parallel, merged by score with identical
@@ -1201,6 +1256,12 @@ export async function dispatch(op, args = {}) {
   if (op === 'sessions.message' && openclaw.isManagerId(rest.id)) return callOn(host, op, rest, dispatchLocal, { timeoutMs: 905_000 });
   if (op === 'launch.start' && rest.engine === hermes.ENGINE) await requireHermesLaunch(host);
   else if (op === 'launch.start' && effortGiven(rest.effort)) await requireLaunchEfforts(host);
+  // A completion text is checked here first; a host whose Drover predates it drops the field and starts the session
+  // anyway, so the result says the session is not tracked (no probe op: an unknown one would retire that host's peer).
+  if (op === 'launch.start' && launchMod.checkDone(rest.engine ?? 'claude', rest)) {
+    const r = await callOn(host, op, rest, dispatchLocal, { timeoutMs: hostTimeoutMs(op, rest) });
+    return r && typeof r === 'object' && !r.done ? { ...r, doneIgnored: `${host} runs Drover code from before launch completion texts: the session started, but is not tracked for done; update Drover there (${UPDATE_HINT})` } : r;
+  }
   if (op === 'files.wait') return callOn(host, op, rest, dispatchLocal, { timeoutMs: hostTimeoutMs(op, rest) }).catch((e) => {
     throw /unknown op files\.wait/.test(e?.message ?? '') ? new Error(`${host} runs Drover code from before files.wait: update Drover there (${UPDATE_HINT})`) : e;
   });
@@ -1290,6 +1351,7 @@ const INVALIDATES = {
   'openclaw.sweep': ['openclaw.', 'events.'],
   'uploads.put': ['uploads.', 'events.'], 'uploads.remove': ['uploads.', 'events.'], 'files.write': ['files.', 'events.'],
   'docker.restart': ['docker.'], 'docker.start': ['docker.'], 'docker.exec': ['docker.'], 'docker.run': ['docker.'],
+  'ask.create': ['events.', 'notify.'], 'ask.cancel': ['events.'], 'ask.deliver': ['events.'], 'ask.mark': ['events.'],
 };
 
 // Keys whose value is a secret, the redactor's list ("credentials" plural only, so a launch's credential pool id stays).
@@ -1345,7 +1407,7 @@ function walArgs(args) {
 async function wal(op, args, { ok, ms, error, result }) {
   if (op === 'events.append' || op === 'events.importLegacy' || op === 'sessions.seen') return; // those are WAL writes already (sessions.seen: its receipt)
   try {
-    const summary = result && typeof result === 'object' ? Object.fromEntries(Object.entries(result).filter(([k, v]) => ['ok', 'refused', 'target', 'headlessId', 'sessionId', 'threadId', 'id', 'event', 'via', 'queuedBehindTurn', 'turnId', 'number', 'url', 'credential', 'effort', 'ref', 'sha', 'branch', 'running', 'project', 'service', 'verb', 'count', 'exitCode', 'timedOut'].includes(k) && (typeof v !== 'object' || v === null)).map(([k, v]) => [k, k === 'url' ? walValue(v) : v])) : undefined;   // a URL can carry user:password@; the rest are ids
+    const summary = result && typeof result === 'object' ? Object.fromEntries(Object.entries(result).filter(([k, v]) => ['ok', 'refused', 'target', 'headlessId', 'sessionId', 'threadId', 'id', 'event', 'via', 'queuedBehindTurn', 'turnId', 'number', 'url', 'credential', 'effort', 'ref', 'sha', 'branch', 'running', 'project', 'service', 'verb', 'count', 'exitCode', 'timedOut', 'done'].includes(k) && (typeof v !== 'object' || v === null)).map(([k, v]) => [k, k === 'url' || k === 'done' ? walValue(v) : v])) : undefined;   // a URL can carry user:password@; done is a launch's completion text, as the host that ran it took it; the rest are ids
     await events.append({ type: 'op', op, target: args?.host ?? 'local', args: walArgs(args), ok, ms, ...(error && { error: walText(String(error)).slice(0, 300) }), ...(summary && { result: summary }) }, { actor: args?.actor ?? OWNER });
   } catch { /* the WAL must never break the op */ }
 }
@@ -1384,7 +1446,11 @@ export async function dispatchCached(op, args = {}) {
   return { result: r.value, cache: r.meta };
 }
 
-Object.assign(local, survey.ops, credentialOps, settingsOps, notifyOps, uploadOps, fileOps, fileWaitOps, openclaw.consoleOps, native.ops, searchOps, docker.ops);
+Object.assign(local, survey.ops, credentialOps, settingsOps, notifyOps, uploadOps, fileOps, fileWaitOps, openclaw.consoleOps, native.ops, searchOps, docker.ops, askOps);
+// Asks (core/ask): this host's ops, a peer's over its ssh rpc, and the alerts every client shows.
+askDeps.dispatch = (op, args) => dispatchLocal(op, args);
+askDeps.call = (host, op, args, opts) => (!host || host === hosts.LOCAL ? dispatchLocal(op, args) : callOn(host, op, args, dispatchLocal, opts));
+askDeps.notify = async (alert) => (await notifier.emit([alert]))[0] ?? null;
 survey._deps.dispatch = (op, args) => dispatch(op, args);
 native._deps.dispatch = (op, args) => dispatch(op, args);
 native._deps.localNames = () => new Set([hosts.localShortName(), hostname().split('.')[0]]);

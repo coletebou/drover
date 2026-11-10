@@ -305,6 +305,7 @@ test('console: status reads the service, gateway, health, model, automations, co
   assert.deepEqual([st.install.managed, st.install.role, st.install.profile, st.install.overlay, st.install.openclaw, st.install.source.commit], [true, 'mac', 'default', null, '2026.10.1', 'abc123']);
   assert.ok(Array.isArray(st.install.drift), 'drift is computed against what setup would render');
   assert.equal(st.checks.egress.ok, false);
+  assert.equal('linger' in st.checks, false, 'launchd has no linger check');
   assert.ok(st.checks.egress.unexpected.some((u) => u.includes('evil.example.com')), 'a host outside the profile allowlist is flagged');
   assert.ok(st.checks.egress.unexpected.some((u) => u.includes('OPENAI_API_KEY')), 'an extra provider key in .env is flagged');
   assert.deepEqual(st.langfuse, { url: 'http://10.0.0.5:3150', note: 'private address: reachable only from inside its network (10.0.0.5)' });
@@ -322,6 +323,28 @@ test('console: status reads the service, gateway, health, model, automations, co
   }
   const f = await openclaw.feed({ limit: 10 });
   assert.deepEqual(f.map((e) => e.id), ['2', '5', '1', '4'], 'this host\'s manager only, newest first');
+});
+
+test('console: a systemd manager without linger is flagged: it will not start at boot; with linger on it is ok', async () => {
+  await managedHost();
+  const install = await import('../core/openclaw-install.js');
+  const savedUser = install._deps.user; install._deps.user = () => 'deploy';
+  try {
+    for (const [linger, ok] of [[false, false], [true, true], [null, null]]) {
+      Object.assign(openclaw._deps, {
+        now: () => NOW, alive: async () => true, readEvents: async () => [],
+        serviceState: async () => ({ kind: 'systemd', name: 'openclaw-manager', active: 'active', uptimeSec: 60, restarts: 0, linger }),
+        run: async () => ({ code: 1, stdout: '', stderr: 'gateway down' }),
+      });
+      const st = await openclaw.status();
+      assert.equal(st.unit.linger, linger);
+      assert.equal(st.checks.linger.ok, ok, String(linger));
+      if (linger === false) {
+        assert.equal(st.checks.linger.fix, 'sudo loginctl enable-linger deploy');
+        assert.match(st.checks.linger.unexpected[0], /will not start at boot until someone logs in \(run sudo loginctl enable-linger deploy\)/);
+      } else assert.deepEqual(st.checks.linger.unexpected, []);
+    }
+  } finally { install._deps.user = savedUser; }
 });
 
 test('console: a failing gateway call reports OpenClaw\'s own error, not the command line', async () => {

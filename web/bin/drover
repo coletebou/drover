@@ -57,6 +57,10 @@ const help = `drover: browser control plane for the agent fleet
   drover channels add <name> --webhook [--format slack|discord|text|json] [--title T] [--bots a,b]   (URL from stdin)
   drover channels add <name> --command '<argv JSON>' [--title T] [--bots a,b]   (an argument {text} or --name={text} is the post, else stdin)
 
+  drover ask "<question>" [--options a,b,c] [--urgent] [--ttl 30m|2h|1d] [--channels telegram,sms] [--session ID | --no-session] [--host H] [--wait [SEC]] [--json]
+                                                            text the owner a question (the ask hub sends it); the answer comes back to the asking session
+  drover ask status [--probe] | list [--closed|--answered|--all] | get <code|askId> [--full] | cancel <code|askId> [--reason R]
+
   drover search <words...> [--here | --host H] [--limit N] [--mode hybrid|keyword|semantic]
               [--kinds claude,codex,...] [--days N] [--project P] [--json]
                                                             search every session on every machine (by meaning and exact words)
@@ -107,7 +111,7 @@ async function main() {
   // on stderr, and the command goes on without it.
   const env = await import(path.join(ROOT, 'core', 'env.js'));
   await env.loadSettings();
-  if (['serve', 'up', 'rpc', 'mcp', 'op', 'search', 'grep', 'stacks', 'transcript', 'transcripts'].includes(cmd)) await env.loadEnvFile({ file: env.secretsFile() });
+  if (['serve', 'up', 'rpc', 'mcp', 'op', 'search', 'grep', 'stacks', 'transcript', 'transcripts', 'ask'].includes(cmd)) await env.loadEnvFile({ file: env.secretsFile() });
   if (['serve', 'up', 'rpc', 'op', 'search', 'grep', 'stacks', 'transcript', 'transcripts'].includes(cmd)) {
     const { loadPlugins } = await import(path.join(ROOT, 'core', 'api.js'));
     await loadPlugins();
@@ -162,6 +166,7 @@ async function main() {
     }
     case 'bots': return botsCli();
     case 'approvals': return approvalsCli();
+    case 'ask': return askCli();
     case 'channels': return channelsCli();
     case 'ops': { const { OPS } = await import(path.join(ROOT, 'core', 'api.js')); console.log(OPS.join('\n')); return; }
     case 'serve': case 'up': {
@@ -210,6 +215,8 @@ async function main() {
     }
     case 'rpc': {
       const { dispatchLocal } = await import(path.join(ROOT, 'core', 'api.js'));
+      // The ask hub's calls to this host (ask.deliver, ask.mark) are served only with the hub's signature (core/ask/hubkey.js).
+      await (await import(path.join(ROOT, 'core', 'ask', 'ops.js'))).serveRpc();
       // A front keeps this process while it uses it, past later pulls: host.version reports the commit it started on,
       // and once the checkout has moved off it every reply says stale, so the front retires this process for a fresh one
       // with the new code (core/remote.js). Checked every minute (DROVER_RPC_STALE_CHECK_MS); two git calls each time (checkoutHead).
@@ -445,6 +452,64 @@ async function startBots() {
     const gw = await startBotGateway({ base, port: botAuth.gatewayPort(), dispatch: (op, args) => dispatchCached(op, args).then((r) => r.result), hasOp: (op) => OPS.includes(op), log: (...p) => console.error('[bots]', ...p), onPending, onRoutineSetup });
     console.log(`Bot gateway on ${gw.url} (public ${base}/mcp)`);
   } catch (e) { console.error(`bot gateway failed to start: ${e.message}`); }
+}
+
+/**
+ * `drover ask`: put a question to the owner by text (docs/ask.md). Run from an agent's shell, the answer goes to that
+ * agent's session (the nearest Claude Code session above this process) unless --session or --no-session says else.
+ */
+async function askCli() {
+  const { cliOp } = await import(path.join(ROOT, 'core', 'cli-op.js'));
+  const done = async () => { const { stopAll } = await import(path.join(ROOT, 'core', 'remote.js')); stopAll(); };
+  const host = flag('host');
+  const withHost = (a) => (host ? { ...a, host } : a);
+  const print = (r, line) => console.log(has('json') ? JSON.stringify(r, null, 2) : line(r));
+  const answerLine = (a) => {
+    if (!a.answer) return `${a.code ?? a.askId}: ${a.status}${a.why ? ` (${a.why})` : ''}`;
+    const words = a.answer.answers.map((x) => { const q = a.questions[x.q]; const opt = x.option !== null && x.option !== undefined ? `${String.fromCharCode(97 + x.option)} (${q.options[x.option]})` : ''; return `${a.questions.length > 1 ? `${x.q + 1}: ` : ''}${[opt, x.text ? `"${x.text}"` : ''].filter(Boolean).join(' ')}`; }).join(' · ');
+    return `${a.code}: ${words}  [${a.answer.source}, verified, ${a.answer.ts}]`;
+  };
+  const sub = argv[1];
+  if (sub === 'status') { print(await cliOp('ask.status', withHost({ probe: has('probe') })), (r) => [`host ${r.host}${r.isHub ? ' (the hub)' : ''}; hub ${r.hub ?? 'none (DROVER_ASK_HUB unset)'}${r.isHub ? `; routing ${r.routing ? 'on' : 'off (the daemon routes)'}` : ''}`, `order ${r.order.join(' > ')}; quiet ${r.quietHours} ${r.tz}; at most ${r.ratePerHour} texts an hour${r.stopped ? '; STOPPED by the owner' : r.pausedUntil ? `; paused until ${r.pausedUntil}` : ''}`, `open asks: ${r.open}${r.unrouted ? ` (${r.unrouted} not yet taken by the hub)` : ''}`, r.relay?.hubKey ? `hub key (DROVER_ASK_HUB_KEY on the other hosts): ${r.relay.hubKey}` : r.relay ? (r.relay.trusts.length ? `takes the hub's answers signed by ${r.relay.trusts.join(', ')}` : 'no DROVER_ASK_HUB_KEY: answers the hub relays here are refused') : null, ...Object.entries(r.channels).map(([n, c]) => `  ${n.padEnd(9)} ${c.configured ? 'configured' : `missing ${c.missing.join(', ')}`}${c.health ? `; ${c.health.ok ? 'works' : `fails: ${c.health.error}`}` : ''}`)].filter((l) => l !== null).join('\n')); return done(); }
+  if (sub === 'list') {
+    const status = has('all') ? 'all' : has('closed') ? 'closed' : has('answered') ? 'answered' : 'open';
+    print(await cliOp('ask.list', withHost({ status, limit: Number(flag('limit', 50)) })), (r) => (r.asks.length ? r.asks.map((a) => `${(a.code ?? '--').padEnd(4)} ${a.status.padEnd(9)} ${(a.sessionName ?? a.sessionId ?? '-').slice(0, 20).padEnd(20)} ${a.questions[0].question.slice(0, 70)}${a.answer ? `  -> ${answerLine(a).split(': ').slice(1).join(': ')}` : ''}`).join('\n') : `no ${status} asks on ${r.host}`));
+    return done();
+  }
+  if (sub === 'get' || sub === 'cancel') {
+    const ref = argv[2];
+    if (!ref) throw new Error(`usage: drover ask ${sub} <code|askId>`);
+    const key = /^[A-Za-z]\d{1,2}$/.test(ref) ? { code: ref.toUpperCase() } : { askId: ref };
+    if (sub === 'get') print(await cliOp('ask.get', withHost({ ...key, full: has('full') })), (a) => `${a.questions.map((q, i) => `${a.questions.length > 1 ? `${i + 1}) ` : ''}${q.question}${q.options.length ? ` [${q.options.map((o, j) => `${String.fromCharCode(97 + j)}) ${o}`).join(' ')}]` : ''}`).join('\n')}\n${answerLine(a)}`);
+    else print(await cliOp('ask.cancel', withHost({ ...key, ...(flag('reason') ? { reason: flag('reason') } : {}) })), (r) => (r.ok ? `withdrawn ${r.askId}` : `not open: ${r.status}`));
+    return done();
+  }
+  // drover ask "<question>" ...
+  const valued = new Set(['options', 'ttl', 'channels', 'session', 'host', 'wait', 'expires', 'limit', 'reason']);
+  const words = [];
+  for (let i = 1; i < argv.length; i++) {
+    if (argv[i].startsWith('--')) { if (valued.has(argv[i].slice(2)) && argv[i + 1] !== undefined && !argv[i + 1].startsWith('--') && !(argv[i] === '--wait' && !/^\d+$/.test(argv[i + 1]))) i++; continue; }
+    words.push(argv[i]);
+  }
+  const question = words.join(' ').trim();
+  if (!question) throw new Error('usage: drover ask "<question>" [--options a,b,c] [--urgent] [--ttl 2h] [--wait [SEC]] (drover ask status | list | get | cancel)');
+  const ttl = flag('ttl');
+  let ttlMinutes;
+  if (ttl) { const m = /^(\d+(?:\.\d+)?)\s*(m|min|h|d)?$/i.exec(ttl); if (!m) throw new Error('--ttl is like 30m, 2h or 1d'); ttlMinutes = Number(m[1]) * ({ m: 1, min: 1, h: 60, d: 1440 }[String(m[2] ?? 'm').toLowerCase()]); }
+  let sessionId = flag('session'), sessionName;
+  if (!sessionId && !has('no-session')) { const { callerSession } = await import(path.join(ROOT, 'core', 'ask', 'caller.js')); const me = await callerSession().catch(() => null); sessionId = me?.sessionId; sessionName = me?.name ?? undefined; }
+  const r = await cliOp('ask.create', withHost({ question, ...(flag('options') ? { options: flag('options').split(',') } : {}), urgency: has('urgent') ? 'urgent' : 'normal', ...(ttlMinutes ? { ttlMinutes } : {}), ...(flag('expires') ? { expiresAt: flag('expires') } : {}), ...(flag('channels') ? { channels: flag('channels').split(',') } : {}), ...(sessionId ? { sessionId } : {}), ...(sessionName ? { sessionName } : {}), cwd: process.cwd() }));
+  if (!has('wait')) { print(r, (x) => `${x.deduped ? 'already asked' : 'asked'}${x.code ? ` ${x.code}` : ''} (${x.askId})${x.note ? `: ${x.note}` : ''}`); return done(); }
+  // --wait [SEC]: until it is answered, withdrawn or expired (exit 0 answered, 2 closed unanswered, 3 out of time).
+  const w = argv[argv.indexOf('--wait') + 1];
+  const until = Date.now() + (/^\d+$/.test(w ?? '') ? Number(w) * 1000 : 24 * 3_600_000);
+  if (!has('json')) console.error(`asked${r.code ? ` ${r.code}` : ''} (${r.askId}); waiting for the answer...`);
+  for (;;) {
+    const a = await cliOp('ask.get', withHost({ askId: r.askId }));
+    if (a.status !== 'open') { print(a, answerLine); process.exitCode = a.status === 'answered' ? 0 : 2; return done(); }
+    if (Date.now() > until) { print(a, () => `no answer yet (${a.code ?? a.askId} stays open)`); process.exitCode = 3; return done(); }
+    await new Promise((res) => setTimeout(res, 3000));
+  }
 }
 
 /** A secret from stdin: hidden typing on a terminal, else the first line of a pipe. Never echoed or logged. */

@@ -9,6 +9,8 @@ import { envvar } from '../core/envvars.js';
 import { stateDir } from '../core/paths.js';
 import { fileURLToPath } from 'node:url';
 import { dispatch, dispatchCached, OPS, cache, notifier, askContextFor } from '../core/api.js';
+import { router as askRouter } from '../core/ask/router.js';
+import { isHub as isAskHub, HUB_ONLY_OPS, hubOnlyRefusal } from '../core/ask/ops.js';
 import { isMutating } from '../core/ops-meta.js';
 import * as settingsMod from '../core/settings.js';
 import { callOn } from '../core/remote.js';
@@ -329,6 +331,7 @@ export async function startServer({ port = 7337, bind = '127.0.0.1' } = {}) {
       const m = url.pathname.match(/^\/api\/op\/([a-zA-Z.]+)$/);
       if (!m) return json(res, 404, { error: 'no such route' });
       const op = m[1];
+      if (HUB_ONLY_OPS.has(op)) throw hubOnlyRefusal(op);
       let args = req.method === 'POST' ? await readBody(req, { limit: BODY_LIMITS[op] ?? 2 * 1024 * 1024 }) : Object.fromEntries(url.searchParams);
       if (args.token) delete args.token;
       if (req.method === 'GET' && (isMutating(op) || /\.(send|message|new|kill|rename|start|append|upsert|write|add|mark|open|close|stop|keys|importLegacy|comment|create|save|promote|discard|review|run|import|throttle|invalidate|exec|set|reset|mute|unmute|test|put|remove|answer)$/.test(op))) return json(res, 405, { error: 'use POST for mutating ops' });
@@ -429,6 +432,8 @@ export function startSnapshots({ everyMs = 15_000 } = {}) {
   // This machine's vitals every minute; a sustained shortage becomes a resource alert in the ring (never the truth
   // file), which front daemons pull with notify.recent. The fleet catalog says whether it runs here (core/vitals.js).
   stops.push(vitals.startMonitor({ emit: (list) => notifier.emit(list, { record: false }), policy: () => placement.monitorPolicy({ shortName: hosts.localShortName() }) }));
+  // The ask hub (core/ask/router.js): only on the host DROVER_ASK_HUB names. It texts the owner and reads the replies.
+  if (isAskHub()) stops.push(askRouter.start());
   // Each plugin's own daemon work (core/plugins.js start): its timers and watchers, stopped with the rest.
   stops.push(plugins.startAll({ dispatch, notifier, broadcast, watching: () => sseClients.size, settings: settingsMod }));
   return () => { for (const s of stops) s(); cache.stopWarmers(); };
