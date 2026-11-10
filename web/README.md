@@ -248,6 +248,18 @@ finishing onboarding writes (`onboardClaude`; in 2.1.319 that key alone skips bo
 with the same rules as trust: nothing else changes, a file that does not parse is left as it is. The result and the
 launch event carry `onboarding` only when it wrote something. `trust: false` skips this too.
 
+A third screen appears when the agent's environment holds `ANTHROPIC_API_KEY` and Claude Code has no recorded answer for
+that key: "Detected a custom API key in your environment. Do you want to use this API key?", with "No (recommended)"
+focused (a launched implementer on hz-forge sat at it on 2026-11-07). A tmux Claude launch answers it ahead
+(`answerClaudeApiKey`), the way the host already answers, by writing the key's last 20 characters to
+`customApiKeyResponses.approved` or `.rejected` in the global config, exactly as Claude Code does. The key is the launch's
+own `ANTHROPIC_API_KEY`, else the tmux server's global environment, else the daemon's. Policy: an approved key on the host
+means approve (a rotated key); else a rejected key means reject (the host uses its subscription); on a host with no answers,
+reject when it has a subscription login and approve otherwise. It never approves on a subscription host, because that would
+move every session there to API billing. `apiKey: approve|reject|ask` (launch.start, `drover_launch`) overrides this; `ask`
+leaves the dialog. The result and event carry `apiKey: { file, answer, changed, reason }` only when it wrote, and never the
+key or any part of it.
+
 | engine | written | key |
 |---|---|---|
 | claude | `projects[<key>].hasTrustDialogAccepted = true` in `~/.claude.json` (`$CLAUDE_CONFIG_DIR/.claude.json`, or the legacy `.config.json` while in use) | the folder's real path (Claude Code keys its physical cwd: a symlinked cwd counts as its target), NFC; inside git the checkout root, and for a linked worktree its main checkout, plus the worktree's own root |
