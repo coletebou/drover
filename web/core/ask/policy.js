@@ -5,11 +5,15 @@
 //   replies do not count): past it, asks wait and go out together in one text
 // - the owner's commands: pause (normal asks wait until then), stop (nothing goes out until resume)
 // - urgent asks skip quiet hours, the rate limit and a pause; a stop holds them too
+// - pages (heads-ups that a bot needs the owner or is blocked, or its urgent alert) follow the same rules, counted
+//   in the same hourly limit; one per key per cooldown (DROVER_ASK_PAGE_COOLDOWN_MINUTES, default 60), at most one
+//   text per source per DROVER_ASK_PAGE_GAP_MINUTES (default 10), on DROVER_ASK_PAGE_CHANNELS (default sms), dropped
+//   when older than DROVER_ASK_PAGE_STALE_HOURS (default 12) unsent; DROVER_ASK_PAGES=off turns them off
 import { envvar } from '../envvars.js';
 import { CHANNELS } from './model.js';
 
-export const DEFAULTS = Object.freeze({ order: ['telegram', 'imessage', 'sms'], quiet: '22:00-08:00', tz: 'America/New_York', ratePerHour: 6, ttlHours: 24, escalateMinutes: 5, remindFraction: 0.2, remindMinMinutes: 10 });
-export const COUNTED = new Set(['ask', 'batch', 'reminder', 'escalation']);
+export const DEFAULTS = Object.freeze({ order: ['telegram', 'imessage', 'sms'], quiet: '22:00-08:00', tz: 'America/New_York', ratePerHour: 6, ttlHours: 24, escalateMinutes: 5, remindFraction: 0.2, remindMinMinutes: 10, pageCooldownMinutes: 60, pageGapMinutes: 10, pageStaleHours: 12, pageChannels: ['sms'] });
+export const COUNTED = new Set(['ask', 'batch', 'reminder', 'escalation', 'page']);
 const HOUR = 3_600_000;
 
 const num = (v, d, { min = 0, max = Infinity } = {}) => { const n = Number(v); return Number.isFinite(n) && n >= min && n <= max ? n : d; };
@@ -26,7 +30,17 @@ export function readConfig(env = process.env) {
     ratePerHour: num(envvar('ASK_RATE', env), DEFAULTS.ratePerHour, { min: 1, max: 120 }),
     ttlMs: num(envvar('ASK_TTL_HOURS', env), DEFAULTS.ttlHours, { min: 0.05, max: 24 * 14 }) * HOUR,
     escalateMs: num(envvar('ASK_ESCALATE_MINUTES', env), DEFAULTS.escalateMinutes, { min: 1, max: 24 * 60 }) * 60_000,
+    pages: !/^(off|none|0|false|no)$/i.test(String(envvar('ASK_PAGES', env) ?? '').trim()),
+    pageChannels: pageChannels(envvar('ASK_PAGE_CHANNELS', env)),
+    pageCooldownMs: num(envvar('ASK_PAGE_COOLDOWN_MINUTES', env), DEFAULTS.pageCooldownMinutes, { min: 1, max: 7 * 24 * 60 }) * 60_000,
+    pageGapMs: num(envvar('ASK_PAGE_GAP_MINUTES', env), DEFAULTS.pageGapMinutes, { min: 0, max: 24 * 60 }) * 60_000,
+    pageStaleMs: num(envvar('ASK_PAGE_STALE_HOURS', env), DEFAULTS.pageStaleHours, { min: 0.1, max: 7 * 24 }) * HOUR,
   };
+}
+
+function pageChannels(v) {
+  const list = String(v ?? '').split(',').map((c) => c.trim().toLowerCase()).filter((c) => CHANNELS.includes(c));
+  return list.length ? [...new Set(list)] : [...DEFAULTS.pageChannels];
 }
 
 /** "22:00-08:00" -> {start: 1320, end: 480} in minutes after midnight; null when it does not parse. */

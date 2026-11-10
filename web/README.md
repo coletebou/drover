@@ -401,6 +401,11 @@ rate limit, and escalate to the next channel after `DROVER_ASK_ESCALATE_MINUTES`
 `DROVER_ASK_TTL_HOURS` (24) unless they say otherwise, with one reminder first. The owner can reply `status`,
 `pause asks 2h`, `stop` (nothing until `resume`) and `resume`.
 
+Pages: a Grok bot's `needs-owner` or `blocked` status and its urgent alert are also texted (by SMS unless
+`DROVER_ASK_PAGE_CHANNELS` says otherwise) under the same quiet hours, pause and hourly limit, once per same status per
+`DROVER_ASK_PAGE_COOLDOWN_MINUTES` (60), at most one text per bot per `DROVER_ASK_PAGE_GAP_MINUTES` (10); a later status
+that needs nobody withdraws what has not gone out. `DROVER_ASK_PAGES=off` turns them off. See docs/ask.md, "Pages".
+
 Only a reply its channel authenticated (the webhook's secret or signature, or the Messages database) and that comes
 from the owner's own id counts as an answer; anything else is recorded as an untrusted `inbound` and never delivered
 or acknowledged. `ask.get` returns the answer with its source, provider message id and sender. `events.append`
