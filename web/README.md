@@ -248,6 +248,18 @@ finishing onboarding writes (`onboardClaude`; in 2.1.319 that key alone skips bo
 with the same rules as trust: nothing else changes, a file that does not parse is left as it is. The result and the
 launch event carry `onboarding` only when it wrote something. `trust: false` skips this too.
 
+A third screen appears when the agent's environment holds `ANTHROPIC_API_KEY` and Claude Code has no recorded answer for
+that key: "Detected a custom API key in your environment. Do you want to use this API key?", with "No (recommended)"
+focused (a launched implementer on hz-forge sat at it on 2026-11-07). A tmux Claude launch answers it ahead
+(`answerClaudeApiKey`), the way the host already answers, by writing the key's last 20 characters to
+`customApiKeyResponses.approved` or `.rejected` in the global config, exactly as Claude Code does. The key is the launch's
+own `ANTHROPIC_API_KEY`, else the tmux server's global environment, else the daemon's. Policy: an approved key on the host
+means approve (a rotated key); else a rejected key means reject (the host uses its subscription); on a host with no answers,
+reject when it has a subscription login and approve otherwise. It never approves on a subscription host, because that would
+move every session there to API billing. `apiKey: approve|reject|ask` (launch.start, `drover_launch`) overrides this; `ask`
+leaves the dialog. The result and event carry `apiKey: { file, answer, changed, reason }` only when it wrote, and never the
+key or any part of it.
+
 | engine | written | key |
 |---|---|---|
 | claude | `projects[<key>].hasTrustDialogAccepted = true` in `~/.claude.json` (`$CLAUDE_CONFIG_DIR/.claude.json`, or the legacy `.config.json` while in use) | the folder's real path (Claude Code keys its physical cwd: a symlinked cwd counts as its target), NFC; inside git the checkout root, and for a linked worktree its main checkout, plus the worktree's own root |
@@ -294,6 +306,42 @@ list ran to about 300 KB, mostly Codex first prompts, and overflowed the context
 filter the answer carries `matched`, the count before `limit`. A host on Drover code from before the filters
 ignores them and answers without `matched`; `drover_sessions` then applies them itself and adds a `note` (except a
 `~` cwd for another host, whose home it cannot know: pass it absolute).
+
+## Stalled work
+
+The board's wait lane holds what a screen shows as waiting (a dialog, a held peer message) and, for 20 minutes, a
+reply that ended on a question. Three other ways for work to wait on the owner showed no dialog at all, so nothing
+flagged them: an instruction pasted into an agent's input box whose Enter never landed; a final reply that handed the
+owner a decision ("Decision for you", "say go") in a session that then sat idle for days; a launched worker that died
+(a lost credential, a reboot) with its task half done. `fleet.summary` now reports these per answering host as
+`stalls`, judged from the board data the host already sends (`ui/stalls.js`, pure). It only reads: what to do about
+an item stays with the owner, or with the agent reading the summary.
+
+| kind | signal | default |
+|---|---|---|
+| `unsent-input` | a Claude Code input box (the 2.1.3xx box between two rules at the bottom, or the older `│ > │` box) holds plain text, not the faint predicted prompt or placeholder Claude Code draws there (`tmux.windows` reads the box again with escapes, `capture-pane -e`, only when it holds text); the agent is not working; its window has not changed since | 5 min |
+| `owner-ask` | an idle Claude session's final reply ends on a question, or one of its last 8 lines hands over (opens with "Decision(s) for you", "Question(s) for you", "Needs you", "Waiting on you", or the owner's name, `DROVER_OWNER_NAME`, in place of "you"; or asks for a go in the imperative: "say go", "reply yes", "your call", "need your OK"). `text` is the asking line; a heading that ends in a colon brings its first item. "Needs you: none" and "you said go" are not asks | 10 min |
+| `unfinished` | a session launched with `done` (below) that died, or has been idle since, and whose final reply's last 300 characters do not hold that text | 30 min |
+
+Each item: `kind, host, id, sessionId, name, engine, tmux, since, minutes, text`, and `why` (owner-ask: question,
+handoff or go), `done`, `ended`, `launchedAt` (unfinished). `fleet.summary({ stalls: { inputMinutes, askMinutes,
+unfinishedMinutes } })` changes the thresholds for that call. `native.summary({ stalled: true })` lists them without
+windows or paths, and `survey.run` items carry theirs.
+
+- **The completion text.** `launch.start` takes `done`: the text the session's final reply holds when its work is
+  finished (Claude only, not with `resume`, at most 200 characters). The launch event records it, and a tmux launch
+  fixes the session id with `--session-id`, so the session is found again by id, alive or dead. The agent is not told
+  the text: put it in the prompt ("end your final message with STATE: DONE"). A launch that a front forwards is
+  matched through that front's record of it (the `op` event), once the host echoed `done` back; a host whose Drover
+  predates `done` starts the session anyway, and the result says, in `doneIgnored`, that it is not tracked.
+- **What the hosts send.** `tmux.windows` adds `input: { text }`; `sessions.list` with `compact` (the board's call)
+  adds `reply: { ts, end, ask }` to a Claude session that is not working, read from its transcript tail once per
+  change of the file. No new op travels between hosts: a host that answered "unknown op" would have its ssh peer
+  restarted (`core/remote.js`). A host on older code sends neither field, and nothing is judged for it.
+- **Not covered.** Codex: its `›` prompt has no frame that tells the live input from the scrollback, and its rollouts
+  are not read for asks. A launched session is judged only on a final reply its host could read: one that exited
+  cleanly (`/exit`, a parked session) is no longer listed, and one whose transcript is not found sends no reply. Hand-overs phrased any other way ("this part is still open on your side", "once you have
+  decided") are missed on purpose: a few clear signals over a long list of phrases.
 
 ## Waiting on files
 
@@ -1100,7 +1148,8 @@ The list lives in the daemon's memory (`core/clients.js`). It keeps at most 64 c
 - `native.summary` returns `{ generatedAt, hosts[{name, up, waiting, working, idle}], waiting[{id, name, host, engine, since, kind, headline}], working[...], totals, manager{up, lastNoteAt} }`.
   Headlines are 140 characters, with secrets redacted and no paths. Cached 5 s. A waiting item with a dialog or held
   message on screen also carries `answer: "keys"`, `dialog {question, options}`, `hash` and `keys` (the keys that dialog
-  takes; y and n only where the prompt takes them); one that asked in text carries `answer: "reply"`.
+  takes; y and n only where the prompt takes them); one that asked in text carries `answer: "reply"`. `stalled: true`
+  adds `stalled[{kind, id, name, host, engine, since, minutes, headline, ended}]`, oldest first ([Stalled work](#stalled-work)).
 - `sessions.answer({ id, key, expect })` presses one key on the dialog a session shows, by session id or window target,
   with tmux.answer's guards (no dialog, a changed screen, a key the dialog does not take: refused, nothing typed). Pass
   the `hash` as `expect`. On a host that predates the op the front looks the window up there and uses tmux.answer.
@@ -1174,4 +1223,8 @@ profiles.json   default launch profiles (claude: default, plan, yolo; codex: def
 test/           node --test test/*.test.js
 ```
 
-The truth file is `claude/drover-events.jsonl` (append-only, `merge=union`).
+The truth file is `claude/drover-events.jsonl` (append-only, `merge=union`). When the directory
+`claude/drover-events/` exists (the dotfiles repository tracks it), every append goes to the segment for its own
+timestamp's UTC day, `claude/drover-events/<YYYY-MM-DD>.jsonl` (also `merge=union`), and `drover-events.jsonl`
+stays as a read-only base. Every read covers the base and every segment, deduped by id and sorted by ts
+(`core/events.js`, `core/segments.js`); `docs/wal-retention.md` has the why.

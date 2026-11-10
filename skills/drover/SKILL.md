@@ -9,9 +9,11 @@ One daemon per machine (`drover serve`, launchd/systemd), one op table, three fr
 that all expose the same ops: the browser UI (`drover open`), the `drover_*` MCP
 tools (registered for Claude Code and Codex by install.sh), and `drover op <op>
 '<json>'` on the command line. Everything mutating is appended to the truth
-file `~/.dotfiles/claude/drover-events.jsonl` (append-only, `merge=union`, synced
-by dotsync): features, notes, pins, messages, launches, drafts, audits, and an
-`op` record for every write with actor, args and result. Reads go through the
+file `~/.dotfiles/claude/drover-events.jsonl`, or, once `claude/drover-events/`
+exists, to its segment for the day, `claude/drover-events/<YYYY-MM-DD>.jsonl`
+(append-only, `merge=union`, synced by dotsync; reads cover all of them):
+features, notes, pins, messages, launches, drafts, audits, and an `op` record
+for every write with actor, args and result. Reads go through the
 daemon's stale-while-revalidate cache; pass `fresh: true` when you need the live
 value (`drover op` on the command line reads a stale value again before printing).
 Plugins add `drover_*` tools of their own (an integration one fleet needs); they are listed in resource `drover://ops`
@@ -22,6 +24,8 @@ and in the MCP server's instructions, and a plugin's own skill, when it has one,
 | Want | Tool (MCP) | Notes |
 |---|---|---|
 | Who is working / waiting, on every host | `drover_fleet_summary` | cached ~15 s; `fresh:true` to force. Lanes: screen `dialog` = waiting on the owner, status `busy` = working |
+| What waits on the owner without a dialog | `drover_fleet_summary` → `hosts[].stalls` | read only: `unsent-input` (typed, never submitted), `owner-ask` (final reply asks the owner, unanswered), `unfinished` (launched with `done`, died or idle without it). Report them; never submit or answer for the owner |
+| Know when a launched worker is really done | `drover_launch` with `done: "STATE: DONE"` | Claude only; say the same text in the prompt. Missing from its final reply when it dies or idles 30 min = `unfinished` |
 | Sessions on one host | `drover_sessions` (`host`) | Claude registry + Codex threads + Hermes sessions + headless agents; ids feed the tools below. A Hermes session waiting on an approval or question carries `dialog`, `hash` and `keys`: answer with `drover_sessions_answer` (expect = hash). A busy host's whole list runs to hundreds of KB (Codex first prompts): ask for what you need with `cwd` (that folder or inside it), `name`, `engine`, `live`, `limit` (most recent first) and `compact: true`; they run on that host, and `matched` is the count before `limit`. Codex thread lists come from that host's one daemon reader and can be up to 10 minutes old while a refresh runs |
 | Wait until workers' files change (status files, a result appearing) | `drover op files.wait` under background Bash (see "Waiting on workers") | one command that exits when something under the path is added, removed or modified; never a `sleep; ssh cat` loop. `drover_files_wait` over MCP waits at most 110 s |
 | Read a session (live view) | `drover_session_transcript` | default `format: turns`: compact turns, the tail first; `since` is a byte offset; incremental |

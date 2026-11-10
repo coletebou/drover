@@ -415,6 +415,119 @@ describe('Codex: config.toml [projects."<root>"] trust_level = "trusted"', { ski
   });
 });
 
+describe('Claude Code: ~/.claude.json customApiKeyResponses (the "Detected a custom API key" question)', () => {
+  const KEY = 'sk-ant-api03-' + 'Zq7' + 'xK2mPvB9wLd4TnRs8YfHc1UaEo6JgQ3iXyZ0Vk5';
+  const SUFFIX = KEY.slice(-20);
+  const OTHER = 'sk-ant-api03-' + 'A'.repeat(40);
+  const seen = [];
+  let tmuxEnv = null, subscription = false;
+  const real = { tmux: trust._deps.tmuxGlobalEnv, sub: trust._deps.hasSubscription };
+  before(() => { trust._deps.tmuxGlobalEnv = async () => tmuxEnv; trust._deps.hasSubscription = () => subscription; });
+  after(() => { trust._deps.tmuxGlobalEnv = real.tmux; trust._deps.hasSubscription = real.sub; });
+  const run = async (cfg, opts = {}) => {
+    if (cfg === undefined) await rm(CLAUDE, { force: true }); else await writeFile(CLAUDE, typeof cfg === 'string' ? cfg : JSON.stringify(cfg, null, 2), { mode: 0o640 }); if (cfg !== undefined) await chmod(CLAUDE, 0o640);
+    const r = await trust.answerClaudeApiKey({ env: NO_ENV, childEnv: { ANTHROPIC_API_KEY: KEY }, ...opts });
+    seen.push(JSON.stringify(r));
+    return r;
+  };
+  const responses = async () => (await readJson(CLAUDE)).customApiKeyResponses;
+
+  test('a host that approves a key approves a rotated one; nothing else in the file changes', async () => {
+    const original = { numStartups: 3, customApiKeyResponses: { approved: [OTHER.slice(-20)], rejected: [] }, theme: 'dark' };
+    const r = await run(original);
+    assert.deepEqual(r, { file: '~/.claude.json', answer: 'approved', changed: true, reason: 'this host already approves API keys' });
+    assert.equal(await readFile(CLAUDE, 'utf8'), JSON.stringify({ ...original, customApiKeyResponses: { approved: [OTHER.slice(-20), SUFFIX], rejected: [] } }, null, 2), 'two-space JSON, no final newline');
+    assert.equal(await modeOf(CLAUDE), 0o640);
+    assert.ok(!existsSync(`${CLAUDE}.lock`));
+  });
+
+  test('a host that rejects keys rejects this one (its subscription stays in use)', async () => {
+    const r = await run({ customApiKeyResponses: { approved: [], rejected: ['x'.repeat(20)] } });
+    assert.deepEqual(r, { file: '~/.claude.json', answer: 'rejected', changed: true, reason: 'this host already rejects API keys (it uses its subscription)' });
+    assert.deepEqual(await responses(), { approved: [], rejected: ['x'.repeat(20), SUFFIX] });
+  });
+
+  test('a fresh host rejects with a subscription login and approves without one', async () => {
+    subscription = true;
+    assert.equal((await run({})).answer, 'rejected');
+    assert.deepEqual(await responses(), { approved: [], rejected: [SUFFIX] });
+    subscription = false;
+    const r = await run({});
+    assert.deepEqual([r.answer, r.changed], ['approved', true]);
+    assert.deepEqual(await responses(), { approved: [SUFFIX], rejected: [] });
+    const r2 = await run(undefined);   // no config file at all
+    assert.equal(r2.answer, 'approved');
+    assert.equal(await modeOf(CLAUDE), 0o600);
+  });
+
+  test('a key that already has an answer is left alone, whatever the host does otherwise', async () => {
+    for (const [cfg, answer] of [[{ customApiKeyResponses: { approved: [SUFFIX], rejected: ['y'.repeat(20)] } }, 'approved'], [{ customApiKeyResponses: { approved: [OTHER.slice(-20)], rejected: [SUFFIX] } }, 'rejected']]) {
+      await run(cfg);
+      const before = await stat(CLAUDE);
+      const r = await trust.answerClaudeApiKey({ env: NO_ENV, childEnv: { ANTHROPIC_API_KEY: ` ${KEY}\n` }, apiKey: answer === 'approved' ? 'reject' : 'approve' });
+      assert.equal(r.answer, answer); assert.equal(r.changed, false);
+      const after = await stat(CLAUDE);
+      assert.deepEqual([after.ino, after.mtimeMs], [before.ino, before.mtimeMs], 'not rewritten; the key is trimmed before it is compared');
+    }
+  });
+
+  test('an explicit apiKey wins over the host; moving a key between lists removes it from the other; ask leaves the file', async () => {
+    const r = await run({ customApiKeyResponses: { approved: [OTHER.slice(-20)], rejected: [] } }, { apiKey: 'reject' });
+    assert.deepEqual([r.answer, r.reason], ['rejected', 'requested by the launch']);
+    assert.deepEqual(await responses(), { approved: [OTHER.slice(-20)], rejected: [SUFFIX] });
+    const r2 = await run({ customApiKeyResponses: { approved: [], rejected: ['z'.repeat(20)] } }, { apiKey: 'approve' });
+    assert.equal(r2.answer, 'approved');
+    assert.deepEqual(await responses(), { approved: [SUFFIX], rejected: ['z'.repeat(20)] });
+    const text = '{"a":1}';
+    const r3 = await run(text, { apiKey: 'ask' });
+    assert.match(r3.skipped, /ask/); assert.equal(await readFile(CLAUDE, 'utf8'), text);
+  });
+
+  test('no key anywhere: nothing is read or written; the key comes from the launch env, then the tmux server, then this process', async () => {
+    const text = '{"keep":true}';
+    for (const childEnv of [{}, { ANTHROPIC_API_KEY: '' }, { ANTHROPIC_API_KEY: '   ' }]) {
+      await writeFile(CLAUDE, text);
+      tmuxEnv = null;
+      const r = await trust.answerClaudeApiKey({ env: NO_ENV, childEnv });
+      assert.match(r.skipped, /no ANTHROPIC_API_KEY/); assert.equal(await readFile(CLAUDE, 'utf8'), text);
+    }
+    // a launch env that sets the empty string beats a key in tmux's global env (the child gets none)
+    tmuxEnv = `PATH=/bin\nANTHROPIC_API_KEY=${KEY}\n`;
+    assert.match((await trust.answerClaudeApiKey({ env: NO_ENV, childEnv: { ANTHROPIC_API_KEY: '' } })).skipped, /no ANTHROPIC_API_KEY/);
+    // tmux up, key in its global env
+    subscription = true;
+    await writeFile(CLAUDE, '{}');
+    assert.equal((await trust.answerClaudeApiKey({ env: NO_ENV, childEnv: {} })).answer, 'rejected');
+    assert.deepEqual(await responses(), { approved: [], rejected: [SUFFIX] });
+    // tmux up without the key: this process's env is not used (the window will not see it)
+    tmuxEnv = 'PATH=/bin\n'; await writeFile(CLAUDE, '{}');
+    assert.match((await trust.answerClaudeApiKey({ env: { ANTHROPIC_API_KEY: KEY }, childEnv: {} })).skipped, /no ANTHROPIC_API_KEY/);
+    // no tmux server: the process env is what a new server (and so the child) inherits
+    tmuxEnv = null;
+    assert.equal((await trust.answerClaudeApiKey({ env: { ANTHROPIC_API_KEY: KEY }, childEnv: {} })).changed, true);
+    subscription = false;
+  });
+
+  test('a config that does not parse, is not an object, or has customApiKeyResponses in another shape is left byte for byte', async () => {
+    for (const text of ['{"customApiKeyResponses": ', '[]', 'null', '{"customApiKeyResponses":[]}', '{"customApiKeyResponses":{"approved":"x"}}', '{"customApiKeyResponses":{"rejected":[1]}}']) {
+      const r = await run(text);
+      assert.match(r.skipped, /does not parse|not a JSON object|shape this does not edit/, text);
+      assert.equal(await readFile(CLAUDE, 'utf8'), text);
+    }
+  });
+
+  test('the tmux lookup failing never throws', async () => {
+    trust._deps.tmuxGlobalEnv = async () => { throw new Error('boom'); };
+    try { assert.ok((await trust.answerClaudeApiKey({ env: NO_ENV, childEnv: {} })).skipped); } finally { trust._deps.tmuxGlobalEnv = async () => tmuxEnv; }
+  });
+
+  test('the key and its suffix appear in no result and no log line', () => {
+    const all = seen.join('\n') + '\n' + logs.join('\n');
+    assert.ok(seen.length > 5);
+    for (const secret of [KEY, SUFFIX, KEY.slice(-8)]) assert.ok(!all.includes(secret), 'no secret in results or logs');
+  });
+});
+
 // ---------------------------------------------------------------- the launch
 
 const windows = [];
@@ -430,6 +543,31 @@ describe('launch.start in tmux', () => {
   before(() => {
     launchMod._deps.trustFolder = (engine, dir, opts) => trust.trustFolder(engine, dir, { ...opts, env: NO_ENV });
     launchMod._deps.onboardClaude = (opts) => trust.onboardClaude({ ...opts, env: NO_ENV });
+    launchMod._deps.answerClaudeApiKey = async () => ({ skipped: 'stubbed: these tests are not about the API key' });
+  });
+
+  test('a launch whose environment holds an API key answers its dialog before the window opens; the result and event never carry the key', async () => {
+    const KEY = 'sk-ant-api03-' + 'Qw9' + 'e'.repeat(37);
+    const dir = await freshDir();
+    await writeFile(CLAUDE, JSON.stringify({ customApiKeyResponses: { approved: ['q'.repeat(20)], rejected: [] } }));
+    const saved = launchMod._deps.answerClaudeApiKey, calls = [];
+    launchMod._deps.answerClaudeApiKey = (opts) => { calls.push(opts.apiKey); return trust.answerClaudeApiKey({ ...opts, env: { ...opts.env, ...NO_ENV }, childEnv: { ANTHROPIC_API_KEY: KEY } }); };
+    try {
+      const r = await launchMod.launch({ engine: 'claude', mode: 'tmux', cwd: dir, credential: 'none', name: 't-key' }, { actor: 't' });
+      assert.deepEqual(r.apiKey, { file: '~/.claude.json', answer: 'approved', changed: true, reason: 'this host already approves API keys' });
+      assert.deepEqual(JSON.parse(windows.at(-1).configThen).customApiKeyResponses.approved, ['q'.repeat(20), KEY.slice(-20)], 'on disk before the agent starts');
+      const ev = await lastEvent();
+      assert.deepEqual(ev.apiKey, r.apiKey);
+      assert.ok(!JSON.stringify([r, ev]).includes(KEY.slice(-20)), 'no key suffix in the result or the event');
+      const again = await launchMod.launch({ engine: 'claude', mode: 'tmux', cwd: dir, credential: 'none', name: 't-key2' }, { actor: 't' });
+      assert.ok(!('apiKey' in again), 'already answered: nothing reported');
+      // ask: the step is skipped; trust: false does not skip it; a Codex launch never asks
+      calls.length = 0;
+      await launchMod.launch({ engine: 'claude', mode: 'tmux', cwd: dir, credential: 'none', name: 't-key3', apiKey: 'ask' }, { actor: 't' });
+      assert.equal(calls.length, 0);
+      await launchMod.launch({ engine: 'claude', mode: 'tmux', cwd: dir, credential: 'none', name: 't-key4', trust: false, apiKey: 'reject' }, { actor: 't' });
+      assert.deepEqual(calls, ['reject']);
+    } finally { launchMod._deps.answerClaudeApiKey = saved; }
   });
 
   test('trusts cwd before the window opens; the result and the launch event say what was done', async () => {

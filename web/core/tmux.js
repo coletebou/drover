@@ -71,11 +71,13 @@ export async function listPanes(target) {
   });
 }
 
-export async function capture(target, { lines = 200, join = true } = {}) {
+/** escapes: keep the colour and attribute escapes (-e), for telling typed text from a faint suggestion (typedInput). */
+export async function capture(target, { lines = 200, join = true, escapes = false } = {}) {
   assertTarget(target);
   const n = Math.max(1, Math.min(5000, Number(lines) || 200));
   const argv = ['capture-pane', '-p', '-t', target, '-S', `-${n}`];
   if (join) argv.splice(2, 0, '-J');
+  if (escapes) argv.splice(2, 0, '-e');
   const { stdout } = await run('tmux', argv);
   return stdout.trimEnd();
 }
@@ -166,6 +168,99 @@ export function dialogSummary(text) {
     options.push({ n: Number(m[1]), label: m[2].trim(), selected: /❯|›/.test(l.slice(0, l.indexOf(m[1]))) });
   }
   return { question, options };
+}
+
+// ---- what sits in an agent's input box, not yet submitted
+// Claude Code 2.1.3xx draws its input between two full-width rules at the bottom, under them only its footer (status
+// line, mode line); older versions in a ╭─╮ │ > │ ╰─╯ box. A past prompt in the scrollback is drawn as "❯ text" too, so
+// only the box at the very bottom counts. Codex's › prompt has no frame to tell it from its scrollback: not read.
+const ANSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]/g;
+export const stripAnsi = (s) => String(s ?? '').replace(ANSI_RE, '');
+const RULE_LINE = (l) => { const t = l.trim(); if (t.length < 8 || !t.startsWith('───')) return false; return (t.match(/─/g) ?? []).length >= t.length * 0.6; };
+const BOX_TOP = (l) => /^\s*╭─{3,}.*╮\s*$/.test(l), BOX_BOTTOM = (l) => /^\s*╰─{3,}.*╯\s*$/.test(l);
+const FOOTER_MAX = 6;   // lines under the box: Claude Code's status line (one to four lines) and its mode line
+
+/**
+ * The input box at the bottom of a plain screen: { text, lines } (lines: the box's line indexes in the last 40 lines
+ * of text, the first one holding the prompt glyph), text '' when the box is empty; null when there is no box.
+ */
+export function inputBox(text) {
+  const all = String(text ?? '').split('\n').slice(-40);
+  const rules = [];
+  all.forEach((l, i) => { if (RULE_LINE(l)) rules.push(i); });
+  if (rules.length >= 2) {
+    const r2 = rules.at(-1), r1 = rules.at(-2);
+    if (all.length - 1 - r2 <= FOOTER_MAX && r2 - r1 >= 2 && r2 - r1 <= 31) {
+      const m = all[r1 + 1].match(/^\s*❯\s?(.*)$/);
+      if (m) {
+        const lines = [];
+        for (let i = r1 + 1; i < r2; i++) lines.push(i);
+        return { text: [m[1], ...all.slice(r1 + 2, r2)].map((l) => l.trim()).join('\n').trim(), lines };
+      }
+    }
+  }
+  let bottom = -1;
+  for (let i = all.length - 1; i >= Math.max(0, all.length - 1 - FOOTER_MAX); i--) if (BOX_BOTTOM(all[i])) { bottom = i; break; }
+  if (bottom > 0) {
+    let top = -1;
+    for (let i = bottom - 1; i >= Math.max(0, bottom - 31); i--) if (BOX_TOP(all[i])) { top = i; break; }
+    const m = top >= 0 ? all[top + 1]?.match(/^\s*│\s*>\s?(.*?)\s*│?\s*$/) : null;
+    if (m && bottom - top >= 2) {
+      const lines = [];
+      for (let i = top + 1; i < bottom; i++) lines.push(i);
+      const rest = all.slice(top + 2, bottom).map((l) => l.replace(/^\s*│/, '').replace(/│\s*$/, ''));
+      return { text: [m[1], ...rest].map((l) => l.trim()).join('\n').trim(), lines };
+    }
+  }
+  return null;
+}
+
+// Faint text: SGR 2, or a grey foreground (bright black, the 256-colour grey ramp's middle, an RGB grey). That is how a
+// suggestion or a placeholder is drawn in the box (Claude Code's predicted next prompt); what was typed is not faint.
+const GREY_256 = (n) => n === 8 || (n >= 236 && n <= 250);
+function sgr(state, params) {
+  const p = params === '' ? [0] : params.split(/[;:]/).map((x) => (x === '' ? 0 : Number(x)));
+  for (let i = 0; i < p.length; i++) {
+    const c = p[i];
+    if (c === 0) { state.dim = false; state.grey = false; state.inverse = false; }
+    else if (c === 2) state.dim = true;
+    else if (c === 22) state.dim = false;
+    else if (c === 7) state.inverse = true;
+    else if (c === 27) state.inverse = false;
+    else if (c === 39 || (c >= 30 && c <= 37) || (c >= 91 && c <= 97)) state.grey = false;
+    else if (c === 90) state.grey = true;
+    else if (c === 38 && p[i + 1] === 5) { state.grey = GREY_256(p[i + 2]); i += 2; }
+    else if (c === 38 && p[i + 1] === 2) { const [r, g, b] = p.slice(i + 2, i + 5); const avg = (r + g + b) / 3; state.grey = Math.max(r, g, b) - Math.min(r, g, b) <= 16 && avg >= 70 && avg <= 190; i += 4; }
+    else if (c === 48 && (p[i + 1] === 5 || p[i + 1] === 2)) i += p[i + 1] === 5 ? 2 : 4;   // a background says nothing
+  }
+}
+/** Whether a raw (escape-coded) line shows a visible character in plain, not faint, text; skip: the prompt glyph's line. */
+function hasPlainText(raw, { afterGlyph = false } = {}) {
+  const state = { dim: false, grey: false, inverse: false };
+  let seenGlyph = !afterGlyph;
+  const re = /\x1b\[([0-9;:?]*)([@-~])|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]|([\s\S])/g;
+  let m;
+  while ((m = re.exec(raw))) {
+    if (m[2] === 'm') { sgr(state, m[1]); continue; }
+    if (m[3] === undefined) continue;
+    const ch = m[3];
+    if (!seenGlyph) { if (ch === '❯' || ch === '>') seenGlyph = true; continue; }
+    if (/\s|│/.test(ch)) continue;
+    if (!state.dim && !state.grey && !state.inverse) return true;
+  }
+  return false;
+}
+
+/**
+ * What was typed into an agent's input box and not submitted, from a capture with escapes (capture-pane -e): { text }
+ * or null when the box is empty, holds only a faint suggestion or placeholder, or there is no box.
+ */
+export function typedInput(raw) {
+  const rawLines = String(raw ?? '').split('\n').slice(-40);
+  const box = inputBox(rawLines.map(stripAnsi).join('\n'));
+  if (!box?.text) return null;
+  const typed = box.lines.some((i, k) => hasPlainText(rawLines[i] ?? '', { afterGlyph: k === 0 }));
+  return typed ? { text: box.text.length > 300 ? box.text.slice(0, 299) + '…' : box.text } : null;
 }
 
 /** A short fingerprint of the bottom of a screen, so an answer is only sent to the dialog the human saw. */

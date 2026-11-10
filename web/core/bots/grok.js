@@ -12,7 +12,7 @@
 //  - approvals: a bot asks the owner before it acts and gets the decision back as a message (core/bots/approvals.js).
 // Routines are configured with `drover bots routine add` (main token), never through an op: an agent able to
 // point a bot's Routine elsewhere could read every message the owner sends that bot.
-import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { stateDir } from '../paths.js';
@@ -195,7 +195,8 @@ const touchesBot = (e) => isBotActor(e.actor) || e.to?.kind === ENGINE || (e.typ
 
 export async function botEvents() {
   let sig = null;
-  try { const s = await stat(_deps.eventsPath()); sig = `${s.size}:${s.mtimeMs}`; } catch { /* no file yet */ }
+  // Every file of the truth file (core/events.js signature): with daily segments the base file no longer changes.
+  try { sig = await eventsMod.signature(_deps.eventsPath()); } catch { /* no file yet */ }
   if (sig && foldCache?.sig === sig) return foldCache.value;
   const value = (await _deps.readEvents()).filter(touchesBot);
   if (sig) foldCache = { sig, value, index: null };

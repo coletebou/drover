@@ -197,12 +197,14 @@ export const TOOLS = [
       name: { type: 'string', description: 'Window name (tmux mode) or label (headless mode). A tmux Claude launch also gives the session this name (claude --name), so drover_send to the name reaches it.' },
       resume: { type: 'string', description: 'Session id (Claude, Hermes) or thread id (Codex) to resume instead of starting fresh.' },
       trust: { type: 'boolean', description: 'tmux mode: record cwd as trusted in the agent\'s own config first, so it starts at its prompt instead of the first-run trust dialog. Default true.' },
+      apiKey: { type: 'string', enum: ['approve', 'reject', 'ask'], description: 'tmux Claude launch: answer "Detected a custom API key in your environment" this way instead of as the host already does; ask leaves the dialog.' },
+      done: { type: 'string', description: 'Claude only, not with resume: the text the session\'s final reply holds when its work is finished, at most 200 characters (say it in the prompt too, e.g. "end your final message with STATE: DONE"). drover_fleet_summary then reports the session in stalls as unfinished when it dies, or idles 30 minutes, without it.' },
       host: { type: 'string', description: 'ssh alias of another fleet machine, "auto" to let the fleet\'s placement choose one, or omit for this one' },
       placement: { type: 'string', description: 'With host "auto": the workload class to place (claude-session, codex-session, hermes-session, heavy-build, macos-only, or one the fleet catalog defines). Default: the engine\'s session class.' },
       placementExclude: { type: 'array', items: { type: 'string' }, description: 'With host "auto": hosts never to pick.' },
     }),
     async run(dispatch, args) {
-      const req = { ...pick(args, ['engine', 'mode', 'profile', 'model', 'effort', 'cwd', 'prompt', 'tmuxSession', 'name', 'resume', 'trust', 'host', 'placement', 'placementExclude']), actor: ACTOR };
+      const req = { ...pick(args, ['engine', 'mode', 'profile', 'model', 'effort', 'cwd', 'prompt', 'tmuxSession', 'name', 'resume', 'trust', 'apiKey', 'done', 'host', 'placement', 'placementExclude']), actor: ACTOR };
       // host "auto": the daemon in front checks the chosen host's efforts itself (core/api.js requireLaunchEfforts).
       if (req.effort !== undefined) await requireEffortSupport(dispatch, args.host === 'auto' ? undefined : args.host);
       return dispatch('launch.start', req);

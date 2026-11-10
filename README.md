@@ -165,7 +165,9 @@ Other machines are ssh-config aliases with Drover at `~/.local/bin/drover`: the 
 `$DROVER_DOTFILES/claude/fleet-hosts.txt` (one name a line) are the fleet the UI shows, and any other alias in
 `~/.ssh/config` is a target you can name (`drover op host.list`). `DROVER_DOTFILES` (default `~/.dotfiles`) is a git
 repository you sync between machines: it also holds the truth file, `claude/drover-events.jsonl` (append-only, mark it
-`merge=union` in `.gitattributes`). The fleet manager is `drover manager setup --scope local` on the host that should
+`merge=union` in `.gitattributes`). Once a `claude/drover-events/` directory exists next to it, appends go to one
+file per UTC day there (`claude/drover-events/<YYYY-MM-DD>.jsonl`, also `merge=union`) and the old file is read as
+the base; see `docs/wal-retention.md`. The fleet manager is `drover manager setup --scope local` on the host that should
 run it (`web/openclaw-manager/README.md`), the Grok bot gateway is `web/README.md`, "Grok bots", and the native apps
 build from `native/` (`native/README.md`). Everything else, from the HTTPS front for phones to pairing devices, is in
 `web/README.md`.

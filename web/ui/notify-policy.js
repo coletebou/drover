@@ -298,6 +298,49 @@ export function endsWithQuestion(text) {
   return /\?\s*\)?$/.test(last);
 }
 
+/** A reply's meaningful lines, code blocks out and markup off, as endsWithQuestion reads them. */
+const replyLines = (text) => String(text ?? '').replace(/```[\s\S]*?```/g, '').split('\n').map((l) => l.replace(/[*_`>#\s]+$/g, '').replace(/^[#>*\-\s]+/, '').replace(/\*\*|__/g, '').trim()).filter(Boolean);
+const NOTHING = /^(?:none|nothing(?: yet| right now)?|no|n\/a|nope|not now|-+|—)[\s.!]*(?:[(—–-].*)?$/i;   // the whole rest says nothing is asked
+const clipLine = (s, max = 300) => (s.length > max ? s.slice(0, max - 1) + '…' : s);
+
+/**
+ * Whether the end of a reply hands the owner something to decide, and the line that asks it: { line, why } or null.
+ * Two signals only, in the last 8 lines: the last line is a question (endsWithQuestion), or a line hands over
+ * explicitly: it opens with "Decision(s) for you", "Question(s) for you", "Needs you" or "Waiting on you" (or the
+ * owner's name in place of "you"), or asks for a go: "say go", "reply yes", "your call", "need your OK". A heading
+ * followed by none ("Needs you: none") hands over nothing; "you said go" is a report, not an ask.
+ */
+export function ownerAsk(text, { owner } = {}) {
+  const tail = replyLines(text).slice(-8);
+  if (!tail.length) return null;
+  const last = tail.at(-1);
+  if (/\?\s*\)?$/.test(last)) return { line: clipLine(last), why: 'question' };
+  const who = `you${owner && /^[\w .'-]{1,40}$/.test(owner) && !/^(the owner|owner|you)$/i.test(owner) ? `|${owner.replace(/[.'-]/g, '\\$&')}` : ''}`;
+  const handoff = new RegExp(`^(?:(?:decisions?|questions?|asks?)\\s+for|needs?|waiting\\s+on|blocked\\s+on)\\s+(?:${who})\\b[\\s:.,—–-]*`, 'i');
+  // A go is asked for in the imperative, at the start of a line or a clause ("Say go.", "If it looks right, reply yes"):
+  // "the user could say yes to it" is prose about saying yes.
+  const go = new RegExp(`(?:^|[.!?:;,(]\\s*|[—–-]\\s*)(?:just\\s+|please\\s+)?(?:say|reply(?:\\s+with)?|answer|type)\\s+["“'\`]*(?:go|yes|ok|okay|approve)\\b|^your\\s+call\\b|\\b(?:it'?s|that'?s)\\s+your\\s+call\\b|\\bneed(?:s)?\\s+your\\s+(?:go(?:-ahead)?|ok|okay|approval|decision|sign-?off|answer|input)\\b|\\bwaiting\\s+(?:on|for)\\s+your\\s+(?:go(?:-ahead)?|ok|okay|approval|decision|sign-?off|answer)\\b`, 'i');
+  for (let i = tail.length - 1; i >= 0; i--) {
+    const l = tail[i];
+    const h = l.match(handoff);
+    if (h) {
+      const rest = l.slice(h[0].length).trim();
+      if (rest && NOTHING.test(rest)) continue;
+      // A heading with the ask under it: the next line is what is asked.
+      if (!rest) { const next = tail[i + 1]?.replace(/^\d+[.)]\s+/, ''); if (next && !NOTHING.test(next)) return { line: clipLine(next), why: 'handoff' }; continue; }
+      // A heading that introduces a list ("Decisions for you (in NEEDS.md):"): its first item goes with it.
+      const next = tail[i + 1]?.replace(/^\d+[.)]\s+/, '');
+      return { line: clipLine(/:\s*$/.test(l) && next && !NOTHING.test(next) ? `${l} ${next}` : l), why: 'handoff' };
+    }
+    if (go.test(l)) {
+      // "Say go." on its own: the question it answers is the line before it.
+      const prev = tail[i - 1];
+      return { line: clipLine(l.length < 40 && prev && /\?\s*\)?$/.test(prev) ? `${prev} ${l}` : l), why: 'go' };
+    }
+  }
+  return null;
+}
+
 /**
  * ctx: { screenState, dialog: {question, options}, held, heldFrom, text, pendingAsk: {question, options} }.
  * Returns { kind, label, text, options }.
