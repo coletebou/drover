@@ -295,12 +295,38 @@ key or any part of it.
   ignores `trust`, starts the agent at the dialog as before, and its result has no `trust`.
 - The launch result and its `launch` event carry `trust`: `{ engine, key, also, file, changed }`, or `{ engine, skipped }`.
 
+## Finding the session a launch named
+
+A tmux launch's `name` is always the window name (`core/launch.js` `newWindow`). For an
+interactive Claude launch that was given a name, it is also `--name=<name>` on the argv
+(`core/claude.js` `interactiveArgv`, bound with `=`, the same way as `--resume=`). Claude
+Code records that as the session name, which is what the registry stores and what
+`sessions.message` matches. Without `--name`, Claude names the session after its cwd
+(`<dir>-<suffix>`). Before 2026-11-07 the launch name reached only the window, so a
+message to the name the launch returned failed with `session not found`.
+
+`--name` is added only when the request named the session (`req.name`). A launch that
+omits `name` still gets a generated window name (`claude-` plus a slice of the prompt,
+or `claude-new`) and does not pass `--name`. Headless Claude does not take `--name`;
+its argv uses `--session-id` (`headlessArgv`). Hermes keeps its own title
+(`hermes.launchTitle`), not this flag.
+
+`findSession` (`core/claude.js`), which a message uses, looks in this order:
+
+| Match | Result |
+| --- | --- |
+| A running session whose id equals the query, whose name equals it, or whose id starts with it | That session. A running one wins over an ended session of the same name. |
+| The same match among sessions that have ended | The newest (registry order is `startedAt` descending). |
+| Else one running session whose registry `tmux` field is in a window of that exact name | That session. The field is `<tmux session>:@<window id>` or `<tmux session>:<index>`. |
+| Two running sessions in windows of that name | No match. A message must not guess. An ended session is not found by its old window. |
+| No tmux server (`listWindows` throws) | No match. The lookup does not fail the call. |
+
 ## Session lists
 
 `sessions.list` (and `drover_sessions`) takes optional filters, applied on the host that holds the sessions, so only
 what passes travels: `cwd` (that folder or inside it, on path boundaries; `~` is that host's home, a trailing slash
-is ignored), `name` (substring, any case), `engine` (`claude`, `codex`, `openclaw`, `grok`; comma-separated for
-several), `live` (true or false), and `limit` (that many, the most recently active first). Add `compact` for what a
+is ignored), `name` (substring, any case), `engine` (`claude`, `codex`, `hermes`, `openclaw`, `grok`; comma-separated for
+several; the filter matches the session's `engine` string, `core/session-filter.js`), `live` (true or false), and `limit` (that many, the most recently active first). Add `compact` for what a
 board reads (live sessions and dead Claude or headless ones, previews cut to 200 characters): a busy host's whole
 list ran to about 300 KB, mostly Codex first prompts, and overflowed the context of the agent that asked. With any
 filter the answer carries `matched`, the count before `limit`. A host on Drover code from before the filters
