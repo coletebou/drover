@@ -17,6 +17,7 @@ import { OWNER, OWNER_NAME, isOwner } from '../owner.js';
 import { SHARED_BOT, publicBase, botPrefix } from './oauth.js';
 import { accessForGrant } from './access.js';
 import { tenantTools } from './tenant-tools.js';
+import * as askPages from '../ask/ops.js';
 import { sanitizeSearchHits, sanitizeFeatures, sanitizeSession, projectMatches, clean } from './policy.js';
 
 const N = grok.NEEDS_OWNER;
@@ -76,6 +77,13 @@ function allowAlert(name, now = Date.now()) {
   return true;
 }
 export function _resetAlerts() { alertTimes.clear(); }
+
+/** Whether the owner muted this bot's needs-you alerts in Drover's settings: then no text either. */
+async function pageMuted(n, host) {
+  const settings = await settingsMod.current().then((c) => c.settings).catch(() => null);
+  return settings ? Boolean(muteFor({ category: 'needs-you', kind: 'bot-status', host, sessionId: grok.idFor(n), name: grok.display(n) }, settings, Date.now())) : false;
+}
+const pageKey = (...parts) => parts.map((x) => String(x ?? '').replace(/\s+/g, ' ').trim().toLowerCase()).join('|');
 
 const BRAIN_WINDOW = 8000;
 const BRAIN_TITLE_MAX = 140;   // the brain takes 200: room for the untrusted mark in front
@@ -383,9 +391,12 @@ export function botTools(grant, { dispatch, host = eventsMod.shortHost(), readEv
         let alerted = false;
         const state = grok.canonicalState(args.state);
         if ((state === N || state === 'blocked') && allowAlert(n)) {
-          await dispatch('notify.send', { title: `${grok.display(n)} ${args.state === 'blocked' ? 'is blocked' : 'needs you'}`, body: args.summary.slice(0, 600), category: 'needs-you', sessionId: grok.idFor(n), name: grok.display(n), actor: grok.actorFor(n) });
+          const title = `${grok.display(n)} ${args.state === 'blocked' ? 'is blocked' : 'needs you'}`;
+          await dispatch('notify.send', { title, body: args.summary.slice(0, 600), category: 'needs-you', sessionId: grok.idFor(n), name: grok.display(n), actor: grok.actorFor(n) });
           alerted = true;
-        }
+          // And a text through the ask hub (quiet hours, the hourly limit, one per same status per cooldown).
+          if (!(await pageMuted(n, host))) await askPages.pageOwner({ source: grok.idFor(n), key: pageKey(grok.idFor(n), 'status', state, args.summary), title, body: args.summary });
+        } else if (state !== N && state !== 'blocked') await askPages.withdrawPages(grok.idFor(n));
         return { ok: true, event: ev.id, alerted };
       },
     },
@@ -463,7 +474,10 @@ export function botTools(grant, { dispatch, host = eventsMod.shortHost(), readEv
       async run(args) {
         const n = me;
         if (!allowAlert(n)) throw new Error(`refused: ${ALERTS_PER_HOUR} alerts in the last hour already; write a drover_note instead`);
-        await dispatch('notify.send', { title: `${grok.display(n)}: ${String(args.title).slice(0, 180)}`, body: String(args.body ?? '').slice(0, 600), category: args.urgent ? 'needs-you' : 'finished', sessionId: grok.idFor(n), name: grok.display(n), actor: grok.actorFor(n) });
+        const title = `${grok.display(n)}: ${String(args.title).slice(0, 180)}`;
+        await dispatch('notify.send', { title, body: String(args.body ?? '').slice(0, 600), category: args.urgent ? 'needs-you' : 'finished', sessionId: grok.idFor(n), name: grok.display(n), actor: grok.actorFor(n) });
+        // Only an urgent alert is also texted (it is how a bot says it is blocked on the owner); news is not.
+        if (args.urgent === true && !(await pageMuted(n, host))) await askPages.pageOwner({ source: grok.idFor(n), key: pageKey(grok.idFor(n), 'alert', args.title, args.body), title, body: String(args.body ?? ''), urgent: true });
         return { ok: true };
       },
     },
