@@ -151,6 +151,9 @@ export function loadProfile(name, src = SRC, overlay = envOverlay()) {
   for (const [k, s] of Object.entries(secrets)) {
     if (!ENV_NAME.test(k)) throw new Error(`profile ${name}: bad secret name ${k}`);
     if (!s?.generate && typeof s?.from !== 'string') throw new Error(`profile ${name}: secret ${k} needs "from" (a file holding it) or "generate": true`);
+    // key: the name the value has in its source file, when that differs from the name the gateway reads
+    // (AWS_BEARER_TOKEN_BEDROCK from a file's AWS_BEARER_TOKEN_BEDROCK_GOV line).
+    if (s.key != null && !(typeof s.key === 'string' && ENV_NAME.test(s.key) && !s.basicAuth)) throw new Error(`profile ${name}: secret ${k} key must be a variable name, and cannot go with basicAuth`);
     if (s.basicAuth && !(Array.isArray(s.basicAuth) && s.basicAuth.length === 2 && s.basicAuth.every((n) => ENV_NAME.test(n)) && /\{\}/.test(s.format ?? ''))) throw new Error(`profile ${name}: secret ${k} basicAuth needs [userName, secretName] and a format with {}`);
   }
   for (const k of Object.keys(p.env ?? {})) if (!ENV_NAME.test(k)) throw new Error(`profile ${name}: bad env name ${k}`);
@@ -167,8 +170,18 @@ export function loadProfile(name, src = SRC, overlay = envOverlay()) {
   }
   // Template tokens the profile fills ({{PORT}}, {{OTEL_ENDPOINT}}, {{CLIPROXY_API_KEY}}): what differs between one fleet's boxes and another's.
   const vars = { ...(p.vars ?? {}), PORT: port };
+  // Per-automation model and thinking for this profile: a role's automation names a model on one fleet's
+  // providers, and another profile's template may not have that provider at all.
+  const automations = p.automations ?? {};
+  if (typeof automations !== 'object' || Array.isArray(automations)) throw new Error(`profile ${name}: automations must be an object of automation name: { model, thinking }`);
+  for (const [a, o] of Object.entries(automations)) {
+    if (typeof o !== 'object' || o === null || Array.isArray(o)) throw new Error(`profile ${name}: automations.${a} must be an object`);
+    for (const k of Object.keys(o)) if (!['model', 'thinking'].includes(k)) throw new Error(`profile ${name}: automations.${a}.${k} is not model or thinking`);
+    if (o.model != null && (typeof o.model !== 'string' || !o.model)) throw new Error(`profile ${name}: automations.${a}.model must be a provider/model id`);
+    if (o.thinking != null && !THINK_LEVELS.includes(o.thinking)) throw new Error(`profile ${name}: automations.${a}.thinking must be one of ${THINK_LEVELS.join(', ')}, not ${JSON.stringify(o.thinking)}`);
+  }
   const configRel = p.config ?? 'openclaw.json';
-  return { name, file, summary: p.summary ?? '', config: sourceFile(configRel, { src, overlay }) ?? path.join(src, configRel), env: p.env ?? {}, secrets, egress: p.egress ?? { allow: [] }, port, vars, flags };
+  return { name, file, summary: p.summary ?? '', config: sourceFile(configRel, { src, overlay }) ?? path.join(src, configRel), env: p.env ?? {}, secrets, egress: p.egress ?? { allow: [] }, port, vars, flags, automations };
 }
 
 export function loadRole(name, src = SRC, overlay = envOverlay()) {
@@ -232,7 +245,7 @@ export function droverRepo(lay, src = SRC) {
  * of duties it does not own, and the automations it owns or must keep off. The owner (DROVER_OWNER, prose name
  * DROVER_OWNER_NAME) is a template value, so the orders name whoever runs this fleet.
  */
-export function roleView(role, sc, host, { repo = path.resolve(SRC, '..', '..'), flags = {} } = {}) {
+export function roleView(role, sc, host, { repo = path.resolve(SRC, '..', '..'), flags = {}, automations: over = {} } = {}) {
   const short = sc.hosts === 'local' ? 'this host only' : `every host it reaches${sc.exclude.length ? `, except ${sc.exclude.join(', ')}` : ''}`;
   const vars = {
     ACTOR: sc.actor, HOST: host, SCOPE_SHORT: short, HOME: process.env.HOME ?? os.homedir(), OWNER, OWNER_NAME, DROVER_REPO: repo,
@@ -251,7 +264,8 @@ export function roleView(role, sc, host, { repo = path.resolve(SRC, '..', '..'),
     // The sweep's effort: OpenClaw's heartbeat config has no thinking level (a /think directive does not reach it
     // either: a heartbeat turn's message is a fixed poll), so the launcher passes it to the heartbeat-thinking patch.
     actor: sc.actor, vars, heartbeatPrompt: renderTemplate(role.heartbeatPrompt, vars), heartbeatThinking: role.heartbeatThinking ?? null,
-    automations: duties.filter(([d]) => sc[d]).flatMap(([, x]) => x.automations ?? []),
+    // The profile may move an automation to a model its own providers have (and a thinking level that model takes).
+    automations: duties.filter(([d]) => sc[d]).flatMap(([, x]) => x.automations ?? []).map((a) => ({ ...a, ...Object.fromEntries(Object.entries(over[a.name] ?? {}).filter(([, v]) => v != null)) })),
     offAutomations: duties.filter(([d]) => !sc[d]).flatMap(([, x]) => (x.automations ?? []).map((a) => a.name)),
   };
 }
@@ -359,7 +373,7 @@ export function expectedConfig({ manifest, live, lay = layout(), src = SRC, over
   try {
     const role = loadRole(LEGACY_ROLES[manifest.role] ? 'manager' : manifest.role, src, overlay); const profile = loadProfile(manifest.profile ?? role.profile, src, overlay);
     const template = JSON.parse(readFileSync(profile.config, 'utf8'));
-    const view = roleView(role, resolveScope({ prev: manifest, host: lay.host }), lay.host, { repo: droverRepo(lay, src), flags: profile.flags });
+    const view = roleView(role, resolveScope({ prev: manifest, host: lay.host }), lay.host, { repo: droverRepo(lay, src), flags: profile.flags, automations: profile.automations });
     return renderConfig({ template, role: view, vars: { ...profile.vars, NODE: manifest.node.path, DROVER_BIN: lay.droverBin, HOME: lay.home }, live });
   } catch { return null; }
 }
@@ -506,7 +520,7 @@ export function envLine(name, v) {
  */
 export function secretValue(name, spec, { home, read }) {
   const src = parseEnvFile(read(expandHome(home, spec.from)) ?? '');
-  if (!spec.basicAuth) return src[name] || null;
+  if (!spec.basicAuth) return src[spec.key ?? name] || null;
   const [u, p] = spec.basicAuth.map((n) => src[n]);
   return u && p ? spec.format.replace('{}', Buffer.from(`${u}:${p}`).toString('base64')) : null;
 }
@@ -518,7 +532,7 @@ export function newEnvFile(profile, { home, read, random = (n) => randomBytes(n)
     if (s.generate) { lines.push(envLine(name, random(30).toString('base64url').slice(0, 40))); continue; }
     const v = secretValue(name, s, { home, read });
     if (!v && s.optional) continue;
-    if (!v) throw new Error(`${name} not found in ${s.from} (profile ${profile.name}); add it there, or write ${name}= into the manager's .env by hand`);
+    if (!v) throw new Error(`${s.key ?? name} not found in ${s.from} (profile ${profile.name}); add it there, or write ${name}= into the manager's .env by hand`);
     lines.push(envLine(name, v));
   }
   return lines.join('\n') + '\n';
@@ -944,7 +958,7 @@ export async function setup({ role: name = 'manager', profile: profileName, over
   const sc = resolveScope({ prev, scope, exclude, digest, actor, host: lay.host });
   // --profile picks what the gateway talks to; later runs keep the manifest's, like the scope.
   const profile = loadProfile(profileName ?? prev?.profile ?? role.profile, src, overlay);
-  const view = roleView(role, sc, lay.host, { repo: droverRepo(lay, src), flags: profile.flags });
+  const view = roleView(role, sc, lay.host, { repo: droverRepo(lay, src), flags: profile.flags, automations: profile.automations });
   // The workspace seeds, each from the overlay when it has one. A profile may carry its own (workspace/<profile>/):
   // what the owner works on differs between one fleet's boxes and another's.
   const seed = (f) => sourceFile(path.join('workspace', profile.name, f), { src, overlay }) ?? sourceFile(path.join('workspace', f), { src, overlay });
@@ -987,9 +1001,19 @@ export async function setup({ role: name = 'manager', profile: profileName, over
     const have = parseEnvFile(envText);
     const read = (p) => { try { return readFileSync(p, 'utf8'); } catch { return null; } };
     const add = Object.entries(profile.secrets).filter(([n, s]) => s.optional && !have[n]).map(([n, s]) => [n, secretValue(n, s, { home: lay.home, read })]).filter(([, v]) => v);
-    if (add.length) {
-      const r = await put(lay.env, `${envText.replace(/\n?$/, '\n')}${add.map(([n, v]) => envLine(n, v)).join('\n')}\n`, { mode: 0o600, backup: true, dryRun, stamp });
-      step('secrets', r === 'updated' ? 'added' : r, add.map(([n]) => n).join(', '));
+    // A sourced secret whose source now holds another value (rotated there, or a profile that reads it from
+    // another name) is refreshed, so no box needs a hand edit. A source that lacks it leaves the line alone:
+    // that is the documented hand-written case. Generated tokens are never touched.
+    const refresh = Object.entries(profile.secrets).filter(([n, s]) => !s.generate && have[n]).map(([n, s]) => [n, secretValue(n, s, { home: lay.home, read })]).filter(([n, v]) => v && v !== have[n]);
+    if (add.length || refresh.length) {
+      const fresh = new Map(refresh);
+      const kept = envText.replace(/\n?$/, '\n').split('\n').map((raw) => {
+        const m = raw.trim().match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/);
+        return m && fresh.has(m[1]) ? envLine(m[1], fresh.get(m[1])) : raw;
+      }).join('\n');
+      const r = await put(lay.env, `${kept}${add.map(([n, v]) => `${envLine(n, v)}\n`).join('')}`, { mode: 0o600, backup: true, dryRun, stamp });
+      if (add.length) step('secrets', r === 'updated' ? 'added' : r, add.map(([n]) => n).join(', '));
+      if (refresh.length) step('secrets', r === 'updated' ? 'refreshed' : r, `${refresh.map(([n]) => n).join(', ')} (its source holds another value)`);
     } else {
       if (!dryRun) await chmod(lay.env, 0o600);
       step('secrets', 'unchanged', `${Object.keys(have).length} names present`);

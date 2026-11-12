@@ -131,6 +131,31 @@ describe('pure parts', () => {
     assert.throws(() => install.loadProfile('p', src), /must include OPENCLAW_GATEWAY_TOKEN/);
   });
 
+  test('a secret may come from another name in its source; a profile may move an automation to its own model', async () => {
+    const src = await mkdtemp(path.join(tmpdir(), 'drover-oc-src-'));
+    await mkdir(path.join(src, 'profiles'));
+    const gw = { OPENCLAW_GATEWAY_TOKEN: { generate: true } };
+    const write = (p) => writeFile(path.join(src, 'profiles', 'p.json'), JSON.stringify(p));
+    await write({ secrets: { ...gw, AWS_BEARER_TOKEN_BEDROCK: { from: '~/.env_secrets', key: 'AWS_BEARER_TOKEN_BEDROCK_GOV' } }, automations: { 'fleet-digest': { model: 'amazon-bedrock-mantle/anthropic.claude-opus-5-5', thinking: 'medium' } } });
+    const p = install.loadProfile('p', src);
+    const read = () => `export AWS_BEARER_TOKEN_BEDROCK=EXAMPLE_commercial\nexport AWS_BEARER_TOKEN_BEDROCK_GOV=${BEARER}\n`;
+    assert.equal(install.parseEnvFile(install.newEnvFile(p, { home: '/h', read })).AWS_BEARER_TOKEN_BEDROCK, BEARER, 'the value of the key line, under the name the gateway reads');
+    assert.throws(() => install.newEnvFile(p, { home: '/h', read: () => 'AWS_BEARER_TOKEN_BEDROCK=EXAMPLE_commercial\n' }), (e) => /AWS_BEARER_TOKEN_BEDROCK_GOV not found in ~\/\.env_secrets/.test(e.message) && !e.message.includes('EXAMPLE_commercial'));
+    const role = install.loadRole('manager');
+    const sc = install.resolveScope({ scope: 'all', digest: true, actor: 'manager', host: 'h' });
+    const digest = (v) => v.automations.find((x) => x.name === 'fleet-digest');
+    assert.deepEqual([digest(install.roleView(role, sc, 'h', { automations: p.automations })).model, digest(install.roleView(role, sc, 'h', { automations: p.automations })).thinking], ['amazon-bedrock-mantle/anthropic.claude-opus-5-5', 'medium']);
+    assert.equal(digest(install.roleView(role, sc, 'h', { automations: p.automations })).cron, digest(install.roleView(role, sc, 'h')).cron, 'everything else stays the role\'s');
+    assert.equal(digest(install.roleView(role, sc, 'h')).model, 'amazon-bedrock-mantle/openai.gpt-6.1-sol', 'a profile without the override keeps the role\'s model');
+    await write({ secrets: { ...gw, A: { from: '~/x', key: 'bad name' } } });
+    assert.throws(() => install.loadProfile('p', src), /secret A key must be a variable name/);
+    await write({ secrets: gw, automations: { a: { thinking: 'turbo' } } });
+    assert.throws(() => install.loadProfile('p', src), /automations\.a\.thinking must be one of/);
+    await write({ secrets: gw, automations: { a: { cron: '* * * * *' } } });
+    assert.throws(() => install.loadProfile('p', src), /automations\.a\.cron is not model or thinking/);
+    await rm(src, { recursive: true, force: true });
+  });
+
   test('renderConfig fills every token per role and profile, gives every manager full powers, keeps what OpenClaw owns', async () => {
     const template = JSON.parse(await readFile(install.loadProfile('default').config, 'utf8'));
     const vars = { ...install.loadProfile('default').vars, NODE: '/n/node', DROVER_BIN: '/h/.local/bin/drover', HOME: '/h' };
@@ -678,6 +703,34 @@ describe('setup in a sandbox', () => {
     assert.equal(by(r5, 'service').action, 'restarted');
     await install.setup({ node: 'rel/v24/node', src });
     assert.equal(existsSync(A), false, 'pruned once nothing runs it');
+    done();
+  });
+
+  test('a sourced secret follows its source: a new value or a new key is refreshed (backed up, restarted); a missing one and generated tokens are left alone', async () => {
+    const L = lay();
+    const by = (r, s) => r.steps.findLast((x) => x.step === s);
+    await install.setup({ scope: 'all', exclude: ['laptop'], digest: true, actor: 'manager' });
+    const before = install.parseEnvFile(await readFile(L.env, 'utf8'));
+    // A profile that reads the bearer from another line, and runs the digest on its own model.
+    const GOV = 'EXAMPLE_gov_bearer_0987654321';
+    await appendFile(path.join(home, '.env_secrets'), `export AWS_BEARER_TOKEN_BEDROCK_GOV=${GOV}\n`);
+    const p = JSON.parse(readFileSync(path.join(install.SRC, 'profiles', 'default.json'), 'utf8'));
+    const dir = await makeOverlay({ 'profiles/gov.json': { ...p, secrets: { ...p.secrets, AWS_BEARER_TOKEN_BEDROCK: { from: '~/.env_secrets', key: 'AWS_BEARER_TOKEN_BEDROCK_GOV' } }, automations: { 'fleet-digest': { model: 'amazon-bedrock-mantle/anthropic.claude-opus-5-5', thinking: 'medium' } } } });
+    const from = host.calls.length;
+    const r = await install.setup({ profile: 'gov', overlay: dir });
+    const env = install.parseEnvFile(await readFile(L.env, 'utf8'));
+    assert.deepEqual([by(r, 'secrets').action, by(r, 'secrets').detail], ['refreshed', 'AWS_BEARER_TOKEN_BEDROCK (its source holds another value)']);
+    assert.equal(env.AWS_BEARER_TOKEN_BEDROCK, GOV);
+    assert.deepEqual([env.OPENCLAW_GATEWAY_TOKEN, env.OPENCLAW_HOOKS_TOKEN, env.EXA_API_KEY], [before.OPENCLAW_GATEWAY_TOKEN, before.OPENCLAW_HOOKS_TOKEN, before.EXA_API_KEY], 'generated tokens and unchanged secrets stay');
+    assert.match(by(r, 'service').detail, /secrets changed/);
+    assert.ok(!JSON.stringify(r).includes(GOV) && !JSON.stringify(r).includes(BEARER), 'no value in the report');
+    assert.ok(host.calls.slice(from).some((c) => / automations edit job-0 --model amazon-bedrock-mantle\/anthropic\.claude-opus-5-5 --thinking medium$/.test(c)), 'the digest moved to the profile\'s model in place');
+    assert.equal(by(await install.setup({}), 'secrets').action, 'unchanged', 'refreshed once');
+    // A source that lacks the line leaves a hand-written value alone.
+    await writeFile(path.join(home, '.env_secrets'), `export CLIPROXY_API_KEY=${PROXY}\nexport EXA_API_KEY=${EXA}\n`);
+    assert.equal(by(await install.setup({}), 'secrets').action, 'unchanged');
+    assert.equal(install.parseEnvFile(await readFile(L.env, 'utf8')).AWS_BEARER_TOKEN_BEDROCK, GOV);
+    await rm(dir, { recursive: true, force: true });
     done();
   });
 
