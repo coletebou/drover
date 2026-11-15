@@ -56,13 +56,28 @@ export async function listRegistry() {
   return out.sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
 }
 
+// After a timed-out `claude agents` (a hung keychain makes every call hang), skip the CLI for a doubling pause
+// (1 min up to 15 min) instead of starting another one on every 10 s poll; the registry files still list sessions.
+const AGENTS_PAUSE_MIN_MS = 60_000, AGENTS_PAUSE_MAX_MS = 15 * 60_000;
+const agentsCli = { pausedUntil: 0, pauseMs: 0 };
+/** Test hook: forget the timeout pause. */
+export function resetAgentsCliPause() { agentsCli.pausedUntil = 0; agentsCli.pauseMs = 0; }
+
 /** `claude agents --json` also lists background (headless) sessions; merge for completeness. */
-export async function listAgentsCli() {
+export async function listAgentsCli({ runner = run, now = Date.now } = {}) {
+  if (now() < agentsCli.pausedUntil) return [];
   try {
-    const { stdout } = await run('claude', ['agents', '--json', '--all'], { timeoutMs: 15_000 });
+    const { stdout } = await runner('claude', ['agents', '--json', '--all'], { timeoutMs: 15_000, group: true });
+    agentsCli.pauseMs = 0;
     const arr = JSON.parse(stdout);
     return Array.isArray(arr) ? arr : [];
-  } catch { return []; }
+  } catch (e) {
+    if (e?.timedOut) {
+      agentsCli.pauseMs = Math.min(AGENTS_PAUSE_MAX_MS, Math.max(AGENTS_PAUSE_MIN_MS, agentsCli.pauseMs * 2));
+      agentsCli.pausedUntil = now() + agentsCli.pauseMs;
+    }
+    return [];
+  }
 }
 
 /** A session whose process runs: a pid, and that pid alive (a `claude agents` entry without one is not). */

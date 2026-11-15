@@ -83,7 +83,7 @@ async function itemsForHost(dispatch, h, { recentDays = 2, tailTurns = 12 } = {}
 async function aiSummaries(items, { model = 'haiku' } = {}) {
   const compact = items.map((i) => ({ id: i.id, title: i.title, state: i.state, host: i.host, tmux: i.tmux, tail: (i.tail ?? []).slice(-8), evidence: i.evidence.slice(0, 600) }));
   const prompt = `You are summarizing the state of coding-agent sessions for their operator. For EACH item return a JSON object {id, summary, next_step, state} where summary is 1-2 plain sentences of what the agent was doing and where it stopped (no em-dashes, no markdown), next_step is one short sentence of what the operator should do (empty string if nothing), and state is one of waiting-on-user, active, idle, finished, cut-off, crashed (keep the given state unless the evidence clearly contradicts it). Return ONLY a JSON array, no prose.\n\nITEMS:\n${JSON.stringify(compact)}`;
-  const { stdout } = await run('claude', ['-p', '--model', model, '--output-format', 'json', '--dangerously-skip-permissions', '--disallowedTools', 'Bash,Edit,Write,Read,Glob,Grep,WebFetch,Agent'], { input: prompt, timeoutMs: 180_000 });
+  const { stdout } = await run('claude', ['-p', '--model', model, '--output-format', 'json', '--dangerously-skip-permissions', '--disallowedTools', 'Bash,Edit,Write,Read,Glob,Grep,WebFetch,Agent'], { input: prompt, timeoutMs: 180_000, group: true });
   let out; try { out = JSON.parse(stdout); } catch { throw new Error('claude -p returned non-JSON'); }
   const text = typeof out.result === 'string' ? out.result : JSON.stringify(out.result ?? '');
   const m = text.match(/\[[\s\S]*\]/);

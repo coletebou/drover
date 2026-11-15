@@ -42,14 +42,22 @@ function spawnError(e) {
 }
 
 /**
- * Run a command to completion.
+ * Run a command to completion. A timeout rejects with err.timedOut = true.
+ * group: run the child in a process group of its own and kill the whole group on a timeout, so what it started dies
+ * with it. Use it for `claude`: it reads its credentials through a `security` child, and when securityd hangs
+ * (2026-11-10, Mac mini) a pid-only kill left that `security` behind, orphaned, on every 10 s `claude agents` poll
+ * until the process table filled (kern.maxproc) and the host could not fork. Off by default: a detached child loses
+ * the controlling terminal, so `ssh` could no longer ask for a passphrase.
  * @returns {Promise<{code:number, stdout:string, stderr:string}>}
  */
-export function run(file, argv = [], { input, timeoutMs = 30_000, env, cwd, okCodes = [0] } = {}) {
+export function run(file, argv = [], { input, timeoutMs = 30_000, env, cwd, okCodes = [0], group = false } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(file, argv, { stdio: ['pipe', 'pipe', 'pipe'], env: env ?? process.env, cwd });
+    const child = spawn(file, argv, { stdio: ['pipe', 'pipe', 'pipe'], env: env ?? process.env, cwd, detached: group });
     let stdout = '', stderr = '';
-    const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error(`${file} timed out after ${timeoutMs}ms`)); }, timeoutMs);
+    const timer = setTimeout(() => {
+      if (group) { try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); } } else child.kill('SIGKILL');
+      reject(Object.assign(new Error(`${file} timed out after ${timeoutMs}ms`), { timedOut: true }));
+    }, timeoutMs);
     child.stdout.setEncoding('utf8').on('data', (d) => { stdout += d; });
     child.stderr.setEncoding('utf8').on('data', (d) => { stderr += d; });
     child.on('error', (e) => { clearTimeout(timer); reject(spawnError(e)); });
