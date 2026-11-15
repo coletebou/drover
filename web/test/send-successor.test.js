@@ -355,6 +355,21 @@ describe('sessions.message reaches a handoff successor', () => {
     assert.equal(in3.got.length, 0);
   });
 
+  test('a live registry entry wins over a dead file the same session left, older or newer; alive with no socket is not live', async () => {
+    const ids = [1, 2].map((n) => sid('e9e9', n));
+    await chain('rev-chain', [{ id: ids[0], name: 'rev' }, { id: ids[1], name: 'rev-2' }]);
+    const in2 = await inbox('rev2');
+    for (const deadNewer of [false, true]) {
+      await rm(REGISTRY, { recursive: true }); await mkdir(REGISTRY);
+      await register({ id: ids[1], name: 'rev-2', live: false, socket: path.join(SOCKS, 'gone.sock'), startedAt: Date.now() - (deadNewer ? 1_000 : 3_600_000) });
+      await register({ id: ids[1], name: 'rev-2', socket: in2.file, startedAt: Date.now() - 60_000 });
+      assert.equal((await send('rev')).resolvedTo?.id, ids[1], `dead file ${deadNewer ? 'newer' : 'older'}`);
+    }
+    await rm(REGISTRY, { recursive: true }); await mkdir(REGISTRY);
+    await register({ id: ids[1], name: 'rev-2' });   // alive, no socket
+    assert.deepEqual((await send('rev').then(() => null, (e) => e)).candidates.map((c) => c.state), ['no messaging socket']);
+  });
+
   test('no chain: a missing session fails exactly as before, and a name is never read for a generation number', async () => {
     const lone = await inbox('h3');
     // A live hotel-3 in no chain, and a chain whose newest generation is hotel-2: neither makes it hotel-2's successor.

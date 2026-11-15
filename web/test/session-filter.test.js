@@ -102,6 +102,12 @@ describe('drover_sessions', () => {
     ]);
   });
 
+  test('each filter counts on its own; host and includeRecent are not filters', async () => {
+    const { call } = serverWith(() => ({ sessions: LIST, codexError: null, host: 'h' }));
+    for (const [k, v] of [['cwd', '/home/u/code/billing'], ['name', 'lint'], ['engine', 'grok'], ['live', false], ['limit', 0]]) assert.equal(typeof (await call({ [k]: v })).matched, 'number', `${k} alone is a filter`);
+    assert.equal((await call({ host: 'box-a', includeRecent: true })).note, undefined, 'host and includeRecent are not filters');
+  });
+
   test('a filtered answer (it has matched) comes back as the host sent it', async () => {
     const answer = { sessions: [LIST[0]], matched: 7, host: 'box-a', codexError: null };
     const { call } = serverWith(() => answer);

@@ -323,6 +323,12 @@ describe('the surfaces', () => {
     assert.ok(!names.includes('*'));
     assert.equal(await hosts.assertKnownHost('burst-one'), 'burst-one');
   });
+  test('the vitals and placement ops are reads; drover_launch offers placement', async () => {
+    const { isMutating } = await import('../core/ops-meta.js');
+    const { ALL_TOOLS } = await import('../mcp/server.js');
+    for (const op of ['host.vitals', 'fleet.vitals', 'fleet.place']) assert.equal(isMutating(op), false, op);
+    assert.ok(ALL_TOOLS.find((t) => t.name === 'drover_launch').inputSchema.properties.placement);
+  });
   test('resource is an alert category with its own sound settings', async () => {
     const policy = await import('../ui/notify-policy.js');
     assert.ok(policy.CATEGORY_IDS.includes('resource'));

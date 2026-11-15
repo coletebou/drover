@@ -103,8 +103,9 @@ let gw, base;
 const allEvents = async () => (await readFile(process.env.DROVER_EVENTS, 'utf8')).split('\n').filter(Boolean).map((l) => JSON.parse(l));
 const askEvents = async (phase) => (await allEvents()).filter((e) => e.type === 'ask' && (!phase || e.phase === phase));
 const until = async (pred, ms = 3000) => { const end = Date.now() + ms; while (Date.now() < end) { if (await pred()) return true; await new Promise((r) => setTimeout(r, 25)); } return false; };
-// The router's lock, then any tick a command deferred (a resume and an SMS opt-in start one 10 ms on), counted as it
-// runs: waits on the router's own work, not on a guess at how long it takes.
+// The router's lock, then any tick a command deferred (a resume and an SMS opt-in start one 10 ms on, core/ask/router.js;
+// the 15 ms wait must outlast that delay), counted as it runs: waits on the router's own work, not on a guess at how long
+// it takes.
 let ticking = 0;
 { const tick = router.tick.bind(router); router.tick = async (...a) => { ticking++; try { return await tick(...a); } finally { ticking--; } }; }
 const settle = async () => { await router.exclusive(() => {}); await new Promise((r) => setTimeout(r, 15)); await until(() => ticking === 0); await router.exclusive(() => {}); };
@@ -535,8 +536,7 @@ describe('the owner\'s commands, quiet hours and the rate limit', () => {
     const u = await ask({ question: 'The build is red, revert?', options: ['revert', 'leave'], urgency: 'urgent' });
     assert.equal(sentTexts().length, before + 1);
     assert.match(sentTexts().at(-1).args.text, new RegExp(`^Drover ask ${u.code} · asker on hub \\(urgent\\)`));
-    await say('resume', 602); await settle();
-    await router.tick();
+    await say('resume', 602); await settle();   // resume runs its own tick: none by hand
     const batch = sentTexts().find((m) => m.args.text.startsWith('Drover: 2 asks'));
     assert.ok(batch, sentTexts().map((m) => m.args.text.split('\n')[0]).join(' | '));
     assert.match(batch.args.text, new RegExp(`${n1.code} · asker on hub: Held one\\?\\n${n2.code} · asker on hub: Held two\\?`));

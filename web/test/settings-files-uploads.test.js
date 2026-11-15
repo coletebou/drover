@@ -198,7 +198,8 @@ describe('http: CORS for direct peers', () => {
 });
 
 describe('every new op is described and reaches MCP', () => {
-  const NEW = ['openclaw.status', 'openclaw.check', 'openclaw.sweep', 'openclaw.feed', 'tmux.answer', 'sessions.lastReply', 'settings.get', 'settings.set', 'settings.reset', 'notify.mute', 'notify.unmute', 'notify.recent', 'notify.list', 'notify.test', 'notify.send', 'uploads.put', 'uploads.list', 'uploads.remove', 'files.roots', 'files.list', 'files.read', 'files.write', 'files.find'];
+  const NEW = ['openclaw.status', 'openclaw.check', 'openclaw.sweep', 'openclaw.feed', 'tmux.answer', 'sessions.lastReply', 'settings.get', 'settings.set', 'settings.reset', 'notify.mute', 'notify.unmute', 'notify.recent', 'notify.list', 'notify.test', 'notify.send', 'uploads.put', 'uploads.list', 'uploads.remove', 'files.roots', 'files.list', 'files.read', 'files.write', 'files.find',
+    'docker.stacks', 'docker.fleet', 'docker.logs', 'docker.restart', 'docker.start', 'docker.exec', 'docker.run', 'host.vitals', 'fleet.vitals', 'fleet.place', 'launch.efforts'];
   test('in the op table, in ops-meta, and an drover_* tool each', () => {
     const tools = new Set(ALL_TOOLS.map((t) => t.name));
     for (const op of NEW) {

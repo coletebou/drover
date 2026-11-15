@@ -547,10 +547,13 @@ describe('dispatch(): a launch with an effort to another host asks that host fir
     remote.stopAll();
     spawned = fakeRemote((gen, op, args) => OLD(op) ?? { gen, op, args });
     const opened = windows.length;
-    const plain = await api.dispatch('launch.start', { host: 'effort-plain', engine: 'claude', mode: 'tmux', prompt: 'hi', cwd: '/remote/dir', trust: false });
+    const trustNow = launchMod._deps.trustFolder; let trusted = 0;
+    launchMod._deps.trustFolder = async () => { trusted++; return null; };
+    const plain = await api.dispatch('launch.start', { host: 'effort-plain', engine: 'claude', mode: 'tmux', prompt: 'hi', cwd: '/remote/dir', trust: false }).finally(() => { launchMod._deps.trustFolder = trustNow; });
     assert.deepEqual(plain.args, { engine: 'claude', mode: 'tmux', prompt: 'hi', cwd: '/remote/dir', trust: false }, 'forwarded as given: that host trusts its own folder, or not');
     assert.deepEqual(spawned.flatMap((c) => c.requests.map((x) => x.op)), ['launch.start'], 'no effort, no probe: even an old host launches as before');
-    assert.equal(windows.length, opened, 'nothing opened or trusted on this host');
+    assert.equal(windows.length, opened, 'nothing opened on this host');
+    assert.equal(trusted, 0, 'and no folder trusted here');
   });
 });
 
