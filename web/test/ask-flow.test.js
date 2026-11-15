@@ -15,8 +15,11 @@ const tmp = await mkdtemp(path.join(tmpdir(), 'drover-ask-'));
 const OWNER_CHAT = '424242';
 const SID = 'AC' + 'f'.repeat(32);
 const FROM = '+15005550006', OWNER_PHONE = '+15005550123';
+// A temp HOME and none of this machine's ask settings: the work-identity fence reads ~/.df-profile, and drover
+// children read ~/.config/drover/*.env and ~/.env_secrets.
+for (const k of Object.keys(process.env)) if (k.startsWith('DROVER_ASK_')) delete process.env[k];
 Object.assign(process.env, {
-  DROVER_STATE: path.join(tmp, 'state'), DROVER_DOTFILES: path.join(tmp, 'dotfiles'), DROVER_EVENTS: path.join(tmp, 'events.jsonl'),
+  HOME: tmp, DROVER_STATE: path.join(tmp, 'state'), DROVER_DOTFILES: path.join(tmp, 'dotfiles'), DROVER_EVENTS: path.join(tmp, 'events.jsonl'),
   DROVER_PLUGINS: '', CLAUDE_CONFIG_DIR: path.join(tmp, 'claude'), CODEX_HOME: path.join(tmp, 'codex'), DROVER_PAIR_NOTIFY: 'off',
   DROVER_HOST: 'hub', DROVER_ASK_HUB: 'hub', DROVER_ASK_QUIET: 'off', DROVER_ASK_RATE: '120', DROVER_WORK_CONTEXT: 'none', DROVER_OWNER: 'owner', DROVER_OWNER_NAME: 'Owner',
   DROVER_ASK_TELEGRAM_TOKEN: '999:fake-token', DROVER_ASK_TELEGRAM_CHAT: OWNER_CHAT, DROVER_ASK_TELEGRAM_INBOUND: 'webhook',
