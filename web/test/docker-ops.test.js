@@ -9,9 +9,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { EventEmitter } from 'node:events';
-import { PassThrough } from 'node:stream';
 import path from 'node:path';
+import { fakePeer } from './fake-peer.js';
 
 const tmp = await mkdtemp(path.join(tmpdir(), 'drover-docker-ops-'));
 process.env.DROVER_CACHE = path.join(tmp, 'cache');
@@ -99,28 +98,8 @@ describe('a verb through the op table', () => {
   });
 });
 
-/** A fake `ssh <host> drover rpc` per host: answer(host, op, args) is a result or 'ERR:<message>'. */
-function fakeSpawn(answer) {
-  const calls = [];
-  remote._deps.spawn = (file, argv) => {
-    const host = argv[argv.indexOf('--') - 1];
-    const c = new EventEmitter();
-    c.stdout = new PassThrough(); c.stderr = new PassThrough();
-    c.stdin = {
-      write(d) {
-        for (const line of String(d).split('\n').filter(Boolean)) {
-          const req = JSON.parse(line); calls.push({ host, op: req.op, args: req.args });
-          const a = answer(host, req.op, req.args);
-          setImmediate(() => c.stdout.write(JSON.stringify(typeof a === 'string' && a.startsWith('ERR:') ? { id: req.id, ok: false, error: a.slice(4) } : { id: req.id, ok: true, result: a }) + '\n'));
-        }
-      },
-      end() { setTimeout(() => c.emit('close', 0), 10); }, on() {},
-    };
-    c.kill = () => setImmediate(() => c.emit('close', null));
-    return c;
-  };
-  return calls;
-}
+/** A fake `ssh <host> drover rpc` per host (test/fake-peer.js): answer(host, op, args) is a result or 'ERR:<message>'. */
+const fakeSpawn = (answer) => fakePeer(remote, ({ host, op, args }) => answer(host, op, args)).calls;
 
 describe('docker.fleet', () => {
   const real = { ...api.local };
@@ -216,16 +195,9 @@ describe('a host a plugin provides that runs no Drover, in the fleet op', () => 
   afterEach(() => { remote.stopAll(); api.cache.invalidate('docker.'); seen.length = 0; });
 
   test('the rpc that exits 97 (no Drover there) falls back to the provider\'s docker read', async () => {
-    const spawned = [];
-    remote._deps.spawn = (file, argv) => {
-      spawned.push([file, ...argv]);
-      const c = new EventEmitter(); c.stdout = new PassThrough(); c.stderr = new PassThrough();
-      c.stdin = { write() { setImmediate(() => { c.stderr.write('Drover not installed on this host (no ~/.local/bin/drover)\n'); setImmediate(() => c.emit('close', 97)); }); }, end() {}, on() {} };
-      c.kill = () => {};
-      return c;
-    };
+    const spawned = fakePeer(remote, () => ({ $exit: 97, stderr: 'Drover not installed on this host (no ~/.local/bin/drover)\n' }), { closeMs: false });
     const r = await api.front['docker.fleet']({ hosts: ['dev:ws9'] });
-    assert.deepEqual(spawned, [['test-transport', 'dev:ws9', 'drover', 'rpc']], 'the rpc was tried first, through the provider\'s argv');
+    assert.deepEqual(spawned.map((c) => c.argv), [['test-transport', 'dev:ws9', 'drover', 'rpc']], 'the rpc was tried first, through the provider\'s argv');
     assert.deepEqual(seen, [['dev:ws9', 'sh', '', 'git', 90_000]]);
     await api.front['docker.fleet']({ hosts: ['dev:ws9'], project: 'webapp', git: false });
     assert.deepEqual(seen[1], ['dev:ws9', 'sh', 'webapp', 'nogit', 90_000], 'the options reach the provider\'s read, which the cache keys by them');
@@ -233,12 +205,7 @@ describe('a host a plugin provides that runs no Drover, in the fleet op', () => 
     assert.deepEqual(r.coverage.notCovered, []);
   });
   test('an rpc that fails some other way is that host\'s error, not a docker read', async () => {
-    remote._deps.spawn = () => {
-      const c = new EventEmitter(); c.stdout = new PassThrough(); c.stderr = new PassThrough();
-      c.stdin = { write() { setImmediate(() => { c.stderr.write('connection refused\n'); setImmediate(() => c.emit('close', 255)); }); }, end() {}, on() {} };
-      c.kill = () => {};
-      return c;
-    };
+    fakePeer(remote, () => ({ $exit: 255, stderr: 'connection refused\n' }), { closeMs: false });
     const r = await api.front['docker.fleet']({ hosts: ['dev:ws9'] });
     assert.deepEqual(seen, []);
     assert.equal(r.hosts[0].ok, false); assert.match(r.hosts[0].error, /exited 255: connection refused/);

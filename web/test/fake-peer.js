@@ -15,15 +15,15 @@ import { PassThrough } from 'node:stream';
  *   rejection fails the call with its message.
  * `gen` counts the children spawned, from 0; `host` is the ssh target. `closeMs`: how long a child takes to close
  * once its stdin ends (false: it never closes by itself).
- * Returns the spawned children (each with .gen, .host, .requests, .stdinEnded, .killed); `.calls` lists every
+ * Returns the spawned children (each with .gen, .argv, .host, .requests, .stdinEnded, .killed); `.calls` lists every
  * request as { host, op, args }, in order.
  */
 export function fakePeer(remote, answer, { closeMs = 10 } = {}) {
   const spawned = []; const calls = [];
-  remote._deps.spawn = (_file, argv = []) => {
+  remote._deps.spawn = (file, argv = []) => {
     const c = new EventEmitter();
     c.stdout = new PassThrough(); c.stderr = new PassThrough();
-    c.gen = spawned.length; c.host = argv[argv.indexOf('--') - 1]; c.requests = [];
+    c.gen = spawned.length; c.argv = [file, ...argv]; c.host = argv[argv.indexOf('--') - 1]; c.requests = [];
     const send = (id, a) => {
       if (a?.$exit !== undefined) { c.stderr.write(a.stderr ?? ''); setImmediate(() => c.emit('close', a.$exit)); return; }
       c.stdout.write(JSON.stringify(replyLine(id, a)) + '\n');
