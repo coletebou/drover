@@ -1,5 +1,5 @@
-// The docker.* ops on the op table and every surface around it: described and generated as drover_docker_* MCP tools
-// (the verbs with actor mcp), cached and invalidated, routed with a long enough host timeout, recorded in the truth file
+// The docker.* ops on the op table and every surface around it: what their schemas take and require (the verbs mutate
+// and declare actor), cached and invalidated, routed with a long enough host timeout, recorded in the truth file
 // with their result, docker.fleet fanned out over the per-host cache (a fake ssh peer stands in for the other hosts, a
 // host provider registered here for a host that runs no Drover), unknown docker verbs refused before any host is
 // reached, and neither the widget token nor the Grok bots gateway able to reach any of them. A temp dotfiles, truth
@@ -27,25 +27,19 @@ const { UPDATE_HINT } = await import('../core/util.js');
 const docker = await import('../core/docker.js');
 const plugins = await import('../core/plugins.js');
 const { readAll } = await import('../core/events.js');
-const { META, OPS_KNOWN, isMutating } = await import('../core/ops-meta.js');
-const { GENERATED_TOOLS } = await import('../mcp/server.js');
+const { META, isMutating } = await import('../core/ops-meta.js');
 const { botTools } = await import('../core/bots/tools.js');
 after(async () => { remote.stopAll(); await rm(tmp, { recursive: true, force: true }); });
 
 const READS = ['docker.stacks', 'docker.fleet', 'docker.logs'];
 const VERBS = ['docker.restart', 'docker.start', 'docker.exec', 'docker.run'];
 const ALL = [...READS, ...VERBS];
-const toolName = (op) => `drover_${op.replace(/\./g, '_')}`;
 
 describe('the op table and MCP', () => {
-  test('every docker op is on the table, described, takes host and is an MCP tool; reads do not mutate, verbs do and take actor', () => {
-    for (const op of ALL) {
-      assert.ok(api.OPS.includes(op), op); assert.ok(OPS_KNOWN.includes(op), op);
-      assert.ok(META[op].d.length > 40, op);
-      assert.ok(META[op].s.properties.host, `${op} takes host`);
-      assert.ok(GENERATED_TOOLS.some((t) => t.name === toolName(op)), op);
-      for (const [k, p] of Object.entries(META[op].s.properties)) assert.equal(typeof p.description, 'string', `${op}.${k}`);
-    }
+  // Host, descriptions and an MCP tool per op come from ops-meta and mcp/server.js for every op alike (mcp.test.js,
+  // settings-files-uploads.test.js); what is docker's own is below.
+  test('every docker op is on the op table; reads do not mutate, verbs do and take actor; required keys; no user, privileged, env, entrypoint, volumes or workdir', () => {
+    for (const op of ALL) assert.ok(api.OPS.includes(op), op);
     for (const op of READS) assert.equal(isMutating(op), false, op);
     for (const op of VERBS) { assert.equal(isMutating(op), true, op); assert.ok(META[op].s.properties.actor, `${op} declares actor, so MCP calls are recorded as mcp`); }
     assert.deepEqual(META['docker.logs'].s.required, ['project', 'service']);
@@ -54,14 +48,6 @@ describe('the op table and MCP', () => {
     assert.deepEqual(META['docker.exec'].s.required, ['project', 'service', 'argv']);
     assert.deepEqual(META['docker.run'].s.required, ['project', 'service']);
     for (const op of VERBS) for (const k of ['user', 'privileged', 'env', 'entrypoint', 'volumes', 'workdir']) assert.equal(META[op].s.properties[k], undefined, `${op} offers no ${k}`);
-  });
-  test('the generated MCP tools of the verbs send actor mcp; reads send what they were given', async () => {
-    const seen = [];
-    const dispatch = async (op, args) => { seen.push({ op, args }); return {}; };
-    await GENERATED_TOOLS.find((t) => t.name === 'drover_docker_exec').run(dispatch, { project: 'p', service: 's', argv: ['true'] });
-    await GENERATED_TOOLS.find((t) => t.name === 'drover_docker_restart').run(dispatch, { project: 'p', services: ['s'] });
-    await GENERATED_TOOLS.find((t) => t.name === 'drover_docker_stacks').run(dispatch, { host: 'stackbox' });
-    assert.deepEqual(seen.map((s) => s.args.actor), ['mcp', 'mcp', undefined]);
   });
   test('cache and routing: stacks cached 30 s, logs and the verbs never, the fleet op front-only, verbs get 120 s on another host', () => {
     assert.equal(api.CACHE_POLICY['docker.stacks'], 30_000);
@@ -95,27 +81,21 @@ describe('a verb through the op table', () => {
     assert.deepEqual(ev.result, { ok: true, project: 'drover-selftest', verb: 'restart', count: 2, exitCode: 0, timedOut: false }, 'scalars only: no output, no container list');
     assert.equal(api.cache.peek(key), null, 'a verb drops every docker.* entry');
   });
-  test('an exec argv is redacted in the truth file, whether the verb ran or was refused', async () => {
+  test('an exec argv is redacted in the truth file, whether the verb ran or was refused; a refusal is recorded as failed with its reason, which the caller gets', async () => {
     const key = ['sk', 'ant', 'api03', 'EXAMPLE0EXAMPLE0EXAMPLE0EXAMPLE0'].join('-');
     const argv = ['tool', '--password', 'hunter2', `TOKEN=${key}`, '--api-key', 'x9', 'ls'];
     api.local['docker.exec'] = async (a) => ({ ok: true, project: a.project, service: a.service, verb: 'exec', exitCode: 0, timedOut: false, stdout: '', stderr: '' });
     await api.dispatchCached('docker.exec', { project: 'drover-selftest', service: 'plain', argv, actor: 'mcp' });
     api.local['docker.exec'] = async () => { throw new docker.Refused('plain is not running'); };
-    await assert.rejects(api.dispatchCached('docker.exec', { project: 'drover-selftest', service: 'plain', argv, actor: 'mcp' }), /not running/);
+    await assert.rejects(api.dispatchCached('docker.exec', { project: 'drover-selftest', service: 'plain', argv, actor: 'mcp' }), /^Error: refused: plain is not running$/);
     const evs = (await opEvents('docker.exec')).slice(-2);
-    assert.deepEqual(evs.map((e) => e.ok), [true, false]);
+    assert.deepEqual(evs.map((e) => [e.ok, e.actor]), [[true, 'mcp'], [false, 'mcp']]);
+    assert.equal(evs[1].error, 'refused: plain is not running');
     for (const e of evs) {
       const text = JSON.stringify(e);
       assert.ok(!text.includes('hunter2') && !text.includes(key) && !text.includes('x9'), text);
       assert.deepEqual(e.args.argv.filter((x) => x === 'tool' || x === 'ls'), ['tool', 'ls'], 'the rest of the command stays readable');
     }
-  });
-  test('a refused verb is recorded as failed with the reason, and the caller gets the reason', async () => {
-    api.local['docker.exec'] = async () => { throw new docker.Refused('no compose project nope on testbox (projects here: webapp)'); };
-    await assert.rejects(api.dispatchCached('docker.exec', { project: 'nope', service: 'web', argv: ['id'], actor: 'mcp' }), /^Error: refused: no compose project nope on testbox/);
-    const ev = (await opEvents('docker.exec')).at(-1);
-    assert.equal(ev.ok, false); assert.equal(ev.actor, 'mcp');
-    assert.match(ev.error, /^refused: no compose project nope on testbox \(projects here: webapp\)$/);
   });
 });
 
