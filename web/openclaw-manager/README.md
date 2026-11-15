@@ -36,7 +36,8 @@ What it does, in order: picks the newest fnm node inside OpenClaw's own `engines
 committed lockfile and applies `npm/patches.json` into `~/.local/share/drover/openclaw/<version>-<lock sha>-p<patch sha>/`
 (a new tree per lockfile and patch set, so a running gateway's tree is never rewritten; a patch whose anchor
 does not occur exactly once fails the install); creates `~/.openclaw-manager/.env` once from the profile's
-sources; renders `openclaw.json` (keeping the keys OpenClaw writes itself: `meta`, `wizard`,
+sources, and on later runs refreshes a sourced line whose source now holds another value (a rotation there, or a
+profile that reads it from another name), never a generated token and never a line its source lacks; renders `openclaw.json` (keeping the keys OpenClaw writes itself: `meta`, `wizard`,
 `agents.entries`); refreshes the standing orders and seeds the other workspace files once; writes
 `bin/ro`, `bin/run-gateway` and `bin/oc`; writes the service (systemd unit or launchd plist); runs
 `openclaw config validate`; on a first install imports `exec-approvals.json` through `openclaw doctor
@@ -54,7 +55,7 @@ role's missing automations, edits the existing ones in place to the role's defin
 |---|---|
 | `npm/package.json`, `npm/package-lock.json`: the pinned OpenClaw tree (563 packages, every platform's optional binaries); `npm/patches.json`: the edits setup makes to that tree (`heartbeat-thinking`) | `~/.local/share/drover/openclaw/2026.10.1-<lock sha>-p<patch sha>/` (`npm ci`, then the patches; the last two trees are kept) |
 | `openclaw.json`: the gateway config template; `{{NODE}}`, `{{DROVER_BIN}}`, `{{HOME}}`, `{{ACTOR}}`, `{{HEARTBEAT_PROMPT}}` and the profile's `{{PORT}}`, `{{OTEL_ENDPOINT}}`, `{{CLIPROXY_API_KEY}}` are whole-string tokens (OpenClaw itself owns `${NAME}` env refs). It holds no key: each is a token or an env ref | `~/.openclaw-manager/openclaw.json` (0600) |
-| `profiles/<p>.json`: what the gateway talks to: its config template, where each secret comes from, extra environment, the template values, the egress allowlist | `~/.openclaw-manager/.env` (0600, created once; only the profile's names) |
+| `profiles/<p>.json`: what the gateway talks to: its config template, where each secret comes from (`from` a file, `key` when the line there has another name: `{"from": "~/.env_secrets", "key": "AWS_BEARER_TOKEN_BEDROCK_GOV"}`), extra environment, the template values, the egress allowlist, and `automations` (`{"fleet-digest": {"model": ..., "thinking": ...}}`: a role automation moved to a model this profile's providers have) | `~/.openclaw-manager/.env` (0600, created once; only the profile's names) |
 | `roles/<r>/role.json`: default profile, heartbeat prompt and `heartbeatThinking` (the sweep's effort: OpenClaw's heartbeat config takes a model but no thinking level, and a `/think` directive in the prompt never reaches the turn, so the launcher exports `OPENCLAW_HEARTBEAT_THINKING` and the `heartbeat-thinking` patch passes it as the run's level), duties with their automations, model and thinking (setup creates, edits in place, enables and disables them) | the rendered config, `bin/run-gateway` and `openclaw automations` |
 | `roles/<r>/AGENTS.md` (standing orders, every run), `roles/<r>/MEMORY.md` and `workspace/{SOUL,USER,IDENTITY}.md` (seeded once; the manager's own memory afterwards) | `~/.openclaw-manager/workspace/` |
 | `workspace/<profile>/<file>`: a profile's own seed, used instead of `workspace/<file>` | `~/.openclaw-manager/workspace/` |
