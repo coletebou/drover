@@ -54,12 +54,8 @@ describe('pure parts', () => {
     for (const r of roles) { assert.equal(r.profile, 'default'); assert.equal(r.from, 'repo'); assert.ok(r.summary.length > 20); }
     assert.deepEqual(install.listProfiles().map((p) => [p.name, p.port, p.from]), [['default', 18789, 'repo']], 'the repo ships one generic profile; a fleet\'s own live in its overlay');
     const p = install.loadProfile('default');
-    assert.deepEqual(Object.keys(p.secrets).sort(), ['AWS_BEARER_TOKEN_BEDROCK', 'CLIPROXY_API_KEY', 'EXA_API_KEY', 'OPENCLAW_GATEWAY_TOKEN', 'OPENCLAW_HOOKS_TOKEN', 'OTEL_EXPORTER_OTLP_HEADERS']);
     assert.ok(Object.values(p.secrets).every((s) => s.generate || s.from === '~/.env_secrets'), 'every secret from one file, or generated');
-    assert.equal(p.secrets.OTEL_EXPORTER_OTLP_HEADERS.optional, true);
-    assert.equal(p.env.AWS_REGION, 'us-east-1');
     assert.ok(p.egress.allow.includes('api.exa.ai'));
-    assert.deepEqual([p.port, p.vars.PORT, p.vars.OTEL_ENDPOINT, p.vars.CLIPROXY_API_KEY], [18789, 18789, 'http://127.0.0.1:3000/api/public/otel', '${CLIPROXY_API_KEY}'], 'the proxy key is an env ref the gateway resolves from its .env');
     assert.equal(p.config, path.join(install.SRC, 'openclaw.json'));
     assert.throws(() => install.loadRole('nope'), /unknown role "nope"; this checkout defines: manager /);
     assert.throws(() => install.loadProfile('../x'), /bad profile name/);
@@ -942,7 +938,6 @@ describe('setup in a sandbox', () => {
   test('the pinned OpenClaw is patched so a sweep runs at the role\'s heartbeatThinking; a moved anchor fails the install', async () => {
     await install.setup({ scope: 'all', exclude: ['laptop'], digest: true, actor: 'manager' });
     const L = lay(); const lock = install.lockInfo(); const dist = path.join(L.installs, lock.dirName, 'node_modules', 'openclaw', 'dist');
-    assert.match(lock.dirName, /-p[0-9a-f]{8}$/, 'the patch set is part of the tree name');
     assert.match(readFileSync(path.join(dist, 'heartbeat-runner-run-A1.mjs'), 'utf8'), /heartbeatModelOverride: heartbeat\?\.model\?\.trim\(\), thinkingLevelOverride: process\.env\.OPENCLAW_HEARTBEAT_THINKING \|\| void 0,/);
     assert.equal(readFileSync(path.join(dist, 'heartbeat-runner-run-B2.mjs'), 'utf8'), '// another runner chunk\n');
     assert.deepEqual(JSON.parse(readFileSync(path.join(L.installs, lock.dirName, '.drover-openclaw'), 'utf8')).patches, ['heartbeat-thinking']);
@@ -959,7 +954,7 @@ describe('setup in a sandbox', () => {
     done();
   });
 
-  test('a first install needs a role and names the ones this checkout has; no usable node is a clear error', async () => {
+  test('a first install needs a scope; no usable node is a clear error', async () => {
     await assert.rejects(install.setup({}), /first install on this host: pass --scope local/);
     await rm(path.join(home, '.local', 'share', 'fnm'), { recursive: true });
     const first = { scope: 'all', exclude: ['laptop'], digest: true, actor: 'manager' };

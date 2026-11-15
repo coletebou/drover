@@ -17,6 +17,11 @@ import { makeHome, startFakeHermes, sid } from './fake-hermes.js';
 
 const tmp = await mkdtemp(path.join(tmpdir(), 'drover-hermes-'));
 const HOME = path.join(tmp, 'hermes');
+// A temp HOME and none of this machine's Drover settings: a host's DROVER_PROFILES would hand launch.start its own
+// launch profiles (and fail every launch where that file is missing), and HOME holds ~/.df-profile,
+// ~/.openclaw-manager and ~/.config/drover.
+for (const k of Object.keys(process.env)) if (/^(DROVER|APXW)_/.test(k)) delete process.env[k];
+process.env.HOME = path.join(tmp, 'home');   // beside, not above, the stand-in bin (hermes.status shows a bin under HOME as ~/...)
 process.env.HERMES_HOME = HOME;
 process.env.DROVER_STATE = path.join(tmp, 'state');
 process.env.DROVER_CACHE = path.join(tmp, 'cache');
@@ -26,6 +31,7 @@ process.env.CLAUDE_CONFIG_DIR = path.join(tmp, 'claude');
 process.env.CODEX_HOME = path.join(tmp, 'codex');
 process.env.DROVER_HOST = 'testbox';
 await mkdir(path.join(tmp, 'claude', 'sessions'), { recursive: true });
+await mkdir(process.env.HOME);
 await mkdir(path.join(tmp, 'dotfiles', 'claude'), { recursive: true });
 await writeFile(path.join(tmp, 'dotfiles', 'claude', 'fleet-hosts.txt'), 'hermes-old\nhermes-new\n');
 // `claude agents --json` is part of the session list: a stand-in that lists nothing.
@@ -279,7 +285,7 @@ describe('the gateway: when a listing may ask it, live state, prompts', () => {
     gw = await start();
     const list = await hermes.listSessions({ includeRecent: true });
     assert.equal(gw.connections, 0, 'no WebSocket: polling would hold off its idle exit');
-    assert.ok(list.every((s) => !s.live));
+    assert.ok(list.some((s) => s.id === S.plain) && list.every((s) => !s.live), 'the database answers: its conversations, none live');
     assert.equal((await hermes.listSessions({ includeRecent: false })).length, 0);
   });
 
