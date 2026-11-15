@@ -1,11 +1,11 @@
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, writeFile, chmod, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, chmod } from 'node:fs/promises';
 import { realpathSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { classifyScreen, dialogSummary, heldMessage, assertTarget, assertName, keyFitsDialog, tmuxArg, listWindows, listPanes, listSessions, SEP, answer, capture, screenHash } from '../core/tmux.js';
+import { classifyScreen, dialogSummary, heldMessage, assertTarget, assertName, keyFitsDialog, tmuxArg, listWindows, listPanes, listSessions, SEP, screenHash } from '../core/tmux.js';
+import { hasTmux, startPrivateTmux } from './private-tmux.js';
 
 test('assertTarget accepts tmux target forms and rejects shell-ish input', () => {
   for (const ok of ['agents:30', 'agents:@68.%73', 'films:1', '=main:2', '%5', 'fleet-channel-merge:1']) assert.equal(assertTarget(ok), ok);
@@ -107,13 +107,9 @@ test('tmuxArg: only a trailing ";" (tmux\'s command separator) is escaped, as "\
   for (const other of [5, undefined, null]) assert.equal(tmuxArg(other), other, 'non-strings pass through untouched');
 });
 
-// ---------------------------------------------------------------- dialog screens the answer tests use
-const QUESTION = 'Which approach should I take for the rebase?\n\n❯ 1. Rebase onto dev (Recommended)\n  2. Merge dev in\n  3. Stop here\n\nEnter to select · ↑/↓ to navigate · Esc to cancel\n';
-const PERMISSION = "Bash command\n\n  rm -rf build\n  Remove the build directory\n\nDo you want to proceed?\n❯ 1. Yes\n  2. Yes, and don't ask again for rm commands in this project\n  3. No, and tell Claude what to do differently (esc)\n\nEsc to cancel\n";
-
 // ---------------------------------------------------------------- real tmux: the list parsers
+// (Pressing a key on a dialog through a real tmux, with the screen-hash guard, is test/sessions-answer.test.js.)
 
-const hasTmux = spawnSync('tmux', ['-V'], { encoding: 'utf8' }).status === 0;
 describe('real tmux: listWindows, listPanes and listSessions keep every field', { skip: hasTmux ? false : 'tmux is not installed here' }, () => {
   // tmux 3.4 escapes control characters in -F output, so a U+001F field separator arrived as the four characters
   // "\037" and no line split (seen 2026-10-18); tmux 3.8 prints them raw. The shim makes the installed tmux
@@ -122,21 +118,16 @@ describe('real tmux: listWindows, listPanes and listSessions keep every field', 
   // separator that overlaps itself would shift a split.
   const SESSION = 'drover-list-test', OTHER = 'second session';
   const NAMES = ['plain', 'two words', `a ${[...SEP].join(' ')} b`, `ends ${SEP.slice(0, -1)}`, `${SEP.slice(1)} starts`];
-  let saved, tdir, env, workDir, shimDir, shimLog, realTmux;
-  const tmuxCmd = (args) => spawnSync(realTmux, args, { env, encoding: 'utf8' });
+  let savedPath, server, workDir, shimDir, shimLog;
 
   before(async () => {
-    saved = Object.fromEntries(['PATH', 'TMUX', 'TMUX_PANE', 'TMUX_TMPDIR'].map((k) => [k, process.env[k]]));
-    realTmux = spawnSync('sh', ['-c', 'command -v tmux'], { encoding: 'utf8' }).stdout.trim();
-    tdir = await mkdtemp(path.join(tmpdir(), 'drovertl-'));
-    // A private tmux server: its own socket directory, no user config, and no TMUX variable that could point a
-    // client at the user's server. Every tmux call in this process (core/tmux.js too) goes there. This comes before
-    // anything else that can fail: after() runs even when before() throws, and its kill-server must use this env.
-    delete process.env.TMUX; delete process.env.TMUX_PANE;
-    process.env.TMUX_TMPDIR = tdir;
-    env = { ...process.env };
+    savedPath = process.env.PATH;
+    const tdir = await mkdtemp(path.join(tmpdir(), 'drovertl-'));
     workDir = path.join(tdir, `dir with spaces ${SEP.slice(0, -1)}`); shimDir = path.join(tdir, 'shim'); shimLog = path.join(tdir, 'shim.log');
     await mkdir(workDir); await mkdir(shimDir);
+    // The first session's window opens in workDir, so the folder is made before the server starts.
+    server = await startPrivateTmux({ dir: tdir, session: SESSION, sessionArgs: ['-n', NAMES[0], '-c', workDir], restoreEnv: true });
+    const { bin: realTmux, tmux: tmuxCmd } = server;
     // The real tmux, with control characters other than tab and newline in its stdout escaped as octal, as tmux 3.4
     // prints U+001F (it uses \a, \r and the like where C has one). The backslash is String.fromCharCode(92), so
     // nothing here needs double escaping. It logs each subcommand, so the escaping case can prove it ran through here.
@@ -153,7 +144,6 @@ describe('real tmux: listWindows, listPanes and listSessions keep every field', 
     ].join('\n'));
     await chmod(shim, 0o755);
     const ok = (r) => assert.equal(r.status, 0, r.stderr);
-    ok(tmuxCmd(['-f', '/dev/null', 'new-session', '-d', '-s', SESSION, '-n', NAMES[0], '-c', workDir, 'sleep', '3600']));
     for (const name of NAMES.slice(1)) ok(tmuxCmd(['new-window', '-d', '-t', SESSION, '-n', name, '-c', workDir, 'sleep', '3600']));
     ok(tmuxCmd(['new-session', '-d', '-s', OTHER, '-c', workDir, 'sleep', '3600']));
     // pane_current_command and pane_current_path come from the live process: wait until every pane runs sleep.
@@ -161,17 +151,11 @@ describe('real tmux: listWindows, listPanes and listSessions keep every field', 
     for (let i = 0; i < 100 && !allSleep(); i++) await new Promise((r) => setTimeout(r, 50));
     assert.ok(allSleep(), 'every pane runs sleep within 5 s');
   });
-  after(async () => {
-    // The kill names the private server's socket: with TMUX_TMPDIR alone, a missing folder would send it to the
-    // user's default server.
-    if (env) tmuxCmd(['-S', path.join(tdir, `tmux-${process.getuid()}`, 'default'), 'kill-server']);   // env exists only once it points at the private server
-    for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
-    if (tdir) await rm(tdir, { recursive: true, force: true });
-  });
+  after(async () => { process.env.PATH = savedPath; await server?.stop(); });
 
   for (const escaping of [false, true]) {
     test(escaping ? 'when tmux escapes control characters in its output (3.4)' : 'as the installed tmux prints them', async () => {
-      process.env.PATH = escaping ? `${shimDir}${path.delimiter}${saved.PATH}` : saved.PATH;
+      process.env.PATH = escaping ? `${shimDir}${path.delimiter}${savedPath}` : savedPath;
       const cwd = realpathSync(workDir);
       const wins = await listWindows();
       assert.deepEqual(wins.map((w) => w.target).sort(), [...NAMES.map((_, i) => `${SESSION}:${i}`), `${OTHER}:0`]);
@@ -201,46 +185,4 @@ describe('real tmux: listWindows, listPanes and listSessions keep every field', 
       if (escaping) assert.match(readFileSync(shimLog, 'utf8'), /list-windows.*list-panes.*list-sessions/, 'the parsers ran through the shim');
     });
   }
-});
-
-describe('real tmux: an answer is refused before any key is sent when the screen changed, and sends its digit otherwise', { skip: hasTmux ? false : 'tmux is not installed here' }, () => {
-  let saved, tdir, env, realTmux;
-  const tmuxCmd = (args) => spawnSync(realTmux, args, { env, encoding: 'utf8' });
-  const SESSION = 'drover-answer-test';
-  before(async () => {
-    saved = Object.fromEntries(['TMUX', 'TMUX_PANE', 'TMUX_TMPDIR'].map((k) => [k, process.env[k]]));
-    realTmux = spawnSync('sh', ['-c', 'command -v tmux'], { encoding: 'utf8' }).stdout.trim();
-    tdir = await mkdtemp(path.join(tmpdir(), 'droverta-'));
-    delete process.env.TMUX; delete process.env.TMUX_PANE;
-    process.env.TMUX_TMPDIR = tdir;
-    env = { ...process.env };
-    assert.equal(tmuxCmd(['-f', '/dev/null', 'new-session', '-d', '-s', SESSION, '-x', '120', '-y', '40', 'sleep', '3600']).status, 0);
-  });
-  after(async () => {
-    if (env) tmuxCmd(['kill-server']);
-    for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
-    if (tdir) await rm(tdir, { recursive: true, force: true });
-  });
-  // A pane that draws a dialog and records every key it receives.
-  const pane = async (name, screen) => {
-    const log = path.join(tdir, `${name}.keys`), script = path.join(tdir, `${name}.cjs`);
-    await writeFile(log, '');
-    await writeFile(script, `const fs = require('node:fs'); process.stdout.write(${JSON.stringify(screen)}); process.stdin.setRawMode?.(true); process.stdin.on('data', (b) => fs.appendFileSync(${JSON.stringify(log)}, b)); setInterval(() => {}, 1000);`);
-    assert.equal(tmuxCmd(['new-window', '-d', '-t', SESSION, '-n', name, process.execPath, script]).status, 0);
-    const target = `${SESSION}:${name}`;
-    for (let i = 0; i < 100 && !(await capture(target, { lines: 60 })).includes('Esc to cancel'); i++) await new Promise((r) => setTimeout(r, 50));
-    return { target, keys: async () => { await new Promise((r) => setTimeout(r, 300)); return readFileSync(log, 'utf8'); } };
-  };
-  test('a stale expect: refused, nothing typed', async () => {
-    const p = await pane('perm', PERMISSION);
-    const r = await answer(p.target, '1', { expect: 'stale' });
-    assert.equal(r.refused, true); assert.match(r.reason, /screen changed since you read it/);
-    assert.equal(await p.keys(), '');
-  });
-  test('an option in a question, on the screen read: sent', async () => {
-    const p = await pane('question', QUESTION);
-    const r = await answer(p.target, '1', { expect: screenHash(await capture(p.target, { lines: 60 })) });
-    assert.equal(r.ok, true, r.reason);
-    assert.equal(await p.keys(), '1');
-  });
 });

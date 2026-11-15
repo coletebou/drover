@@ -7,7 +7,7 @@ import { mkdtemp, mkdir, symlink, rm } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { filterSessions, filtersGiven, activityMs, cwdRoots } from '../core/session-filter.js';
+import { filterSessions, cwdRoots } from '../core/session-filter.js';
 import { createServer } from '../mcp/server.js';
 
 const HOME = '/home/u';
@@ -67,6 +67,7 @@ describe('filterSessions', () => {
     const r = filterSessions(LIST, { limit: 4 });
     assert.deepEqual(ids(r), ['h1', 'x2', 'c1', 'c3'], 'an ISO start (09:30Z), Codex seconds (09:28:20) and Claude milliseconds (09:28:04) on one clock');
     assert.equal(r.matched, LIST.length);
+    assert.equal(ids(filterSessions([{ id: 'none' }, ...LIST], { limit: 9 })).at(-1), 'none', 'a session with no time field at all comes last');
     assert.deepEqual(filterSessions(LIST, { engine: 'claude', live: true, limit: 0 }), { sessions: [], matched: 3 }, 'limit 0: just the count');
     for (const bad of [-1, 2.5, 'ten']) assert.throws(() => filterSessions(LIST, { limit: bad }), /limit must be a whole number/);
     assert.deepEqual(ids(filterSessions(LIST, { engine: 'codex' })), ['x1', 'x2'], 'without limit the list keeps its own order');
@@ -78,16 +79,6 @@ describe('filterSessions', () => {
     assert.equal(JSON.stringify(LIST), before);
   });
 
-  test('activityMs reads every shape; filtersGiven ignores compact, includeRecent and empty values', () => {
-    assert.equal(activityMs({ updatedAt: 1_792_658_735 }), 1_792_658_735_000);
-    assert.equal(activityMs({ updatedAt: 1_792_661_284_197 }), 1_792_661_284_197);
-    assert.equal(activityMs({ lastSeenAt: '2026-10-20T20:13:40.513Z' }), Date.parse('2026-10-20T20:13:40.513Z'));
-    assert.equal(activityMs({}), 0);
-    assert.equal(filtersGiven({}), false);
-    assert.equal(filtersGiven({ compact: true, includeRecent: true, host: 'x' }), false);
-    assert.equal(filtersGiven({ name: '', cwd: null }), false);
-    for (const k of ['cwd', 'name', 'engine', 'live', 'limit']) assert.equal(filtersGiven({ [k]: k === 'live' ? false : k === 'limit' ? 0 : 'x' }), true, k);
-  });
 });
 
 // ---------------------------------------------------------------- drover_sessions
@@ -128,7 +119,10 @@ describe('drover_sessions', () => {
     const tilde = await call({ host: 'box-a', cwd: '~/code/webapp', engine: 'grok' });
     assert.deepEqual(tilde.sessions.map((s) => s.id), ['g1'], 'the other filters still apply');
     assert.match(tilde.note, /cwd ~\/code\/webapp was not applied, because ~ is box-a's home/);
-    const none = await call({});
-    assert.equal(none.note, undefined, 'no filter asked: nothing to do here');
+    const none = await call({ compact: true, name: '', cwd: null });
+    assert.equal(none.note, undefined, 'no filter asked (compact and empty values are none): nothing to do here');
+    assert.equal(none.sessions.length, LIST.length);
+    const count = await call({ live: false, limit: 0 });
+    assert.deepEqual([count.sessions.length, count.matched], [0, 4], 'live false and limit 0 are filters: just the count');
   });
 });

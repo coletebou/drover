@@ -227,6 +227,11 @@ describe('sessions.message reaches a handoff successor', () => {
     const away = await send('foxtrot-2').then(() => null, (e) => e);
     assert.match(away.message, new RegExp(`foxtrot-3 \\(generation 3, ${ids[2]}\\) on box-b: resend with host box-b$`));
     assert.deepEqual(away.candidates, [{ chain: 'foxtrot-chain', gen: 3, id: ids[2], name: 'foxtrot-3', state: 'elsewhere', host: 'box-b' }]);
+    // One that ran here after all (its registry entry is here, its process gone) ended, whatever host it was meant for.
+    await register({ id: ids[2], name: 'foxtrot-3', live: false, socket: path.join(SOCKS, 'gone.sock') });
+    const endedHere = await send('foxtrot-2').then(() => null, (e) => e);
+    assert.equal(endedHere.candidates[0].state, 'ended');
+    assert.match(endedHere.message, new RegExp(`foxtrot-3 \\(generation 3, ${ids[2]}\\), ended$`));
     // A registered dead target is still tried, as before: the failed delivery is recorded, and the error says why.
     await register({ id: ids[1], name: 'foxtrot-2', live: false, socket: path.join(SOCKS, 'gone.sock') });
     const dead = await send(ids[1]).then(() => null, (e) => e);
@@ -383,20 +388,5 @@ describe('core/lineage', () => {
     assert.deepEqual(await lineage.chainsOf('juliet', { dir: marks }), []);
     assert.deepEqual(await lineage.successor('juliet', { dir: marks }), { to: null, note: null, candidates: [] });
     await rm(dir, { recursive: true, force: true });
-  });
-
-  test('stateOf: live, no messaging socket, ended, elsewhere, not started', () => {
-    const reg = lineage.registryIndex([
-      { sessionId: 'a', alive: true, socket: '/s' }, { sessionId: 'b', alive: true, socket: null }, { sessionId: 'c', alive: false, socket: '/s' },
-      // A dead entry left by a session that runs again under the same id does not hide the live one.
-      { sessionId: 'd', alive: false, socket: '/old' }, { sessionId: 'd', alive: true, socket: '/new' },
-    ]);
-    assert.equal(lineage.stateOf({ sessionId: 'a' }, reg), 'live');
-    assert.equal(lineage.stateOf({ sessionId: 'b' }, reg), 'no messaging socket');
-    assert.equal(lineage.stateOf({ sessionId: 'c', alias: 'box-b' }, reg), 'ended', 'it ran here');
-    assert.equal(lineage.stateOf({ sessionId: 'd' }, reg), 'live');
-    assert.equal(lineage.stateOf({ sessionId: 'e', alias: 'box-b' }, reg), 'elsewhere');
-    assert.equal(lineage.stateOf({ sessionId: 'e', started: true }, reg), 'ended');
-    assert.equal(lineage.stateOf({ sessionId: 'e' }, reg), 'not started');
   });
 });

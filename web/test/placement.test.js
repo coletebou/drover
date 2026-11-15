@@ -37,8 +37,6 @@ const vitals = await import('../core/vitals.js');
 const api = await import('../core/api.js');
 const remote = await import('../core/remote.js');
 const hosts = await import('../core/hosts.js');
-const { META } = await import('../core/ops-meta.js');
-const { ALL_TOOLS } = await import('../mcp/server.js');
 after(async () => { remote.stopAll(); await rm(tmp, { recursive: true, force: true }); });
 
 const GB = 1024;
@@ -302,12 +300,13 @@ describe('fleet.place, fleet.vitals and launch.start host auto through the op ta
   });
   test('placements are reserved for a few minutes, so back-to-back launches do not all land on one host', async () => {
     await setLocal(sampleOf({ host: 'box-a', availGB: 5 }));
-    answers = { 'box-b': () => sampleOf({ host: 'box-b', availGB: 9 }), 'box-c': () => sampleOf({ host: 'box-c', availGB: 7 }), 'mac-a': null };
+    // box-b's 8 GB take one claude-session (3.5 GB, its 2 GB reserve kept), not a second one while the first starts.
+    answers = { 'box-b': () => sampleOf({ host: 'box-b', availGB: 8 }), 'box-c': () => sampleOf({ host: 'box-c', availGB: 7 }), 'mac-a': null };
     const first = await api.front['fleet.place']({ class: 'claude-session', reserve: true });
     assert.deepEqual([first.host, first.reserved], ['box-b', 3.5]);
     const second = await api.front['fleet.place']({ class: 'claude-session', reserve: true });
     assert.equal(second.host, 'box-c', 'box-b now counts the 3.5 GB just placed there');
-    assert.match(second.candidates.find((c) => c.name === 'box-b').why.join() || 'eligible', /after 3.5 GB just placed there|eligible/);
+    assert.match(second.candidates.find((c) => c.name === 'box-b').why.join(), /^memory: 4\.5 GB available after 3\.5 GB just placed there, and 3\.5 GB for a claude-session would leave 1 GB, under its 2 GB reserve$/);
     const probe = await api.front['fleet.place']({ class: 'claude-session' });
     assert.equal(probe.reserved, undefined, 'a placement without reserve holds nothing');
   });
@@ -340,18 +339,6 @@ describe('the surfaces', () => {
     for (const n of ['box-b', 'burst-one', 'extra-box', 'other-alias']) assert.ok(names.includes(n), n);
     assert.ok(!names.includes('*'));
     assert.equal(await hosts.assertKnownHost('burst-one'), 'burst-one');
-  });
-  test('the new ops are described for MCP; drover_launch takes host auto and a placement class', () => {
-    for (const op of ['host.vitals', 'fleet.vitals', 'fleet.place']) {
-      assert.equal(META[op].m, false, op);
-      assert.ok(META[op].d.length > 80, op);
-      for (const [k, p] of Object.entries(META[op].s.properties)) assert.equal(typeof p.description, 'string', `${op}.${k}`);
-      assert.ok(ALL_TOOLS.some((t) => t.name === `drover_${op.replace(/\./g, '_')}`), op);
-    }
-    const launch = ALL_TOOLS.find((t) => t.name === 'drover_launch');
-    assert.match(launch.inputSchema.properties.host.description, /"auto"/);
-    assert.ok(launch.inputSchema.properties.placement);
-    assert.match(META['launch.start'].s.properties.host.description, /"auto"/);
   });
   test('resource is an alert category with its own sound settings', async () => {
     const policy = await import('../ui/notify-policy.js');

@@ -8,7 +8,6 @@
 // Run: node --test test/stalls.test.js
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, writeFile, chmod, rm, readFile } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -45,6 +44,7 @@ const launchMod = await import('../core/launch.js');
 const claude = await import('../core/claude.js');
 const api = await import('../core/api.js');
 const codex = await import('../core/codex.js');
+const { hasTmux, startPrivateTmux } = await import('./private-tmux.js');
 after(async () => {
   codex.stopReadClient(); codex.sharedClient().stop();
   for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
@@ -236,21 +236,14 @@ test('launch.start done: checked before anything starts', () => {
 });
 
 // ---------------------------------------------------------------- the real flow
-const hasTmux = spawnSync('tmux', ['-V'], { encoding: 'utf8' }).status === 0;
 describe('real tmux: launches, typed text and replies reach fleet.summary stalls and native.summary', { skip: hasTmux ? false : 'tmux is not installed here' }, () => {
   const SESSION = 'drover-stalls-test';
-  let tdir, env, realTmux, socket;
-  const tmuxCmd = (args) => spawnSync(realTmux, args, { env, encoding: 'utf8' });
+  let server;
   const launched = {};
   before(async () => {
-    realTmux = spawnSync('sh', ['-c', 'command -v tmux'], { encoding: 'utf8' }).stdout.trim();
-    tdir = path.join(dir, 'tmux'); await mkdir(tdir);
-    // A private tmux server first: after() names its socket, so a kill never reaches the user's server.
-    delete process.env.TMUX; delete process.env.TMUX_PANE;
-    process.env.TMUX_TMPDIR = tdir;
-    socket = path.join(tdir, `tmux-${process.getuid()}`, 'default');
-    env = { ...process.env };
-    assert.equal(tmuxCmd(['-f', '/dev/null', 'new-session', '-d', '-s', SESSION, '-x', '120', '-y', '40', 'sleep', '3600']).status, 0);
+    // A private tmux server first (test/private-tmux.js), under this file's temp dir, which the last after() removes.
+    const tdir = path.join(dir, 'tmux'); await mkdir(tdir);
+    server = await startPrivateTmux({ dir: tdir, session: SESSION, sessionArgs: ['-x', '120', '-y', '40'], removeDir: false });
     // A fake Claude Code: registers in the session registry as 2.1.3xx does (pid, session id, tmux pane, status),
     // writes a transcript whose final reply its name picks, and draws the input box, echoing what is typed into it.
     const fake = path.join(bin, 'claude');
@@ -301,7 +294,7 @@ setInterval(() => {}, 1 << 30);
       await new Promise((r) => setTimeout(r, 100));
     }
   });
-  after(() => { if (socket) tmuxCmd(['-S', socket, 'kill-server']); });
+  after(() => server?.stop());
 
   test('a launch with done fixes the session id, and records the text with it', async () => {
     assert.match(launched.typer.sessionId, /^[0-9a-f-]{36}$/);
