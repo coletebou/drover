@@ -60,13 +60,14 @@ test('a credential passed as a flag and a separate value is withheld (--password
   const real = api.local['docker.exec'];
   api.local['docker.exec'] = async () => ({ ok: true });
   const [pw, tok, upw] = ['hun7er2', 'Tk9short', 'pAss42'];
-  try { await api.dispatchCached('docker.exec', { project: 'probe', service: 'web', argv: ['docker', 'login', '--password', pw, '--github-token', tok, 'curl', '-u', `alice:${upw}`, '-u', '1000:1000', '--password-stdin', 'next-arg'] }); }
+  try { await api.dispatchCached('docker.exec', { project: 'probe', service: 'web', argv: ['docker', 'login', '--password', pw, '--github-token', tok, 'curl', '-u', `alice:${upw}`, '-u', '1000:1000', '-u', 'carol:12345678', '--password-stdin', 'next-arg'] }); }
   finally { api.local['docker.exec'] = real; }
   const rec = (await ops()).filter((e) => e.op === 'docker.exec').at(-1);
   for (const s of [pw, tok, upw]) assert.ok(!JSON.stringify(rec).includes(s), `${s} is a flag's value`);
   assert.deepEqual(rec.args.argv.slice(0, 3), ['docker', 'login', '--password']);
   assert.equal(rec.args.argv[8], 'alice:[redacted]', 'the user stays, the password goes');
   assert.equal(rec.args.argv[10], '1000:1000', 'a docker uid:gid after -u is no password');
+  assert.equal(rec.args.argv[12], 'carol:[redacted]', 'an all-digit password is not a uid:gid');
   assert.equal(rec.args.argv.at(-1), 'next-arg', 'a flag that takes no value (--password-stdin) withholds nothing');
 });
 

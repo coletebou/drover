@@ -128,9 +128,10 @@ describe('tools/call', () => {
       { action: 'semantic', query: 'breaker timeout', repo: 'webapp', status: 'open', kind: 'gotcha', limit: 3 },
       { action: 'show', id: 'abcd2345' },
       { action: 'candidates', query: 'session text', session: 's1', limit: 9 },
-      { action: 'add', title: 'T', body: 'B', priority: 2, session: 's1', repo: 'webapp' },
+      { action: 'add', title: 'T', body: 'B', kind: 'gotcha', tags: ['a'], priority: 2, session: 's1', repo: 'webapp' },
       { action: 'edit', id: 'abcd2345', title: 'New', tags: [] },
       { action: 'drop', ids: ['abcd2345'], note: 'obsolete' },
+      { action: 'done', ids: ['r1'], note: 'shipped' },
       { action: 'apply', ops, repo: 'webapp', note: 'reconciled' },
       { action: 'apply', ops, anyRepo: true },
     ]) { const r = await call(a); assert.equal(r.result.isError, false, JSON.stringify(a)); }
@@ -141,9 +142,10 @@ describe('tools/call', () => {
       { op: 'reflections.semantic', args: { query: 'breaker timeout', repo: 'webapp', status: 'open', kind: 'gotcha', limit: 3 } },
       { op: 'reflections.show', args: { id: 'abcd2345' } },
       { op: 'reflections.candidates', args: { query: 'session text', session: 's1', limit: 9 } },
-      { op: 'reflections.add', args: { repo: 'webapp', title: 'T', body: 'B', priority: 2, session: 's1', actor: 'mcp' } },
+      { op: 'reflections.add', args: { repo: 'webapp', title: 'T', body: 'B', kind: 'gotcha', tags: ['a'], priority: 2, session: 's1', actor: 'mcp' } },
       { op: 'reflections.edit', args: { id: 'abcd2345', title: 'New', tags: [], actor: 'mcp' } },
       { op: 'reflections.mark', args: { op: 'drop', ids: ['abcd2345'], note: 'obsolete', actor: 'mcp' } },
+      { op: 'reflections.mark', args: { op: 'done', ids: ['r1'], note: 'shipped', actor: 'mcp' } },
       { op: 'reflections.apply', args: { ops, repo: 'webapp', note: 'reconciled', actor: 'mcp' } },
       { op: 'reflections.apply', args: { ops, anyRepo: true, actor: 'mcp' } },
     ]);

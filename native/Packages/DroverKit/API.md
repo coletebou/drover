@@ -192,10 +192,6 @@ public enum MockServer {
     public static let baseURL: URL                                 // http://drover.mock
     public static func session(overrides: [String: String] = [:]) -> URLSession   // op -> raw JSON body
     public static func client(scope: TokenScope = .main) -> DroverClient              // token "mock-token"
-    public static var summary: NativeSummary { get }               // decoded Fixtures/native-summary.json, for SwiftUI previews
-    public static var notifications: NativeNotifications { get }
-    public static var sessions: SessionList { get }
-    public static var transcript: Transcript { get }
 }
 public final class MockPairingTransport: PairingTransport {     // scripted daemon answers (last repeats), records requests
     public init(_ answers: [Answer])   // .http(status:body:headers:), .unreachable, .hang, .late(answer, after:) (survives a cancel)

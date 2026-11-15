@@ -24,7 +24,7 @@ const version = await import('../core/version.js');
 const api = await import('../core/api.js');
 const remote = await import('../core/remote.js');
 const { UPDATE_HINT } = await import('../core/util.js');
-const { isMutating } = await import('../core/ops-meta.js');
+const { META, isMutating } = await import('../core/ops-meta.js');
 after(async () => { remote.stopAll(); await rm(tmp, { recursive: true, force: true }); });
 
 const WEB = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -200,8 +200,10 @@ describe('fleet.versions', () => {
     const r = await api.front['fleet.versions']({ hosts: ['local', 'stalebox'] });
     assert.equal(r.everywhere, undefined); assert.equal(r.commit, undefined);
     assert.deepEqual(r.hosts.map((h) => [h.state, h.loaded]), [['live', 'e3d5b04aaaa'], ['restart', 'd1a1ec8bbbb']]);
-    // Both are reads and never cached: a cached host.version would hide a restart.
+    // Both are reads and never cached (a cached host.version would hide a restart), and both take a commit: the MCP
+    // schema refuses arguments it does not list.
     for (const op of ['host.version', 'fleet.versions']) {
+      assert.ok(META[op].s.properties.commit, op);
       assert.equal(isMutating(op), false, op);
       assert.equal(api.CACHE_POLICY[op], undefined, `${op} is never cached`);
     }
