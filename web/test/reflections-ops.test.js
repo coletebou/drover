@@ -69,22 +69,19 @@ describe('reflections.semantic', () => {
       await assert.rejects(api.dispatch('reflections.semantic', { query: ' ' }), /query must be a non-empty string/);
     } finally { api.local['search.semantic'] = real; }
   });
-  test('an index that has not finished a reflections pass would answer with nothing: the CLI answers instead', async () => {
+  test('an index that cannot vouch for reflections answers with the CLI instead: no finished reflections pass (it would answer with nothing), or a daemon from before the flag (transcripts back, none passed off as a reflection)', async () => {
     const real = api.local['search.semantic'];
-    api.local['search.semantic'] = async (args) => ({ host: 'laptop', query: args.query, vector: 'ok', notes: [], results: [], reflectionsIndexed: false });
+    const answers = [
+      { host: 'laptop', results: [], reflectionsIndexed: false },
+      { host: 'devbox', results: [{ kind: 'claude', ref: 'uuid-1', sessionId: 's9', title: 'a session', snippet: 'breaker talk', score: 0.03, ts: '2026-10-17T00:00:00Z' }] },
+    ];
     try {
-      const r = await api.dispatch('reflections.semantic', { query: 'breaker' });
-      assert.match(r.notes[0], /^reflections are not indexed on laptop yet; these are the reflections CLI's keyword matches$/);
-      assert.deepEqual(r.items.map((x) => x.id), ['abcd2345']);
-    } finally { api.local['search.semantic'] = real; }
-  });
-  test('a daemon from before reflections were indexed (no flag, transcripts back): the CLI answers, and no transcript is passed off as a reflection', async () => {
-    const real = api.local['search.semantic'];
-    api.local['search.semantic'] = async (args) => ({ host: 'devbox', query: args.query, vector: 'ok', notes: [], results: [{ kind: 'claude', ref: 'uuid-1', sessionId: 's9', title: 'a session', snippet: 'breaker talk', score: 0.03, ts: '2026-10-17T00:00:00Z' }] });
-    try {
-      const r = await api.dispatch('reflections.semantic', { query: 'breaker' });
-      assert.match(r.notes[0], /not indexed on devbox yet/);
-      assert.deepEqual(r.items.map((x) => x.id), ['abcd2345']);
+      for (const a of answers) {
+        api.local['search.semantic'] = async (args) => ({ query: args.query, vector: 'ok', notes: [], ...a });
+        const r = await api.dispatch('reflections.semantic', { query: 'breaker' });
+        assert.equal(r.notes[0], `reflections are not indexed on ${a.host} yet; these are the reflections CLI's keyword matches`, a.host);
+        assert.deepEqual(r.items.map((x) => x.id), ['abcd2345'], a.host);
+      }
     } finally { api.local['search.semantic'] = real; }
   });
   test('an indexed host with no match answers empty, without asking the CLI', async () => {

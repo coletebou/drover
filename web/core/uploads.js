@@ -16,7 +16,7 @@ import { OWNER } from './owner.js';
 
 export const MAX_BYTES = 20 * 1024 * 1024;
 export const ROOT = () => envvar('UPLOADS') ?? path.join(cacheDir(), 'uploads');
-export const _deps = { appendEvent: (ev, opts) => events.append(ev, opts), now: () => Date.now() };
+export const _deps = { appendEvent: (ev, opts) => events.append(ev, opts) };
 
 /** Directory-safe form of a session id or name. */
 export function sessionDir(session) {
@@ -57,7 +57,7 @@ export async function put({ session, name, mime, data, actor = OWNER } = {}) {
   // The session dir must still be inside the uploads root after symlinks.
   const realRoot = await realpath(root); const realDir = await realpath(dir);
   if (realDir !== path.join(realRoot, dirName)) throw new Error('upload directory escapes the uploads root');
-  const stamp = new Date(_deps.now()).toISOString().replace(/[-:]/g, '').replace(/\..+$/, '');
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..+$/, '');
   const file = path.join(realDir, `${stamp}-${safeName(name, mime)}`);
   let final = file; let i = 1;
   while (existsSync(final)) { const ext = path.extname(file); final = `${file.slice(0, -ext.length || undefined)}-${i++}${ext}`; }
