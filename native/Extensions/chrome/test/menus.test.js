@@ -22,9 +22,12 @@ test('menuSpec structure', () => {
   assert.deepEqual(kids[0].contexts, ['page']);
 });
 
-test('menuSpec max cap', () => {
-  const spec = menuSpec(sessions, { max: 2 });
-  assert.equal(spec.filter((p) => p.parentId === MENU.LINK).length, 3);
+test('menuSpec lists at most 8 sessions per parent, then Choose in side panel', () => {
+  const many = Array.from({ length: 10 }, (_, i) => mk(`s${i}`, 'h', `id${i}`));
+  const kids = menuSpec(many).filter((p) => p.parentId === MENU.LINK);
+  assert.equal(kids.length, 9);
+  assert.equal(kids[7].title, 's7 (h)');
+  assert.equal(kids[8].id, 'drover-link|pick');
 });
 
 test('no sessions', () => {

@@ -53,12 +53,13 @@ export function escapeXml(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[c]);
 }
 
-export function suggestionsFor(sessions, text, { max = 5 } = {}) {
+const MAX_SUGGESTIONS = 5;
+export function suggestionsFor(sessions, text) {
   const { query, host, message } = parseInput(text);
   const matches = matchSessions(sessions, { query, host });
   const counts = new Map();
   for (const s of matches) counts.set(lc(s.name), (counts.get(lc(s.name)) ?? 0) + 1);
-  return matches.slice(0, max).map((s) => {
+  return matches.slice(0, MAX_SUGGESTIONS).map((s) => {
     // The content is parsed again when chosen, so it must name exactly this session:
     // a name with spaces (or a duplicate name on the same host) falls back to the id.
     const plain = /^\S+$/.test(s.name) && !s.name.includes('@');

@@ -1,6 +1,7 @@
-// The UX overhaul flows over real HTTP against the fake daemon: a dialog answered with sessions.answer (and
-// refused on a stale hash), a stream that sends only the topics asked for, and the manager's reply assembled
-// from the stream after a wait:false send.
+// The client over real HTTP and a real SSE socket against the fake daemon: the stream's hello and a broadcast, a
+// dialog answered with sessions.answer (and refused on a stale hash), and the manager's reply assembled from the
+// stream after a wait:false send. What each lib does with an answer is proven against a scripted fetch in its own
+// suite; the daemon's side of each route in web/test.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { startFakeDaemon, FAKE_TOKEN } from '../tools/fake-daemon.mjs';
@@ -8,7 +9,7 @@ import { createClient } from '../lib/api.js';
 import { connectStream } from '../lib/sse.js';
 import { normalizeSummary } from '../lib/summary.js';
 import { answerPlan, pressKey } from '../lib/answer.js';
-import { POPUP_TOPICS, routeEvent, honoursTopics } from '../lib/topics.js';
+import { POPUP_TOPICS, routeEvent } from '../lib/topics.js';
 import { managerInit, managerReduce, managerBusy, lastExchange } from '../lib/manager.js';
 
 let daemon;
@@ -21,6 +22,18 @@ async function until(fn, ms = 3000) {
   while (!fn()) { if (Date.now() - t0 > ms) throw new Error('timeout waiting'); await new Promise((r) => setTimeout(r, 5)); }
 }
 
+test('stream: hello then a broadcast event, then close', async () => {
+  const events = []; const states = [];
+  const conn = connectStream({ request: client().streamRequest(), onEvent: (e, d) => events.push([e, d]), onState: (s) => states.push(s) });
+  await until(() => events.some(([e]) => e === 'hello'));
+  daemon.broadcast('mutation', { op: 'sessions.message' });
+  await until(() => events.some(([e]) => e === 'mutation'));
+  assert.deepEqual(events.find(([e]) => e === 'mutation')[1], { op: 'sessions.message' });
+  assert.ok(states.includes('open'));
+  conn.close();
+  assert.equal(states.at(-1), 'closed');
+});
+
 test('a waiting row answers its dialog with sessions.answer and the hash it showed', async () => {
   const s = normalizeSummary(await client().op('native.summary'));
   const build = s.waiting.find((w) => w.name === 'demo-build');
@@ -32,20 +45,6 @@ test('a waiting row answers its dialog with sessions.answer and the hash it show
   // A stale screen is refused, and the refusal is an answer, not an error.
   const stale = await pressKey(client(), { ...build, hash: '0000000000000000' }, '1');
   assert.deepEqual(stale, { ok: false, refused: true, unsupported: false, message: 'Not sent: the screen changed since you read it; read it again.' });
-});
-
-test('the stream sends only the topics asked for, and hello says so', async () => {
-  const got = [];
-  const conn = connectStream({ request: client().streamRequest({ topics: POPUP_TOPICS }), onEvent: (e, d) => got.push([e, d]) });
-  await until(() => got.some(([e]) => e === 'hello'));
-  assert.equal(honoursTopics(got.find(([e]) => e === 'hello')[1]), true);
-  daemon.broadcast('fleet', { hosts: ['a megabyte'] });
-  daemon.broadcast('snapshot', { ts: 1 });
-  daemon.broadcast('summary', { waiting: [], totals: { waiting: 0 } });
-  await until(() => got.some(([e]) => e === 'summary'));
-  assert.deepEqual(got.map(([e]) => e), ['hello', 'summary']);
-  assert.equal(routeEvent('summary', got[1][1], POPUP_TOPICS).kind, 'summary');
-  conn.close();
 });
 
 test('the manager: wait:false answers at once, the stream writes the reply, the turn settles it', async () => {

@@ -41,8 +41,8 @@ test('suggestionsFor shape, escaping, caps', () => {
   const noMsg = suggestionsFor([mk('a', 'h')], 'a')[0];
   assert.equal(noMsg.content, 'a ');
   assert.ok(!noMsg.description.includes('<url>'));
-  assert.equal(suggestionsFor(sessions, '', { max: 2 }).length, 2);
-  assert.equal(suggestionsFor(sessions, '').length, 5);
+  const seven = Array.from({ length: 7 }, (_, i) => mk(`s${i}`, 'h'));
+  assert.deepEqual(suggestionsFor(seven, '').map((x) => x.content), ['s0 ', 's1 ', 's2 ', 's3 ', 's4 ']);
 });
 
 test('duplicate names get @host', () => {

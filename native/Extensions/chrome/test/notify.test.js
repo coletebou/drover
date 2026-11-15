@@ -64,9 +64,6 @@ test('max and overflow keep the most recent', () => {
   const p = planNotifications({ cursor: 'c', seen: [], response: { cursor: 'c2', items }, settings: ALL });
   assert.deepEqual(p.show.map((i) => i.id), ['i4', 'i5', 'i6']);
   assert.equal(p.overflow, 4);
-  const q = planNotifications({ cursor: 'c', seen: [], response: { cursor: 'c2', items }, settings: ALL, max: 5 });
-  assert.equal(q.show.length, 5);
-  assert.equal(q.overflow, 2);
 });
 
 test('seen is capped at 200, dropping oldest', () => {

@@ -27,7 +27,8 @@ export function shouldShow(item, notify) {
   return false;
 }
 
-export function planNotifications({ cursor, seen, response, settings, max = 3 }) {
+const MAX_SHOWN = 3; // alerts per tick; the rest are one overflow alert
+export function planNotifications({ cursor, seen, response, settings }) {
   const items = Array.isArray(response?.items) ? response.items.filter((i) => i && typeof i === 'object' && i.id != null) : [];
   const newCursor = typeof response?.cursor === 'string' && response.cursor ? response.cursor : (cursor ?? null);
   const prev = Array.isArray(seen) ? seen : [];
@@ -36,7 +37,7 @@ export function planNotifications({ cursor, seen, response, settings, max = 3 })
   if (cursor == null) return { cursor: newCursor, seen: nextSeen, show: [], overflow: 0 };
   const seenSet = new Set(prev);
   const candidates = items.filter((i) => !seenSet.has(String(i.id)) && shouldShow(i, settings));
-  const show = candidates.slice(-max);
+  const show = candidates.slice(-MAX_SHOWN);
   return { cursor: newCursor, seen: nextSeen, show, overflow: candidates.length - show.length };
 }
 

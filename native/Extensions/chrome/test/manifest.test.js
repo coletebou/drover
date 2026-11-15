@@ -6,8 +6,6 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const manifest = JSON.parse(readFileSync(join(ROOT, 'manifest.json'), 'utf8'));
-// Written by other slices; checked when present.
-const OPTIONAL_FILES = new Set(['background.js', 'popup.html', 'options.html', 'sidepanel.html']);
 
 test('manifest version 3', () => {
   assert.equal(manifest.manifest_version, 3);
@@ -50,14 +48,8 @@ function referencedFiles() {
 }
 
 test('every file the manifest references exists', () => {
-  const missing = referencedFiles().filter((f) => !existsSync(join(ROOT, f)) && !OPTIONAL_FILES.has(f));
+  const missing = referencedFiles().filter((f) => !existsSync(join(ROOT, f)));
   assert.deepEqual(missing, []);
-});
-
-test('files other slices add are checked when present', () => {
-  for (const f of OPTIONAL_FILES) {
-    if (referencedFiles().includes(f) && existsSync(join(ROOT, f))) assert.ok(readFileSync(join(ROOT, f), 'utf8').length > 0, f);
-  }
 });
 
 test('icons are PNGs of the declared size', () => {

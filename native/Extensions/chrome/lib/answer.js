@@ -7,7 +7,7 @@ export const PRESSABLE = Object.freeze(['Enter', 'Escape', 'Up', 'Down', 'Tab', 
 const PRESS = new Set(PRESSABLE);
 
 /** "Esc" for Escape, the key itself otherwise. */
-export const keyName = (k) => (k === 'Escape' ? 'Esc' : String(k));
+const keyName = (k) => (k === 'Escape' ? 'Esc' : String(k));
 
 /**
  * A button-sized option label; the tooltip keeps the full one. Drops notes and keyboard hints in parentheses,
@@ -51,7 +51,7 @@ export function dialogFields(raw) {
  * could not be checked against: Open and Reply only).
  * @returns {{mode:'keys'|'reply'|'none', question:string|null, buttons:{key:string,title:string,help:string,label:string,selected:boolean,role:string}[]}}
  */
-export function answerPlan(item, { supported = true, maxLabel = 26 } = {}) {
+export function answerPlan(item, { supported = true } = {}) {
   const f = dialogFields(item);
   if (f.answer === 'reply') return { mode: 'reply', question: null, buttons: [] };
   if (!supported || !f.keys?.length || !f.hash) return { mode: 'none', question: null, buttons: [] };
@@ -62,7 +62,7 @@ export function answerPlan(item, { supported = true, maxLabel = 26 } = {}) {
       const o = options.find((x) => String(x.n) === key);
       if (o) {
         const full = o.label.trim();
-        const short = shortLabel(full, maxLabel);
+        const short = shortLabel(full);
         return { key, title: short ? `${key} ${short}` : key, help: full ? `${key}. ${full}` : `Press ${key}`, label: full ? `Answer ${key}, ${full}` : `Answer ${key}`, selected: o.selected, role: 'option' };
       }
       return { key, title: key, help: `Press ${key}`, label: `Answer ${key}`, selected: false, role: 'option' };
