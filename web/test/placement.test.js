@@ -6,9 +6,8 @@ import { test, describe, before, after, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { EventEmitter } from 'node:events';
-import { PassThrough } from 'node:stream';
 import path from 'node:path';
+import { fakePeer } from './fake-peer.js';
 
 const tmp = await mkdtemp(path.join(tmpdir(), 'drover-placement-'));
 const HOME = path.join(tmp, 'home');
@@ -65,26 +64,10 @@ await writeFile(process.env.DROVER_FLEET_CATALOG, JSON.stringify(catalog));
 
 /** Fake `ssh <host> drover rpc` peers: answers[host](op, args) returns a result, or 'ERR:...'; null means the host is down (exit 255). */
 let answers = {};
-const calls = [];
-remote._deps.spawn = (file, argv) => {
-  const host = argv[argv.indexOf('--') - 1];
-  const c = new EventEmitter();
-  c.stdout = new PassThrough(); c.stderr = new PassThrough();
-  c.stdin = {
-    write(d) {
-      for (const line of String(d).split('\n').filter(Boolean)) {
-        const req = JSON.parse(line); calls.push({ host, op: req.op, args: req.args });
-        const fn = answers[host];   // read per request: a test may take a host down while its peer is still open
-        if (!fn) { setImmediate(() => { c.stderr.write(`ssh: connect to host ${host} port 22: Connection timed out\n`); c.emit('close', 255); }); return; }
-        const a = fn(req.op, req.args);
-        setImmediate(() => c.stdout.write(JSON.stringify(typeof a === 'string' && a.startsWith('ERR:') ? { id: req.id, ok: false, error: a.slice(4) } : { id: req.id, ok: true, result: a }) + '\n'));
-      }
-    },
-    end() { setTimeout(() => c.emit('close', 0), 5); }, on() {},
-  };
-  c.kill = () => setImmediate(() => c.emit('close', null));
-  return c;
-};
+const calls = fakePeer(remote, ({ host, op, args }) => {
+  const fn = answers[host];   // read per request: a test may take a host down while its peer is still open
+  return fn ? fn(op, args) : { $exit: 255, stderr: `ssh: connect to host ${host} port 22: Connection timed out\n` };
+}, { closeMs: 5 }).calls;
 /** This machine's own sample: written where the daemon keeps its last one. */
 const setLocal = (s) => writeFile(path.join(process.env.DROVER_STATE, 'vitals.json'), JSON.stringify(s));
 

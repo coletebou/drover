@@ -11,13 +11,12 @@ import { test, describe, before, after, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { EventEmitter } from 'node:events';
-import { PassThrough } from 'node:stream';
 import { mkdtemp, mkdir, writeFile, readFile, chmod, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { inspect } from 'node:util';
+import { fakePeer } from './fake-peer.js';
 
 // Lowercase letters only: no redaction rule knows such a value by its shape, so only the env rules can keep it out.
 const fakeValue = () => Array.from(randomBytes(32), (b) => String.fromCharCode(97 + (b % 26))).join('');
@@ -252,24 +251,7 @@ test('tryRun: an exit code it does not take comes back with the redacted message
 // ---------------------------------------------------------------- relays: a remote host's reply and its stderr
 
 /** A fake `ssh <host> drover rpc` that answers every request with answer(req), or writes stderr and exits. */
-function fakePeer({ answer, stderrThenExit }) {
-  remote._deps.spawn = () => {
-    const c = new EventEmitter();
-    c.stdout = new PassThrough(); c.stderr = new PassThrough();
-    c.stdin = {
-      write(d) {
-        for (const line of String(d).split('\n').filter(Boolean)) {
-          const req = JSON.parse(line);
-          if (answer) setImmediate(() => c.stdout.write(JSON.stringify(answer(req)) + '\n'));
-          else setImmediate(() => { c.stderr.write(stderrThenExit); setImmediate(() => c.emit('close', 1)); });
-        }
-      },
-      end() { setTimeout(() => c.emit('close', 0), 10); }, on() {},
-    };
-    c.kill = () => { setImmediate(() => c.emit('close', null)); };
-    return c;
-  };
-}
+const relayPeer = ({ answer, stderrThenExit }) => fakePeer(remote, ({ req }) => (answer ? { $reply: answer(req) } : { $exit: 1, stderr: stderrThenExit }));
 
 describe('a remote host\'s error reaches the caller with no environment value in it, from a host on an older build too', () => {
   afterEach(() => remote.stopAll());
@@ -279,7 +261,7 @@ describe('a remote host\'s error reaches the caller with no environment value in
 
   test('in its reply', async () => {
     const v = fakeValue();
-    fakePeer({ answer: (req) => ({ id: req.id, ok: false, error: oldError(v) }) });
+    relayPeer({ answer: (req) => ({ id: req.id, ok: false, error: oldError(v) }) });
     const err = await remote.callOn('relay-reply', 'launch.start', {}, null).then(() => null, (e) => e);
     assert.equal(err?.remote, true);
     assert.match(err.message, /-e FAKE_CHILD_CRED=\[redacted\] -n agent exited 1: create window failed: index 1 in use$/);
@@ -288,7 +270,7 @@ describe('a remote host\'s error reaches the caller with no environment value in
 
   test('in the stderr line relayed when its rpc exits', async () => {
     const v = fakeValue();
-    fakePeer({ stderrThenExit: `drover: ${oldError(v)}\n` });
+    relayPeer({ stderrThenExit: `drover: ${oldError(v)}\n` });
     const err = await remote.callOn('relay-stderr', 'launch.start', {}, null).then(() => null, (e) => e);
     assert.match(err?.message ?? '', /^ssh relay-stderr drover rpc exited 1: drover: .*-e FAKE_CHILD_CRED=\[redacted\]/);
     assert.deepEqual(leaks(views(err), [v]), []);
@@ -296,7 +278,7 @@ describe('a remote host\'s error reaches the caller with no environment value in
 
   test('when it prints a value again after the command', async () => {
     const v = fakeValue();
-    fakePeer({ answer: (req) => ({ id: req.id, ok: false, error: `/usr/bin/tmux new-window -t work -e NEUTRAL=${v} -n agent exited 1: rejected ${v}` }) });
+    relayPeer({ answer: (req) => ({ id: req.id, ok: false, error: `/usr/bin/tmux new-window -t work -e NEUTRAL=${v} -n agent exited 1: rejected ${v}` }) });
     const err = await remote.callOn('relay-repeat', 'launch.start', {}, null).then(() => null, (e) => e);
     assert.match(err?.message ?? '', /-e NEUTRAL=\[redacted\] -n agent exited 1: rejected \[redacted\]$/);
     assert.deepEqual(leaks(views(err), [v]), []);
@@ -304,14 +286,14 @@ describe('a remote host\'s error reaches the caller with no environment value in
 
   test('when the value is on one line of its stderr and printed again on the last', async () => {
     const v = fakeValue();
-    fakePeer({ stderrThenExit: `drover: tool -e NEUTRAL=${v} -n w\nrejected ${v}\n` });
+    relayPeer({ stderrThenExit: `drover: tool -e NEUTRAL=${v} -n w\nrejected ${v}\n` });
     const err = await remote.callOn('relay-lines', 'launch.start', {}, null).then(() => null, (e) => e);
     assert.equal(err?.message, 'ssh relay-lines drover rpc exited 1: rejected [redacted]');
   });
 
   test('when the cut lands in the name before a Bearer token, or in its scheme: the incomplete line is not relayed', async () => {
     const v = fakeValue();
-    fakePeer({ stderrThenExit: `drover: -e HEADER=Bearer ${v}${' tail'.repeat(792)}` });
+    relayPeer({ stderrThenExit: `drover: -e HEADER=Bearer ${v}${' tail'.repeat(792)}` });
     const err = await remote.callOn('relay-bearer', 'launch.start', {}, null).then(() => null, (e) => e);
     assert.equal(err?.message, 'ssh relay-bearer drover rpc exited 1: its stderr ended in a line too long to relay');
     assert.deepEqual(leaks(views(err), [v]), []);
@@ -320,13 +302,13 @@ describe('a remote host\'s error reaches the caller with no environment value in
   test('when only the last 4000 characters of its stderr are kept and the cut lands inside a value', async () => {
     // A complete line after the incomplete one is still relayed.
     const w = fakeValue();
-    fakePeer({ stderrThenExit: `drover: -e HEADER=Bearer ${w}${' tail'.repeat(792)}\nlast line\n` });
+    relayPeer({ stderrThenExit: `drover: -e HEADER=Bearer ${w}${' tail'.repeat(792)}\nlast line\n` });
     const err2 = await remote.callOn('relay-cut2', 'launch.start', {}, null).then(() => null, (e) => e);
     assert.equal(err2?.message, 'ssh relay-cut2 drover rpc exited 1: last line');
     assert.deepEqual(leaks(views(err2), [w]), []);
     // The kept part starts with the value's last 10 characters, with no name before them to say what they are.
     const v = fakeValue();
-    fakePeer({ stderrThenExit: `drover: -e NEUTRAL=${v}${' tail'.repeat(798)}` });
+    relayPeer({ stderrThenExit: `drover: -e NEUTRAL=${v}${' tail'.repeat(798)}` });
     const err = await remote.callOn('relay-cut', 'launch.start', {}, null).then(() => null, (e) => e);
     assert.equal(err?.message, 'ssh relay-cut drover rpc exited 1: its stderr ended in a line too long to relay');
     assert.deepEqual(leaks(views(err), [v.slice(-10)]), []);

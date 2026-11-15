@@ -7,13 +7,12 @@
 // lives in a temp dir: HERMES_HOME, Drover's state and events, Claude and Codex homes; nothing here reads ~/.hermes.
 import { test, describe, before, after, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { EventEmitter } from 'node:events';
-import { PassThrough } from 'node:stream';
 import { mkdtemp, mkdir, writeFile, readFile, chmod, rm } from 'node:fs/promises';
 import { chmodSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { makeHome, startFakeHermes, sid } from './fake-hermes.js';
+import { fakePeer } from './fake-peer.js';
 
 const tmp = await mkdtemp(path.join(tmpdir(), 'drover-hermes-'));
 const HOME = path.join(tmp, 'hermes');
@@ -661,29 +660,8 @@ describe('launch.start engine hermes', () => {
   });
 });
 
-/** A fake `ssh <host> drover rpc` (as in launch-effort.test.js): answer(gen, op, args) per request; records them. */
-function fakeRemote(answer) {
-  const spawned = [];
-  remote._deps.spawn = () => {
-    const c = new EventEmitter();
-    c.stdout = new PassThrough(); c.stderr = new PassThrough(); c.requests = [];
-    const gen = spawned.length;
-    c.stdin = {
-      write(d) {
-        for (const line of String(d).split('\n').filter(Boolean)) {
-          const req = JSON.parse(line); c.requests.push(req);
-          const a = answer(gen, req.op, req.args);
-          setImmediate(() => c.stdout.write(JSON.stringify(typeof a === 'string' && a.startsWith('ERR:') ? { id: req.id, ok: false, error: a.slice(4) } : { id: req.id, ok: true, result: a }) + '\n'));
-        }
-      },
-      end() { setTimeout(() => c.emit('close', 0), 10); }, on() {},
-    };
-    c.kill = () => { setImmediate(() => c.emit('close', null)); };
-    spawned.push(c);
-    return c;
-  };
-  return spawned;
-}
+/** A fake `ssh <host> drover rpc` (test/fake-peer.js): generation N answers each request with answer(gen, op, args). */
+const fakeRemote = (answer) => fakePeer(remote, ({ gen, op, args }) => answer(gen, op, args));
 
 describe('a Hermes launch to another host asks that host first', () => {
   afterEach(() => remote.stopAll());

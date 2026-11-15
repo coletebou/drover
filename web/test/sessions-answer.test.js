@@ -4,13 +4,12 @@
 // here reaches the user's tmux, sessions or hosts.
 import { test, describe, before, after, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { EventEmitter } from 'node:events';
-import { PassThrough } from 'node:stream';
 import { mkdtemp, mkdir, writeFile, chmod } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { hasTmux, startPrivateTmux } from './private-tmux.js';
+import { fakePeer } from './fake-peer.js';
 
 const tmp = await mkdtemp(path.join(tmpdir(), 'drover-answer-'));
 process.env.DROVER_CACHE = path.join(tmp, 'cache');
@@ -96,25 +95,12 @@ describe('real tmux: sessions.answer presses one key on the dialog the session s
 /** A fake `ssh oldbox drover rpc` from before sessions.answer: it knows sessions.get and tmux.answer only. */
 function oldPeer() {
   const calls = [];
-  remote._deps.spawn = () => {
-    const c = new EventEmitter();
-    c.stdout = new PassThrough(); c.stderr = new PassThrough();
-    c.stdin = {
-      write(d) {
-        for (const line of String(d).split('\n').filter(Boolean)) {
-          const req = JSON.parse(line);
-          calls.push({ op: req.op, args: req.args });
-          const reply = req.op === 'sessions.get' ? { ok: true, result: req.args.id === 'cx1' ? { engine: 'codex', threadId: 'cx1', tmux: 'work:@8.%1' } : { engine: 'claude', sessionId: 'abc', tmux: 'work:@7.%9' } }
-            : req.op === 'tmux.answer' ? { ok: true, result: { ok: true, key: req.args.key, hash: 'h', dialog: { question: 'Go?', options: [] } } }
-            : { ok: false, error: `unknown op ${req.op}` };
-          setImmediate(() => c.stdout.write(JSON.stringify({ id: req.id, ...reply }) + '\n'));
-        }
-      },
-      end() { setTimeout(() => c.emit('close', 0), 10); }, on() {},
-    };
-    c.kill = () => setImmediate(() => c.emit('close', null));
-    return c;
-  };
+  fakePeer(remote, ({ op, args }) => {
+    calls.push({ op, args });
+    return op === 'sessions.get' ? (args.id === 'cx1' ? { engine: 'codex', threadId: 'cx1', tmux: 'work:@8.%1' } : { engine: 'claude', sessionId: 'abc', tmux: 'work:@7.%9' })
+      : op === 'tmux.answer' ? { ok: true, key: args.key, hash: 'h', dialog: { question: 'Go?', options: [] } }
+      : `ERR:unknown op ${op}`;
+  });
   return calls;
 }
 

@@ -7,9 +7,8 @@ import { test, describe, before, beforeEach, afterEach, after } from 'node:test'
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { EventEmitter } from 'node:events';
-import { PassThrough } from 'node:stream';
 import path from 'node:path';
+import { fakePeer } from './fake-peer.js';
 
 const tmp = await mkdtemp(path.join(tmpdir(), 'drover-remote-search-'));
 process.env.DROVER_CACHE = path.join(tmp, 'cache');
@@ -57,26 +56,10 @@ const realIndex = api.local['search.semantic'];
 
 /** The fake `ssh <host> drover rpc`: every request goes through dispatch, as that host's daemon would run it. */
 function fakeRpcHosts() {
-  remote._deps.spawn = (_bin, argv) => {
-    const host = argv.find((a) => ['boxa', 'acme-dev'].includes(a)) ?? '?';
-    const c = new EventEmitter();
-    c.stdout = new PassThrough(); c.stderr = new PassThrough();
-    const reply = (msg) => c.stdout.write(JSON.stringify(msg) + '\n');
-    c.stdin = {
-      write(d, cb) {
-        for (const line of String(d).split('\n').filter(Boolean)) {
-          const req = JSON.parse(line);
-          rpcCalls.push({ host, op: req.op, args: req.args });
-          Promise.resolve().then(() => api.dispatch(req.op, req.args))
-            .then((r) => reply({ id: req.id, ok: true, result: { ...r, host, results: (r.results ?? []).map((x) => ({ ...x, hash: `${host}:${x.hash}` })) } }), (e) => reply({ id: req.id, ok: false, error: e.message }));
-        }
-        cb?.();
-      },
-      end() { setImmediate(() => c.emit('close', 0)); }, on() {},
-    };
-    c.kill = () => { setImmediate(() => c.emit('close', null)); };
-    return c;
-  };
+  fakePeer(remote, ({ host, op, args }) => {
+    rpcCalls.push({ host, op, args });
+    return api.dispatch(op, args).then((r) => ({ ...r, host, results: (r.results ?? []).map((x) => ({ ...x, hash: `${host}:${x.hash}` })) }));
+  }, { closeMs: 0 });
 }
 
 before(() => {

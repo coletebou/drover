@@ -11,10 +11,9 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, chmod, rm, symlink } from 'node:fs/promises';
 import { existsSync, realpathSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { EventEmitter } from 'node:events';
-import { PassThrough } from 'node:stream';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { fakePeer } from './fake-peer.js';
 
 const dir = await mkdtemp(path.join(tmpdir(), 'droverfx-'));
 process.env.DROVER_PROFILES = path.join(dir, 'profiles.json');
@@ -516,29 +515,8 @@ describe('real tmux: a launch reaches the agent as the exact argv, with no shell
 
 // ---------------------------------------------------------------- version probe: front daemon -> remote host
 
-/** A fake `ssh <host> drover rpc`: generation N answers each request with answer(gen, op, args). Records requests. */
-function fakeRemote(answer) {
-  const spawned = [];
-  remote._deps.spawn = () => {
-    const c = new EventEmitter();
-    c.stdout = new PassThrough(); c.stderr = new PassThrough(); c.requests = [];
-    const gen = spawned.length;
-    c.stdin = {
-      write(d) {
-        for (const line of String(d).split('\n').filter(Boolean)) {
-          const req = JSON.parse(line); c.requests.push(req);
-          const a = answer(gen, req.op, req.args);
-          setImmediate(() => c.stdout.write(JSON.stringify(typeof a === 'string' && a.startsWith('ERR:') ? { id: req.id, ok: false, error: a.slice(4) } : { id: req.id, ok: true, result: a }) + '\n'));
-        }
-      },
-      end() { c.stdinEnded = true; setTimeout(() => c.emit('close', 0), 10); }, on() {},
-    };
-    c.kill = () => { setImmediate(() => c.emit('close', null)); };
-    spawned.push(c);
-    return c;
-  };
-  return spawned;
-}
+/** A fake `ssh <host> drover rpc` (test/fake-peer.js): generation N answers each request with answer(gen, op, args). */
+const fakeRemote = (answer) => fakePeer(remote, ({ gen, op, args }) => answer(gen, op, args));
 const OLD = (op) => (op === 'launch.efforts' ? `ERR:unknown op ${op}` : null);
 
 describe('dispatch(): a launch with an effort to another host asks that host first', () => {

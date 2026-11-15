@@ -4,9 +4,8 @@ import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { EventEmitter } from 'node:events';
-import { PassThrough } from 'node:stream';
 import path from 'node:path';
+import { fakePeer } from './fake-peer.js';
 
 const tmp = await mkdtemp(path.join(tmpdir(), 'drover-remote-'));
 process.env.DROVER_CACHE = path.join(tmp, 'cache');
@@ -32,38 +31,18 @@ async function inFlight(n, host = 'skewbox') {
 }
 
 /**
- * The fake rpc's reply line for answer `a`: 'ERR:<message>' fails the call, { $stale: true, result } is a reply from an
- * rpc whose host's checkout has moved past its code, and anything else is the result.
+ * A fake `ssh … drover rpc` (test/fake-peer.js): answers(generation, op) is a result, 'ERR:<message>', or
+ * { $stale: true, result } (a reply from an rpc whose host's checkout has moved past its code).
  */
-function fakeReply(id, a) {
-  if (typeof a === 'string' && a.startsWith('ERR:')) return { id, ok: false, error: a.slice(4) };
-  if (a?.$stale) return { id, ok: true, result: a.result, stale: true };
-  return { id, ok: true, result: a };
-}
+const fakeSpawn = (answers) => fakePeer(remote, ({ gen, op }) => answers(gen, op), { closeMs: 30 });
 
-/** A fake `ssh … drover rpc`: answers every request with `answer(op)` (an error string or a result). */
-function fakeSpawn(answers) {
-  const spawned = [];
-  remote._deps.spawn = () => {
-    const c = new EventEmitter();
-    c.stdout = new PassThrough(); c.stderr = new PassThrough();
-    const generation = spawned.length;
-    c.stdin = {
-      write(d) {
-        for (const line of String(d).split('\n').filter(Boolean)) {
-          const req = JSON.parse(line);
-          const reply = fakeReply(req.id, answers(generation, req.op));
-          setImmediate(() => c.stdout.write(JSON.stringify(reply) + '\n'));
-        }
-      },
-      end() { c.stdinEnded = true; setTimeout(() => c.emit('close', 0), 30); }, on() {},
-    };
-    c.kill = () => { c.killed = true; setImmediate(() => c.emit('close', null)); };
-    spawned.push(c);
-    return c;
-  };
-  return spawned;
-}
+/**
+ * Generation 0 runs old code: it does not know search.semantic, and its tmux.send answer waits for owed() (a promise:
+ * one that never settles is a hung call). Later generations answer everything. A child closes only when killed,
+ * unless closeMs says otherwise.
+ */
+const retiring = (owed, opts) => fakePeer(remote, ({ gen, op }) => (gen === 0 && op === 'tmux.send' ? owed().then(() => ({ gen, op }))
+  : gen === 0 && op === 'search.semantic' ? `ERR:unknown op ${op}` : { gen, op }), { closeMs: false, ...opts });
 
 test('an "unknown op" from a stale peer restarts it once and the retry gets the new code', async () => {
   let clock = 1_000_000;
@@ -82,26 +61,8 @@ test('a call in flight on the stale child when it is retired still gets its answ
   remote._deps.now = () => 7_000_000_000;
   // Generation 0 holds its tmux.send answer until released and does not know search.semantic;
   // generation 1 knows both. (A timed answer raced the probe on a loaded box.)
-  const spawned = []; const held = [];
-  remote._deps.spawn = () => {
-    const c = new EventEmitter();
-    c.stdout = new PassThrough(); c.stderr = new PassThrough();
-    const gen = spawned.length;
-    c.stdin = {
-      write(d) {
-        for (const line of String(d).split('\n').filter(Boolean)) {
-          const req = JSON.parse(line);
-          const send = (reply) => c.stdout.write(JSON.stringify(reply) + '\n');
-          if (req.op === 'tmux.send' && gen === 0) held.push(() => send({ id: req.id, ok: true, result: { gen, op: req.op } }));
-          else setImmediate(() => send(req.op === 'search.semantic' && gen === 0 ? { id: req.id, ok: false, error: 'unknown op search.semantic' } : { id: req.id, ok: true, result: { gen, op: req.op } }));
-        }
-      },
-      end() { c.stdinEnded = true; setTimeout(() => c.emit('close', 0), 200); }, on() {},
-    };
-    c.kill = () => { c.killed = true; setImmediate(() => c.emit('close', null)); };
-    spawned.push(c);
-    return c;
-  };
+  const held = [];
+  const spawned = retiring(() => new Promise((r) => held.push(r)), { closeMs: 200 });
   const sibling = remote.callOn('skewbox', 'tmux.send', { text: 'hi' }, null, { timeoutMs: 2000 });
   await inFlight(1);
   const probe = remote.callOn('skewbox', 'search.semantic', { query: 'x' }, null, { timeoutMs: 2000 });
@@ -141,29 +102,10 @@ test('other remote errors are passed through without a restart', async () => {
 test('stopAll also stops a retired child that still owes an answer, failing what it owed', async () => {
   remote._deps.now = () => 10_000_000_000_000;
   // Generation 0 never answers tmux.send (hung) and does not know search.semantic; generation 1 knows both.
-  const spawned = [];
-  remote._deps.spawn = () => {
-    const c = new EventEmitter();
-    c.stdout = new PassThrough(); c.stderr = new PassThrough();
-    const gen = spawned.length;
-    c.stdin = {
-      write(d) {
-        for (const line of String(d).split('\n').filter(Boolean)) {
-          const req = JSON.parse(line);
-          if (req.op === 'tmux.send' && gen === 0) continue;
-          const reply = req.op === 'search.semantic' && gen === 0 ? { id: req.id, ok: false, error: 'unknown op search.semantic' } : { id: req.id, ok: true, result: { gen } };
-          setImmediate(() => c.stdout.write(JSON.stringify(reply) + '\n'));
-        }
-      },
-      end() { c.stdinEnded = true; }, on() {},   // stays open: it still owes tmux.send
-    };
-    c.kill = () => { c.killed = true; setImmediate(() => c.emit('close', null)); };
-    spawned.push(c);
-    return c;
-  };
+  const spawned = retiring(() => new Promise(() => {}));
   const owed = remote.callOn('skewbox', 'tmux.send', { text: 'hi' }, null, { timeoutMs: 5000 });
   await inFlight(1);
-  assert.deepEqual(await remote.callOn('skewbox', 'search.semantic', {}, null, { timeoutMs: 2000 }), { gen: 1 }, 'generation 0 was retired');
+  assert.deepEqual(await remote.callOn('skewbox', 'search.semantic', {}, null, { timeoutMs: 2000 }), { gen: 1, op: 'search.semantic' }, 'generation 0 was retired');
   assert.notEqual(spawned[0].stdinEnded, true, 'and still owes tmux.send, so it has no EOF yet');
   remote.stopAll();
   assert.equal(spawned[0].killed, true, 'the retired child is stopped too, not left running');
@@ -176,29 +118,10 @@ test('a retired child that hangs is killed past the last deadline of what it owe
   t.mock.timers.enable({ apis: ['setTimeout'] });   // the owed call is due at 300 s, the kill 30 s after; setImmediate stays real
   remote._deps.now = () => 11_000_000_000_000;
   // Generation 0 never answers tmux.send and never exits; generation 1 knows search.semantic.
-  const spawned = [];
-  remote._deps.spawn = () => {
-    const c = new EventEmitter();
-    c.stdout = new PassThrough(); c.stderr = new PassThrough();
-    const gen = spawned.length;
-    c.stdin = {
-      write(d) {
-        for (const line of String(d).split('\n').filter(Boolean)) {
-          const req = JSON.parse(line);
-          if (req.op === 'tmux.send' && gen === 0) continue;
-          const reply = req.op === 'search.semantic' && gen === 0 ? { id: req.id, ok: false, error: 'unknown op search.semantic' } : { id: req.id, ok: true, result: { gen } };
-          setImmediate(() => c.stdout.write(JSON.stringify(reply) + '\n'));
-        }
-      },
-      end() { c.stdinEnded = true; }, on() {},
-    };
-    c.kill = () => { c.killed = true; setImmediate(() => c.emit('close', null)); };
-    spawned.push(c);
-    return c;
-  };
+  const spawned = retiring(() => new Promise(() => {}));
   const owed = remote.callOn('skewbox', 'tmux.send', { text: 'hi' }, null, { timeoutMs: 300_000 });
   await inFlight(1);
-  assert.deepEqual(await remote.callOn('skewbox', 'search.semantic', {}, null, { timeoutMs: 2000 }), { gen: 1 });
+  assert.deepEqual(await remote.callOn('skewbox', 'search.semantic', {}, null, { timeoutMs: 2000 }), { gen: 1, op: 'search.semantic' });
   t.mock.timers.tick(150_000);
   assert.notEqual(spawned[0].killed, true, 'not at 150 s: it still owes a call due at 300 s');
   t.mock.timers.tick(150_000);
@@ -212,35 +135,17 @@ test('a retired child that hangs is killed past the last deadline of what it owe
 test('the idle reaper leaves a peer alone while a retired child still owes an answer', async () => {
   remote._deps.now = () => 12_000_000_000_000;   // clocks rise through the file: the restart memory is module-wide
   // Generation 0 holds its tmux.send answer until released and does not know search.semantic.
-  const spawned = []; const held = [];
-  remote._deps.spawn = () => {
-    const c = new EventEmitter();
-    c.stdout = new PassThrough(); c.stderr = new PassThrough();
-    const gen = spawned.length;
-    c.stdin = {
-      write(d) {
-        for (const line of String(d).split('\n').filter(Boolean)) {
-          const req = JSON.parse(line);
-          const send = (reply) => c.stdout.write(JSON.stringify(reply) + '\n');
-          if (req.op === 'tmux.send' && gen === 0) held.push(() => send({ id: req.id, ok: true, result: { gen } }));
-          else setImmediate(() => send(req.op === 'search.semantic' && gen === 0 ? { id: req.id, ok: false, error: 'unknown op search.semantic' } : { id: req.id, ok: true, result: { gen } }));
-        }
-      },
-      end() { c.stdinEnded = true; }, on() {},
-    };
-    c.kill = () => { c.killed = true; setImmediate(() => c.emit('close', null)); };
-    spawned.push(c);
-    return c;
-  };
+  const held = [];
+  const spawned = retiring(() => new Promise((r) => held.push(r)));
   const owed = remote.callOn('skewbox', 'tmux.send', { text: 'hi' }, null, { timeoutMs: 5000 });
   await inFlight(1);
-  assert.deepEqual(await remote.callOn('skewbox', 'search.semantic', {}, null, { timeoutMs: 2000 }), { gen: 1 });
+  assert.deepEqual(await remote.callOn('skewbox', 'search.semantic', {}, null, { timeoutMs: 2000 }), { gen: 1, op: 'search.semantic' });
   const later = Date.now() + 11 * 60_000;   // past the idle window for the fresh child
   remote.reapIdle(later);
   assert.notEqual(spawned[0].killed, true, 'not reaped while the retired child owes tmux.send');
   assert.notEqual(spawned[1].killed, true);
   held.shift()();
-  assert.deepEqual(await owed, { gen: 0 });
+  assert.deepEqual(await owed, { gen: 0, op: 'tmux.send' });
   remote.reapIdle(later);
   assert.equal(spawned[1].killed, true, 'reaped once nothing is owed');
   remote.stopAll();
