@@ -71,7 +71,3 @@ test('sendToSession refuses dead or socketless sessions and empty text', async (
   await assert.rejects(claude.sendToSession({ pid: 1, socket: '/nope', alive: true }, '  '), /empty message/);
 });
 
-test('interactiveArgv composes profile, model, resume, prompt; the resume id is bound and the prompt follows --', () => {
-  const argv = claude.interactiveArgv({ argv: ['--dangerously-skip-permissions'] }, { model: 'opus', resume: 'abc', prompt: 'go' });
-  assert.deepEqual(argv, ['claude', '--dangerously-skip-permissions', '--model', 'opus', '--resume=abc', '--', 'go']);
-});

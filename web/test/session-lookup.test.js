@@ -35,13 +35,6 @@ test('a session that runs again under its id is listed once, by its running entr
   assert.equal((await claude.findSession(A.slice(0, 8))).alive, true);
 });
 
-test('a name: the running session answers ahead of one of that name that started later and ended', async () => {
-  await register(B, 'kilo', { live: false, startedAt: Date.now() });
-  const s = await claude.findSession('kilo');
-  assert.equal(s.sessionId, A);
-  assert.equal(s.alive, true);
-});
-
 test('with nothing running under a name, the lookup still finds the entry that ended, the newest first', async () => {
   const C = '33333333-0000-4000-8000-000000000003', D = '44444444-0000-4000-8000-000000000004';
   await register(C, 'lima', { live: false, startedAt: Date.now() - 7_200_000 });

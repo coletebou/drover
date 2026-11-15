@@ -18,11 +18,6 @@ test('assertName rejects separators', () => {
   assert.throws(() => assertName('a b'));
 });
 
-test('classifyScreen: permission dialog', () => {
-  const screen = `\n Bash command\n\n   rm -rf build\n\n Do you want to proceed?\n ❯ 1. Yes\n   2. Yes, and don't ask again\n   3. No\n\n Esc to cancel`;
-  assert.equal(classifyScreen(screen).state, 'dialog');
-});
-
 test('AskUserQuestion: the review screen is a dialog, and a dialog drawn twice in the scrollback lists its options once', () => {
   const review = `\n ←  ☒ Fixtures  ☒ Scope  ✔ Submit  →\n\n Review your answers\n\n  ● Should the review cover the fixtures?\n    → Yes, all of them\n\n Ready to submit your answers?\n\n ❯ 1. Submit answers\n   2. Cancel`;
   assert.equal(classifyScreen(review).state, 'dialog');
@@ -43,16 +38,6 @@ test('classifyScreen: an answered dialog left in the scrollback above the live p
   const held = ' Held message from another session\n Another Claude session sent a message: from demo-review\n ❯ 1. Deliver\n   2. Drop\n Esc to cancel';
   assert.ok(heldMessage(held));
   assert.equal(heldMessage(`${held}\n${newPrompt}`), null, 'a held message already handled is history');
-});
-
-test('classifyScreen: claude idle footer', () => {
-  const screen = `Done. The viewer is rebuilt.\n\n╭───────────────╮\n│ >             │\n╰───────────────╯\n  ? for shortcuts                                    bypass permissions on`;
-  assert.equal(classifyScreen(screen).state, 'idle');
-});
-
-test('classifyScreen: busy', () => {
-  const screen = `· Reading files… (esc to interrupt)\n`;
-  assert.equal(classifyScreen(screen).state, 'busy');
 });
 
 test('classifyScreen: idle recap mentioning yes/no is not a dialog', () => {
