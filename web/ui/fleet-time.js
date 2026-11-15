@@ -4,7 +4,7 @@
 // the host's index (2026-10-19: six hosts at 6.5 s alike while the Mac front sat at load 43).
 
 /** "6.6 s" or "212 ms". */
-export function fmtMs(ms) {
+function fmtMs(ms) {
   const r = Math.round(ms);
   return r >= 1000 ? `${(r / 1000).toFixed(1)} s` : `${r} ms`;
 }

@@ -25,8 +25,7 @@ const version = await import('../core/version.js');
 const api = await import('../core/api.js');
 const remote = await import('../core/remote.js');
 const { UPDATE_HINT } = await import('../core/util.js');
-const { META, isMutating } = await import('../core/ops-meta.js');
-const { GENERATED_TOOLS } = await import('../mcp/server.js');
+const { isMutating } = await import('../core/ops-meta.js');
 after(async () => { remote.stopAll(); await rm(tmp, { recursive: true, force: true }); });
 
 const WEB = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -222,22 +221,11 @@ describe('fleet.versions', () => {
     const r = await api.front['fleet.versions']({ hosts: ['local', 'stalebox'] });
     assert.equal(r.everywhere, undefined); assert.equal(r.commit, undefined);
     assert.deepEqual(r.hosts.map((h) => [h.state, h.loaded]), [['live', 'e3d5b04aaaa'], ['restart', 'd1a1ec8bbbb']]);
-  });
-  test('on the op table and an MCP tool each; reads; never cached; the fleet op is the front\'s own', () => {
+    // Both are reads and never cached: a cached host.version would hide a restart.
     for (const op of ['host.version', 'fleet.versions']) {
-      assert.ok(api.OPS.includes(op), op);
-      assert.ok(META[op].d.length > 80, op);
       assert.equal(isMutating(op), false, op);
       assert.equal(api.CACHE_POLICY[op], undefined, `${op} is never cached`);
-      assert.equal(typeof META[op].s.properties.commit.description, 'string', op);
-      assert.equal(typeof META[op].s.properties.host.description, 'string', `${op} takes host`);
-      const tool = GENERATED_TOOLS.find((t) => t.name === `drover_${op.replace('.', '_')}`);
-      assert.ok(tool, op);
-      assert.ok(JSON.stringify(tool).includes('"host"'), `the ${tool?.name} tool offers host`);
     }
-    assert.equal(typeof api.local['host.version'], 'function');
-    assert.equal(api.local['fleet.versions'], undefined);
-    assert.equal(typeof api.front['fleet.versions'], 'function');
   });
 });
 

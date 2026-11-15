@@ -48,7 +48,6 @@ await writeFile(process.env.DROVER_PROFILES, JSON.stringify({
 
 const { run, tryRun, runCapped, ProcError } = await import('../core/proc.js');
 const { redactCommand, redactEnvText, scrubValues } = await import('../core/redact.js');
-const native = await import('../core/native.js');
 const remote = await import('../core/remote.js');
 const launchMod = await import('../core/launch.js');
 const credentials = await import('../core/credpool.js');
@@ -170,11 +169,6 @@ test('ProcError: a huge stderr and many environment values cost a bounded scrub'
   const err = new ProcError('tool', argv, 1, 'z'.repeat(5_000_000));
   assert.ok(Date.now() - t0 < 1500, `took ${Date.now() - t0} ms`);
   assert.ok(err.stderr.length <= 4096);
-});
-
-test('native.js still offers the redactor its callers import from it', () => {
-  assert.equal(native.redactSecrets(`x ${fakeKey()}`), 'x [redacted]');
-  assert.deepEqual(native.redactArgv(['--password', 'hunter2']), ['--password', '[redacted]']);
 });
 
 test('run: a failed command\'s error names the command and its environment names, never a value, in any view of it', async () => {

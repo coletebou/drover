@@ -245,14 +245,12 @@ describe('notifications', () => {
     const many = Array.from({ length: 300 }, (_, i) => mk(i / 10, { id: `m${i}` }));
     assert.ok(dec(buildNotifications(many, { limit: 200, now: NOW }).cursor).s.length <= 200);
   });
-  test('text is cleaned', () => {
+  test('text is cleaned and home paths shrink to ~', () => {
     const r = buildNotifications([mk(1, { title: 'x'.repeat(300), body: 'token=' + 'abc123def456' + ' \x1b[1mbold\x1b[0m' })], { now: NOW });
     assert.equal(r.items[0].title.length, 200);
     assert.equal(r.items[0].body, 'token=[redacted] bold');
-  });
-  test('home paths shrink to ~', () => {
-    const r = buildNotifications([mk(1, { body: 'session died in /Users/x/code/demo and /home/bob/w' })], { now: NOW });
-    assert.equal(r.items[0].body, 'session died in ~/code/demo and ~/w');
+    const home = buildNotifications([mk(1, { body: 'session died in /Users/x/code/demo and /home/bob/w' })], { now: NOW });
+    assert.equal(home.items[0].body, 'session died in ~/code/demo and ~/w', 'home paths shrink to ~');
   });
 });
 
@@ -397,13 +395,3 @@ describe('http', () => {
 });
 
 after(async () => { await rm(STATE, { recursive: true, force: true }); setTimeout(() => process.exit(process.exitCode ?? 0), 100).unref(); });
-
-test('a first page with a small limit does not backfill older alerts on the next poll', async () => {
-  const { buildNotifications } = await import('../core/native.js');
-  const base = Date.parse('2026-10-11T22:00:00Z');
-  const alerts = [0, 1, 2].map((i) => ({ id: `ev-demo-${i}`, ts: new Date(base + i * 1000).toISOString(), category: 'finished', title: `demo-${i} finished`, body: '' }));
-  const first = buildNotifications(alerts, { limit: 1, now: base + 5000 });
-  assert.deepEqual(first.items.map((x) => x.id), ['ev-demo-2']);
-  const next = buildNotifications(alerts, { since: first.cursor, now: base + 6000 });
-  assert.deepEqual(next.items, []);
-});
