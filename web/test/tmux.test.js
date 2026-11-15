@@ -107,6 +107,23 @@ test('tmuxArg: only a trailing ";" (tmux\'s command separator) is escaped, as "\
   for (const other of [5, undefined, null]) assert.equal(tmuxArg(other), other, 'non-strings pass through untouched');
 });
 
+// A permission dialog and a held peer message as Claude Code draws them (moved here from notify.test.js, whose alerts
+// read them).
+const PERMISSION_DIALOG = ['⏺ Bash(rm -rf build)', '────────────────────────────────', ' Bash command', ' Do you want to proceed?', ' ❯ 1. Yes', '   2. Yes, and don\'t ask again', '   3. No, and tell Claude', 'Esc to cancel'].join('\n');
+test('dialogSummary reads the question and the numbered options of a permission dialog', () => {
+  assert.equal(classifyScreen(PERMISSION_DIALOG).state, 'dialog');
+  const d = dialogSummary(PERMISSION_DIALOG);
+  assert.equal(d.question, 'Do you want to proceed?');
+  assert.deepEqual(d.options.map((o) => o.n), [1, 2, 3]);
+  assert.equal(d.options[0].selected, true);
+});
+
+test('heldMessage finds the peer dialog and its sender', () => {
+  const held = ['Held message from another session', 'Another Claude session sent a message: from webapp-06 [verified pid 4242]', 'Message body (this is what will be delivered):', 'please rebase', '❯ 1. Deliver this message to Claude', '  2. Drop it', 'Esc to cancel'].join('\n');
+  assert.deepEqual(heldMessage(held), { from: 'webapp-06' });
+  assert.equal(heldMessage(PERMISSION_DIALOG), null);
+});
+
 // ---------------------------------------------------------------- real tmux: the list parsers
 // (Pressing a key on a dialog through a real tmux, with the screen-hash guard, is test/sessions-answer.test.js.)
 

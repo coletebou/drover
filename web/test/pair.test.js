@@ -56,14 +56,6 @@ describe('core/pair', () => {
     assert.equal(pair.status(b.requestId, TOKENS).status, 'approved');
   });
 
-  test('the pending list never carries the request id', () => {
-    const r = pair.createRequest({ client: 'Drover for iPhone', device: 'phone', from: '100.64.0.9' });
-    const list = pair.pending();
-    assert.equal(list.length, 1);
-    assert.deepEqual(Object.keys(list[0]).sort(), ['client', 'code', 'createdAt', 'device', 'expiresAt', 'from']);
-    assert.ok(!JSON.stringify(list).includes(r.requestId));
-  });
-
   test('labels are cleaned and bounded; client is required', () => {
     const r = pair.createRequest({ client: 'Drover\u0007 for\nMac x', device: '  laptop  ' });
     assert.deepEqual(pair.pending().map((x) => [x.client, x.device]), [['Drover for Mac x', 'laptop']]);
@@ -139,7 +131,8 @@ describe('HTTP /api/pair', () => {
 
     const list = await (await get('/api/pair/pending', { auth: main })).json();
     assert.deepEqual(list.result.map((x) => [x.code, x.client, x.device]), [[req.code, 'Drover for iPhone', 'phone']]);
-    assert.ok(!JSON.stringify(list).includes(req.requestId));
+    assert.deepEqual(Object.keys(list.result[0]).sort(), ['client', 'code', 'createdAt', 'device', 'expiresAt', 'from']);
+    assert.ok(!JSON.stringify(list).includes(req.requestId), 'the pending list never carries the request id');
 
     const ok = await post('/api/pair/approve', { code: req.code }, { auth: main });
     assert.equal(ok.status, 200);
@@ -196,6 +189,14 @@ describe('HTTP /api/pair', () => {
     const { ALL_TOOLS } = await import('../mcp/server.js');
     assert.ok(!ALL_TOOLS.some((t) => /pair/.test(t.name)));
     assert.equal((await post('/api/op/pair.approve', { code: '123456' }, { auth: main })).status, 400, 'unknown op');
+  });
+
+  test('the ask hub\'s own calls are refused through the HTTP API, even with the main token', async () => {
+    for (const op of ['ask.deliver', 'ask.mark']) {
+      const r = await post(`/api/op/${op}`, { askId: 'x', answers: [{ q: 0, option: 0, text: '' }] }, { auth: main });
+      assert.equal(r.status, 403, op);
+      assert.match((await r.json()).error, /ask hub's own call/);
+    }
   });
 
   test('bot approvals, revocation, tokens and Routines stay off the op table too; their routes need the main token', async () => {

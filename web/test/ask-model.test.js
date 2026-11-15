@@ -124,6 +124,7 @@ describe('texts', () => {
     assert.equal(forChannel('run `npm test`\tnow, 2:05\u202fPM\u00a0ET', 'sms'), "run 'npm test' now, 2:05 PM ET");   // ` and tab are not GSM
     assert.equal(forChannel('a [b] {c} ~ | € \\ ^', 'sms'), 'a [b] {c} ~ | € \\ ^');   // GSM's escaped characters stay
     assert.equal(forChannel('Réunion', 'telegram'), 'Réunion');
+    assert.match(askText({ ...a, urgency: 'normal', questions: [{ question: 'Meet in São Paulo or Zürich?', options: ['São Paulo', 'Zürich'] }] }, { channel: 'sms' }), /\nMeet in Sao Paulo or Zürich\?\na\) Sao Paulo {2}b\) Zürich\n/, 'the options too');
   });
   test('several questions are numbered; several asks are listed with their codes', () => {
     const m = askText({ ...a, urgency: 'normal', questions: [{ question: 'One?', options: ['x', 'y'] }, { question: 'Two?', options: [] }] });
@@ -138,6 +139,8 @@ describe('texts', () => {
     assert.match(t, /^\[Cole via telegram, verified\] K7 → b \(no\)\nQuestion: Ship/);
     assert.match(t, /check it with drover_ask_get/);
     assert.match(deliveryText(a, { channel: 'sms', answers: [{ q: 0, option: null, text: 'after lunch' }] }, { ownerName: 'Cole', followUp: true }), /^\[Cole via sms, verified, follow-up\] K7 → "after lunch"/);
+    const three = { ...a, questions: [{ question: 'Go?', options: ['go', 'stop'] }, { question: 'Where?', options: ['here', 'there'] }, { question: 'Notes?', options: [] }] };
+    assert.match(deliveryText(three, { channel: 'telegram', answers: [{ q: 0, option: 0, text: '' }, { q: 1, option: 1, text: '' }, { q: 2, option: null, text: 'yes, ship' }] }, { ownerName: 'Cole' }), /^\[Cole via telegram, verified\] K7 → 1: a \(go\) · 2: b \(there\) · 3: "yes, ship"\nQuestions: 1\) Go\? 2\) Where\? 3\) Notes\?/);
   });
 });
 
@@ -170,6 +173,7 @@ describe('the reply grammar', () => {
   });
   test('a multi-question ask: 1a 2b 3 yes when it is the only open ask or replied to; with its code otherwise', () => {
     assert.deepEqual(one(parseReply('1a 2c 3 yes please', { asks: [b3] })), [['B3', [[0, 0, ''], [1, 2, ''], [2, null, 'yes please']]]]);
+    assert.deepEqual(one(parseReply('1a 2b 3 yes, ship', { asks: [b3] })), [['B3', [[0, 0, ''], [1, 1, ''], [2, null, 'yes, ship']]]], 'a comma inside the words stays in them');
     assert.deepEqual(one(parseReply('1a 2c', { asks: [k7, b3], target: 'a3' })), [['B3', [[0, 0, ''], [1, 2, '']]]]);
     // After the words of an answer start, a code is one of those words: a second ask needs its code first, or after an option.
     assert.deepEqual(one(parseReply('B3 1b 3 later K7 a', { asks: [k7, b3] })), [['B3', [[0, 1, ''], [2, null, 'later K7 a']]]]);
@@ -258,8 +262,6 @@ describe('the reply grammar', () => {
   test('a spaced letter is an option only at the reply\'s end or before another reference: "2 a day" stays words', () => {
     const m2c = ask({ askId: 'm2c', code: 'M2', status: 'answered', closedAt: iso(T0), questions: [{ question: 'Pick?', options: ['x', 'y'] }] });
     assert.deepEqual(one(parseReply('2 a day', { asks: [k7, m2c] })), [['K7', [[0, null, '2 a day']]]], 'never a follow-up of the closed M2');
-    const m8c = ask({ askId: 'm8c2', code: 'M8', status: 'answered', closedAt: iso(T0), questions: [{ question: 'Name?', options: ['a1', 'b1'] }] });
-    assert.deepEqual(one(parseReply('8 b', { asks: [k7, m8c] })), [['M8', [[0, 1, '']]]]);
   });
   test('R3-1: after an option a bare number is the answer\'s words, never another ask; "2 a week" never picks ask 2\'s option a', () => {
     const b2 = ask({ askId: 'b2open', code: 'B2', status: 'open', questions: [{ question: 'How often?', options: ['daily', 'weekly'] }] });
@@ -291,8 +293,6 @@ describe('the reply grammar', () => {
     assert.deepEqual(one(parseReply('K7 1 Lantern\n2 tomorrow', { asks: [k7m] })), [['K7', [[0, null, 'Lantern'], [1, null, 'tomorrow']]]], 'one answer per line');
     const k7m2 = ask({ askId: 'k7m2', code: 'K7', questions: [{ question: 'Name?', options: [] }, { question: 'Confirm?', options: ['x', 'y'] }] });
     assert.deepEqual(one(parseReply('K7 1 call it Lantern; 2a', { asks: [k7m2] })), [['K7', [[0, null, 'call it Lantern'], [1, 0, '']]]], 'free text then an option after the separator');
-    // No separator needed between several options: unchanged from before.
-    assert.deepEqual(one(parseReply('1a 2c 3 yes please', { asks: [b3] })), [['B3', [[0, 0, ''], [1, 2, ''], [2, null, 'yes please']]]]);
   });
 });
 

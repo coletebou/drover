@@ -98,6 +98,3 @@ export function verifyCall(op, args, sig, keys = trustedKeys()) {
   for (const k of keys) { try { if (edVerify(null, data, k, s)) return fingerprint(k); } catch { /* a malformed signature */ } }
   return null;
 }
-
-/** For tests: forget the key read from disk. */
-export const _reset = () => { cached = null; };

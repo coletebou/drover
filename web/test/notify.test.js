@@ -1,16 +1,16 @@
 // Alerts: the shared policy (ui/notify-policy.js), the transition detector and
 // MR diff (core/notify.js), the Notifier's stamping/dedupe/ring, and the notify
-// ops. No tmux, no daemon: every side effect goes through injected deps.
+// ops. No tmux, no daemon: every side effect goes through injected deps. (The screen
+// parsers the detector reads, core/tmux.js, are proven in tmux.test.js.)
 import { test, describe, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
   DEFAULT_SETTINGS, CATEGORY_IDS, SOUND_IDS, classifyAsk, excerpt, endsWithQuestion, validatePatch, mergeSettings, foldSettings, muteFor, inQuietHours, decide, coalesce, rateLimit, speechFor, tmuxSessionOf, validatePeer,
 } from '../ui/notify-policy.js';
 import { snapshotOf, diffSnapshots, diffMRs, alertFromEvent, Notifier, windowOf, _deps as notifyDeps, ops as notifyOps, notifier } from '../core/notify.js';
-import { heldMessage, dialogSummary, screenHash, classifyScreen } from '../core/tmux.js';
 import { askFromLines } from '../core/claude.js';
 
 const s = (over = {}) => mergeSettings(DEFAULT_SETTINGS, over);
@@ -108,37 +108,6 @@ describe('policy: decisions', () => {
     for (let i = 0; i < 3; i++) h = rateLimit(h, { now: 1000 + i, maxPerMinute: 3 }).history;
     assert.equal(rateLimit(h, { now: 2000, maxPerMinute: 3 }).allowed, false);
     assert.equal(rateLimit(h, { now: 62_000, maxPerMinute: 3 }).allowed, true);
-  });
-});
-
-// ---------------------------------------------------------------- screens
-const DIALOG = [
-  '⏺ Bash(rm -rf build)',
-  '────────────────────────────────',
-  ' Bash command',
-  ' Do you want to proceed?',
-  ' ❯ 1. Yes',
-  '   2. Yes, and don\'t ask again',
-  '   3. No, and tell Claude',
-  'Esc to cancel',
-].join('\n');
-const HELD = ['Held message from another session', 'Another Claude session sent a message: from webapp-06 [verified pid 4242]', 'Message body (this is what will be delivered):', 'please rebase', '❯ 1. Deliver this message to Claude', '  2. Drop it', 'Esc to cancel'].join('\n');
-
-describe('screens', () => {
-  test('dialogSummary reads the question and the numbered options', () => {
-    assert.equal(classifyScreen(DIALOG).state, 'dialog');
-    const d = dialogSummary(DIALOG);
-    assert.equal(d.question, 'Do you want to proceed?');
-    assert.deepEqual(d.options.map((o) => o.n), [1, 2, 3]);
-    assert.equal(d.options[0].selected, true);
-  });
-  test('heldMessage finds the peer dialog and its sender', () => {
-    assert.deepEqual(heldMessage(HELD), { from: 'webapp-06' });
-    assert.equal(heldMessage(DIALOG), null);
-  });
-  test('screenHash changes when the bottom of the screen changes and ignores trailing blanks', () => {
-    assert.equal(screenHash(DIALOG), screenHash(DIALOG + '\n\n   \n'));
-    assert.notEqual(screenHash(DIALOG), screenHash(DIALOG.replace('rm -rf build', 'ls')));
   });
 });
 
@@ -391,11 +360,15 @@ describe('Notifier', () => {
 
 let opsSeq = 0; // ids stay unique across tests, like real WAL ids
 describe('notify ops', () => {
-  beforeEach(() => {
+  // A daemon's ring is written to its state directory: here a temp one, never ~/.local/state/drover.
+  let dir;
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'drover-ring-'));
     Object.assign(notifyDeps, {
       appendEvent: async (ev, opts) => ({ id: `t-${++opsSeq}`, ts: new Date().toISOString(), actor: opts?.actor, ...ev }),
       settings: async () => mergeSettings(DEFAULT_SETTINGS, {}),
       host: () => 'mac', now: () => Date.now(),
+      ringFile: () => path.join(dir, 'notify-ring.json'), daemonFile: () => path.join(dir, 'daemon.json'),
     });
   });
   test('notify.test fires one alert per call and reports the category decision', async () => {
@@ -412,16 +385,31 @@ describe('notify ops', () => {
     assert.equal(b.deduped, true);
     await assert.rejects(() => notifyOps['notify.send']({ title: '' }), /title must be/);
   });
-  test('notify.recent in a daemon serves the ring', async () => {
+  test('notify.recent in a daemon serves the ring, and the daemon writes it down for its rpc and MCP processes', async () => {
     notifier.daemon = true;
-    try { const r = await notifyOps['notify.recent']({ limit: 5 }); assert.equal(r.detector.running, true); assert.ok(r.items.length >= 1); }
-    finally { notifier.daemon = false; }
+    try {
+      const { alert } = await notifyOps['notify.send']({ title: 'served from the ring', actor: 'mcp:ring-test' });
+      const r = await notifyOps['notify.recent']({ limit: 5 });
+      assert.deepEqual([r.detector.running, r.detector.pid], [true, process.pid]);
+      assert.equal(r.items.at(-1).id, alert.id);
+      // Written a moment later (one write for a burst): waited for here, so no write lands in the next test's directory.
+      const ring = notifyDeps.ringFile();
+      let disk = null;
+      for (let i = 0; i < 100 && !disk; i++) { await new Promise((res) => setTimeout(res, 20)); disk = await readFile(ring, 'utf8').then(JSON.parse, () => null); }
+      assert.deepEqual([disk?.pid, disk?.items.at(-1).id], [process.pid, alert.id]);
+    } finally { notifier.daemon = false; }
   });
-  test('notify.recent outside a daemon reads the ring file and reports no detector when absent', async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), 'drover-ring-'));
-    const old = { ringFile: notifyDeps.ringFile, daemonFile: notifyDeps.daemonFile };
-    notifyDeps.ringFile = () => path.join(dir, 'ring.json'); notifyDeps.daemonFile = () => path.join(dir, 'daemon.json');
-    try { const r = await notifyOps['notify.recent']({}); assert.deepEqual(r.items, []); assert.equal(r.detector.running, false); }
-    finally { Object.assign(notifyDeps, old); }
+  test('notify.recent outside a daemon reads the ring file; the detector runs only while the daemon that wrote it lives', async () => {
+    const empty = await notifyOps['notify.recent']({});
+    assert.deepEqual([empty.items, empty.detector.running], [[], false], 'no ring file: nothing, and no detector');
+    const items = [{ id: 'r1', ts: '2026-11-01T00:00:00.000Z', category: 'finished' }, { id: 'r2', ts: '2026-11-02T00:00:00.000Z', category: 'error' }];
+    await writeFile(notifyDeps.ringFile(), JSON.stringify({ host: 'box-b', pid: process.pid, ts: '2026-11-02T00:00:00.000Z', items }));
+    const read = await notifyOps['notify.recent']({});
+    assert.deepEqual([read.items.map((a) => a.id), read.detector.host, read.detector.running], [['r1', 'r2'], 'box-b', false], 'no daemon.json: not running');
+    assert.deepEqual((await notifyOps['notify.recent']({ since: '2026-11-01T12:00:00.000Z' })).items.map((a) => a.id), ['r2']);
+    await writeFile(notifyDeps.daemonFile(), JSON.stringify({ pid: process.pid }));
+    assert.equal((await notifyOps['notify.recent']({})).detector.running, true, 'the daemon that wrote it is alive');
+    await writeFile(notifyDeps.daemonFile(), JSON.stringify({ pid: process.ppid }));
+    assert.equal((await notifyOps['notify.recent']({})).detector.running, false, 'another daemon now: that ring is stale');
   });
 });
