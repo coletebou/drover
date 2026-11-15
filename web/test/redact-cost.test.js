@@ -33,6 +33,14 @@ test('an argv item that names a secret many times costs linear time too (the fla
   assert.deepEqual(redactArgv(['token', 'x', '--tokens', 'y', '--to.ken', 'z']), ['token', 'x', '--tokens', '[redacted]', '--to.ken', 'z']);
 });
 
+test('redactArgv redacts each item in place and the value after a secret-named flag; other items and order kept', () => {
+  const key = ['sk', 'ant', 'api03', 'EXAMPLE0EXAMPLE0EXAMPLE0EXAMPLE0'].join('-');
+  assert.deepEqual(redactArgv(['env', 'TOKEN=abc123', '-e', `KEY=${key}`, '--password', 'hunter2', '--api-key', 'x9', '--verbose', 'ls', key], { hexSafe: true }),
+    ['env', 'TOKEN=[redacted]', '-e', 'KEY=[redacted]', '--password', '[redacted]', '--api-key', '[redacted]', '--verbose', 'ls', '[redacted]']);
+  assert.deepEqual(redactArgv([{ op: 'done' }, 3, 'a']), [{ op: 'done' }, 3, 'a']);
+  assert.equal(redactArgv('not an array'), 'not an array');
+});
+
 test('what is redacted does not change: labelled values, URL userinfo, flags, long keys', () => {
   const cases = [
     // Assembled at runtime, so no literal here looks like a connection string with a password.

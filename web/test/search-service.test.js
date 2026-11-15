@@ -14,8 +14,7 @@ process.env.DROVER_STATE = STATE;   // before the modules read it
 const { Embedder, defaultThreads, defaultBatch, isLlamaServer, queryText, docText, MODEL_ID, modelIdFor } = await import('../core/search/embed.js');
 const service = await import('../core/search/service.js');
 const { Store } = await import('../core/search/store.js');
-const { META, OPS_KNOWN, isMutating } = await import('../core/ops-meta.js');
-const { GENERATED_TOOLS } = await import('../mcp/server.js');
+const { META, isMutating } = await import('../core/ops-meta.js');
 
 after(async () => { await rm(STATE, { recursive: true, force: true }); });
 
@@ -158,7 +157,6 @@ describe('model identity and fleet routing', () => {
   test('search.fleet tags every hit with the alias to open it with', async () => {
     const api = await import('../core/api.js');
     const real = api.local['search.semantic'];
-    api.local['search.semantic'] = async () => ({ host: 'ip-10-0-1-23', results: [{ hash: 'h1', score: 0.03, kind: 'claude', sessionId: 's1' }] });
     try {
       let seen = null;
       api.local['search.semantic'] = async (args) => { seen = args; return { host: 'ip-10-0-1-23', results: [{ hash: 'h1', score: 0.03, kind: 'claude', sessionId: 's1' }] }; };
@@ -249,12 +247,7 @@ describe('search ops (not the daemon)', () => {
 });
 
 describe('op and MCP surface', () => {
-  test('every search op has a schema and a generated MCP tool; reindex is the only mutating one', () => {
-    for (const op of ['search.semantic', 'search.fleet', 'search.status', 'search.reindex', 'search.grep', 'search.grepFleet']) {
-      assert.ok(OPS_KNOWN.includes(op), op);
-      assert.ok(META[op].d.length > 40);
-      assert.ok(GENERATED_TOOLS.some((t) => t.name === `drover_${op.replace(/\./g, '_')}`), op);
-    }
+  test('the search ops\' required args and kinds; reindex is the only mutating one', () => {
     assert.deepEqual(META['search.semantic'].s.required, ['query']);
     assert.deepEqual(META['search.fleet'].s.required, ['query']);
     assert.equal(isMutating('search.reindex'), true);

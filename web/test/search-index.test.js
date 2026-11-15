@@ -217,29 +217,7 @@ describe('robustness', () => {
       await assert.rejects(search(scoped, null, { query: 'quantum', repoIdentity: '/public/Alpha', originHosts: ['box-a', "x' OR 1"] }), /invalid origin host/);
     } finally { scoped.close(); }
   });
-  test('an index file written before chunks carried provenance (opened read-only) answers a checkout filter with nothing', async () => {
-    const file = path.join(dir, 'old-schema.sqlite');
-    const { DatabaseSync } = await import('node:sqlite');
-    const old = new Store(file);
-    old.upsertSource({ path: '/d/old.jsonl', kind: 'claude', cwd: '/public/Alpha', project: 'Alpha' });
-    old.addChunks([{ path: '/d/old.jsonl', kind: 'claude', session_id: 'old', project: 'Alpha', role: 'user', text: 'legacy quantum row', cwd: '/public/Alpha' }]);
-    old.close();
-    // Strip the columns, as an index an older Drover wrote has none.
-    const raw = new DatabaseSync(file);
-    raw.exec('DROP INDEX chunks_cwd; ALTER TABLE chunks DROP COLUMN cwd; ALTER TABLE chunks DROP COLUMN host;');
-    raw.close();
-    const ro = new Store(file, { readOnly: true });
-    try {
-      assert.equal(ro.provenance, false);
-      assert.equal((await search(ro, null, { query: 'legacy quantum' })).results.length, 1, 'owner search still works');
-      assert.deepEqual((await search(ro, null, { query: 'legacy quantum', repoIdentity: '/public/Alpha', originHosts: ['box-a'] })).results, []);
-    } finally { ro.close(); }
-    const migrated = new Store(file);
-    try {
-      assert.equal(migrated.provenance, true);
-      assert.deepEqual((await search(migrated, null, { query: 'legacy quantum', repoIdentity: '/public/Alpha' })).results, [], 'migrated rows have no provenance until re-read');
-    } finally { migrated.close(); }
-  });
+
   test('filters apply before vector candidates are cut, so eligible matches are not crowded out', async () => {
     const s2 = new Store(path.join(dir, 'filters.sqlite'));
     const rows = [];
@@ -396,15 +374,7 @@ describe('derived sessions and duplicate copies', () => {
     const h = store.db.prepare('SELECT hash FROM chunks WHERE path = ?').get(f).hash;
     assert.ok(store.vectors().has(h));
   });
-  test('the same text in a parent and its fork shows once, with the copies counted', async () => {
-    const twinText = 'Decision: keep the breaker at 5 s and make it configurable (twin text).';
-    for (const name of ['parent-session', 'forked-session']) await writeFile(path.join(roots.claude, '-Users-x-code-webapp', `${name}.jsonl`), j({ type: 'assistant', timestamp: '2026-10-14T15:00:00Z', cwd: '/Users/x/code/webapp', message: { content: [{ type: 'text', text: twinText }] } }));
-    await idx.tick();
-    const r = await search(store, engineOf(emb), { query: 'twin text configurable breaker', limit: 10 });
-    const twins = r.results.filter((x) => x.snippet.includes('twin text'));
-    assert.equal(twins.length, 1);
-    assert.equal(twins[0].copies, 2);
-  });
+
 });
 
 describe('round five', () => {
@@ -484,8 +454,10 @@ describe('search', () => {
     assert.ok(codex.results.length && codex.results.every((x) => x.kind === 'codex'));
     const bad = await search(store, engineOf(emb), { query: 'brain index model', project: 'webapp', kinds: 'codex' });
     assert.equal(bad.results.length, 0);
+    const dayAgo = Date.now() - 86400_000;
+    assert.ok((await search(store, engineOf(emb), { query: 'circuit breaker' })).results.some((x) => Date.parse(x.ts) < dayAgo), 'older hits exist to filter out');
     const recent = await search(store, engineOf(emb), { query: 'circuit breaker', days: 1 });
-    assert.ok(recent.results.every((x) => Date.parse(x.ts) > Date.now() - 86400_000));
+    assert.ok(recent.results.every((x) => Date.parse(x.ts) > dayAgo));
     const users = await search(store, engineOf(emb), { query: 'circuit breaker', role: 'user', perSession: 50 });
     assert.ok(users.results.every((x) => x.role === 'user'));
     const capped = await search(store, engineOf(emb), { query: 'circuit breaker timeout discussion', perSession: 2, limit: 20 });

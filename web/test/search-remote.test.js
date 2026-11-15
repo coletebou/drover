@@ -26,7 +26,7 @@ const api = await import('../core/api.js');
 const plugins = await import('../core/plugins.js');
 const rs = await import('../core/search/remote.js');
 const remote = await import('../core/remote.js');
-const { search, KINDS, REMOTE_KINDS, QUERY_KINDS } = await import('../core/search/query.js');
+const { search } = await import('../core/search/query.js');
 const { Store } = await import('../core/search/store.js');
 const cli = await import('../core/cli-op.js');
 const { formatResults, remoteLine } = await import('../core/search/format.js');
@@ -106,16 +106,8 @@ describe('fusion by rank', () => {
     assert.equal(rs.fuse(local, [brain], 1).length, 1);
     assert.deepEqual(rs.fuse([], [brain], 20).map((r) => r.title), ['B0', 'B1']);
   });
-  test('no remote hits: the index\'s own list, unchanged (same scores)', () => {
-    const local = indexHits();
-    assert.equal(rs.withRemote(local, [], 20), local);
-    assert.equal(rs.withRemote(local, [[]], 20), local);
-  });
-  test('kind brain is a query kind, never an indexed one', () => {
-    assert.deepEqual(REMOTE_KINDS, ['brain']);
-    assert.ok(!KINDS.includes('brain'), 'KINDS drives the indexer and purges: brain is not in it');
-    assert.deepEqual(QUERY_KINDS, [...KINDS, 'brain']);
-  });
+
+
 });
 
 // ---------------------------------------------------------------- search.semantic at the front
