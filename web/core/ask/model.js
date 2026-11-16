@@ -11,12 +11,15 @@
 //   cancelled  the asker withdrew it; expired: nobody answered in time
 //   inbound    a reply that was not taken as an answer (unverified sender, no matching ask): untrusted
 //   control    the owner's own commands: pause asks for a while, stop, resume
+//   page       a heads-up for the owner that is not a question: a bot needs them or is blocked, or raised an urgent
+//              alert (pageId, source, key, title, body, urgent); or withdraw: true, which drops the source's pages
+//              not texted yet (the bot moved on). Texted by the hub like an ask (kind page), never answered.
 import { OWNER_NAME } from '../owner.js';
 
-export const PHASES = ['created', 'routed', 'sent', 'answered', 'delivered', 'cancelled', 'expired', 'inbound', 'control'];
+export const PHASES = ['created', 'routed', 'sent', 'answered', 'delivered', 'cancelled', 'expired', 'inbound', 'control', 'page'];
 export const CHANNELS = ['telegram', 'imessage', 'sms'];
 export const URGENCY = ['normal', 'urgent'];
-export const SEND_KINDS = ['ask', 'batch', 'reminder', 'escalation', 'ack', 'notice'];
+export const SEND_KINDS = ['ask', 'batch', 'reminder', 'escalation', 'ack', 'notice', 'page'];
 // optin: the owner's START/UNSTOP by SMS, the carrier's opt-in (SMS back in rotation; no pause or stop of Drover's lifted).
 export const CONTROL = ['pause', 'resume', 'stop', 'optin'];
 export const TERMINAL = new Set(['answered', 'cancelled', 'expired']);
@@ -70,7 +73,7 @@ export function normalizeQuestions({ question, options, questions } = {}) {
 /** The ask event's own rules (core/events.js validateEvent calls this for type ask). Throws on bad input. */
 export function validateAskEvent(ev) {
   if (!PHASES.includes(ev.phase)) throw new Error(`ask.phase must be one of ${PHASES.join(', ')}`);
-  const needsId = !['inbound', 'control'].includes(ev.phase) && !(ev.phase === 'sent' && Array.isArray(ev.askIds));
+  const needsId = !['inbound', 'control', 'page'].includes(ev.phase) && !(ev.phase === 'sent' && Array.isArray(ev.askIds));
   if (needsId && (!isStr(ev.askId) || !ev.askId)) throw new Error(`ask ${ev.phase} needs askId`);
   switch (ev.phase) {
     case 'created':
@@ -96,6 +99,13 @@ export function validateAskEvent(ev) {
       break;
     case 'control':
       if (!CONTROL.includes(ev.command)) throw new Error(`ask control command must be one of ${CONTROL.join(', ')}`);
+      break;
+    case 'page':
+      if (!isStr(ev.source) || !ev.source) throw new Error('ask page needs a source');
+      if (ev.withdraw === true) break;
+      if (!isStr(ev.pageId) || !ev.pageId) throw new Error('ask page needs pageId');
+      if (!isStr(ev.key) || !ev.key) throw new Error('ask page needs key');
+      if (!isStr(ev.title) || !ev.title.trim()) throw new Error('ask page needs a title');
       break;
     default: break;
   }
@@ -126,6 +136,9 @@ export function foldAsks(events = []) {
   const sends = [];
   const controls = [];
   const handled = new Set();   // provider message ids already read (answers, commands, replies that answered nothing)
+  const pages = new Map();     // pageId -> page (heads-ups for the owner, not questions)
+  const pageSends = [];        // sent events of kind page, applied after the loop (the fold is order-tolerant)
+  const withdrawals = [];      // { source, ts }: that source's pages not texted by then are dropped
   const get = (id) => { let a = asks.get(id); if (!a) { a = blank(id); asks.set(id, a); } return a; };
   for (const e of events) {
     if (e?.type !== 'ask') continue;
@@ -144,6 +157,7 @@ export function foldAsks(events = []) {
       }
       case 'sent': {
         sends.push(e);
+        if (e.kind === 'page') pageSends.push(e);
         for (const id of e.askIds ?? [e.askId]) if (id) get(id).sends.push({ ts: e.ts, channel: e.channel, kind: e.kind, ok: e.ok !== false, providerId: e.providerId ?? null, error: e.error ?? null, messageIds: e.messageIds ?? null });
         break;
       }
@@ -172,12 +186,26 @@ export function foldAsks(events = []) {
       }
       case 'inbound': if (e.askId) get(e.askId).inbound.push({ ts: e.ts, channel: e.channel, sender: e.sender ?? null, untrusted: e.untrusted, reason: e.reason ?? null }); break;
       case 'control': controls.push(e); break;
+      case 'page': {
+        if (e.withdraw === true) { withdrawals.push({ source: e.source, ts: e.ts }); break; }
+        if (!pages.has(e.pageId)) pages.set(e.pageId, { pageId: e.pageId, source: e.source, key: e.key, title: e.title, body: e.body ?? '', urgent: e.urgent === true, ts: e.ts, sentAt: null, withdrawnAt: null, failures: [] });
+        break;
+      }
       default: break;
     }
   }
+  for (const e of pageSends) {
+    for (const id of e.pageIds ?? []) {
+      const p = pages.get(id);
+      if (!p) continue;
+      if (e.ok !== false) { if (!p.sentAt || e.ts < p.sentAt) p.sentAt = e.ts; } else p.failures.push(e.ts);
+    }
+  }
+  for (const w of withdrawals) for (const p of pages.values()) if (p.source === w.source && !p.sentAt && p.ts <= w.ts && !p.withdrawnAt) p.withdrawnAt = w.ts;
+  for (const p of pages.values()) p.failures.sort();
   // An ask the fold only heard about through sends or inbound replies has no question: not an ask to show.
   for (const [id, a] of asks) if (!a.questions.length) asks.delete(id);
-  return { asks, sends, controls, handled };
+  return { asks, sends, controls, handled, pages };
 }
 
 /** The number in a code (K7 -> 7), or null. */
@@ -300,3 +328,16 @@ export function closedText(a, why) {
 }
 
 export { clip, oneLine, letter };
+
+/**
+ * One text for the owner's pending pages (heads-ups, not questions): one line each, newest last, cut to fit the
+ * smallest channel. Never carries a code: nothing in it is answered.
+ */
+export function pageText(pages, { channel = 'sms' } = {}) {   // the channel's form (GSM for SMS) is applied as it is sent
+  const head = `Drover: ${pages.length > 1 ? `${pages.length} updates\n` : ''}`;
+  const foot = '\n(No reply needed. Reply pause asks 2h or stop to quiet texts.)';
+  const limit = (TEXT_LIMITS[channel] ?? 1600) - head.length - foot.length;
+  const lines = pages.map((p) => clip(oneLine(`${p.urgent ? 'URGENT ' : ''}${p.title}${p.body ? `: ${p.body}` : ''}`), pages.length > 1 ? 300 : 900));
+  const body = clip(lines.length > 1 ? lines.map((l) => `- ${l}`).join('\n') : lines[0] ?? '', limit);
+  return `${head}${body}${foot}`;
+}

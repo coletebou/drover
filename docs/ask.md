@@ -22,7 +22,7 @@ CANCEL, QUIT, STOPALL, UNSUBSCRIBE) are a stop, never an answer: the carrier blo
 
 One event type, `ask`, with a `phase`: `created` (on the asking host), `routed` (the hub's code, with a copy of the ask),
 `sent`, `answered`, `delivered`, `cancelled`, `expired`, `inbound` (a reply that answered nothing), `control` (the
-owner's pause, stop, resume, and an SMS opt-in). The fold is order-tolerant (dotsync merges the asking host's file with
+owner's pause, stop, resume, and an SMS opt-in), `page` (a heads-up, below). The fold is order-tolerant (dotsync merges the asking host's file with
 the hub's): the first answer, cancel or expiry wins, later replies are follow-ups (so is the part of a reply that
 answers a question already answered: the session gets it labelled, the first answer standing), one provider message
 counts once. `events.append`
@@ -40,6 +40,25 @@ refuses `type: ask`.
   escalate to the next channel after 5 minutes unanswered; nothing skips `stop`. One reminder before expiry; at expiry
   the session is told. A delivery or expiry notice the asking host could not take is retried (2 min backoff, doubling
   to 30) until it lands or the session is gone for good.
+
+## Pages: heads-ups that are not questions
+
+A Grok bot's `needs-owner` or `blocked` status (`drover_status`), and its urgent alert (`drover_notify_owner` with
+`urgent: true`), also text the owner through the hub, besides the alert on their screens. A page is recorded as
+`ask` phase `page` (`pageId`, `source` the bot, `key`, `title`, `body`, `urgent`) and texted as kind `page`; it carries
+no code and nothing answers it. The ask rules apply: quiet hours and a pause hold a normal page (it goes out with the
+next pages that may), the hourly limit (`DROVER_ASK_RATE`) counts pages and asks together, urgent skips all but a stop.
+On top:
+
+- the same key (bot, state, summary; or bot, alert title and body) inside `DROVER_ASK_PAGE_COOLDOWN_MINUTES` (60) is the
+  same page, never texted twice;
+- one text per bot per `DROVER_ASK_PAGE_GAP_MINUTES` (10): a newer status waits, and only a bot's newest page goes;
+- a status that needs nobody (`working`, `idle`, `done`) withdraws that bot's pages not texted yet;
+- a page not texted within `DROVER_ASK_PAGE_STALE_HOURS` (12) is dropped, not sent late;
+- channels `DROVER_ASK_PAGE_CHANNELS` (default `sms`), failing over in that order; `DROVER_ASK_PAGES=off` turns pages
+  off. A bot the owner muted in Drover's settings (needs-you alerts) is not texted either.
+
+Pages are made only on the hub, where the bot gateway runs; elsewhere the screen alert alone goes out.
 
 ## Channels (each: send, verify inbound, health)
 

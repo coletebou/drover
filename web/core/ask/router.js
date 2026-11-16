@@ -15,7 +15,8 @@
 //
 // One in-process mutex orders every change (a tick, a reply, a create, a cancel), so an ask is never coded, sent or
 // answered twice by this daemon. Network pulls run outside it.
-import { foldAsks, normalizeQuestions, nextCode, askText, batchText, answerWords, whoLabel, forChannel, clip, oneLine, TERMINAL, TEXT_LIMITS } from './model.js';
+import { foldAsks, normalizeQuestions, nextCode, askText, batchText, answerWords, whoLabel, forChannel, clip, oneLine, pageText, TERMINAL, TEXT_LIMITS } from './model.js';
+import { uuidv7 } from '../ids.js';
 import { parseReply } from './parse.js';
 import { readConfig, mayText, channelOrder, reminderAt, pauseState, rateState } from './policy.js';
 import * as hubkey from './hubkey.js';
@@ -154,20 +155,20 @@ export class Router {
   }
 
   /** One text on one channel for these asks; records it either way. */
-  async sendOn(channel, asks, { kind = 'ask', text = null } = {}) {
+  async sendOn(channel, asks, { kind = 'ask', text = null, extra = null } = {}) {
     const adapter = _deps.channels[channel];
     // Every text goes through the channel's form (SMS: the GSM alphabet when the text fits it), acknowledgements and notices included.
     const body = text !== null ? forChannel(text, channel) : (kind === 'reminder' || kind === 'escalation' ? askText(asks[0], { channel, reminder: kind === 'reminder', escalation: kind === 'escalation' }) : asks.length > 1 ? batchText(asks, { channel }) : askText(asks[0], { channel }));
     try {
-      const r = await adapter.send({ text: body, asks: kind === 'ack' || kind === 'notice' ? [] : asks }, { env: _deps.env });
-      await _deps.append({ type: 'ask', phase: 'sent', askIds: asks.map((a) => a.askId), ...(asks.length === 1 ? { askId: asks[0].askId } : {}), channel, kind, ok: true, providerId: r.providerId ?? null, messageIds: r.messageIds ?? [], text: clip(body, 1500) });
+      const r = await adapter.send({ text: body, asks: kind === 'ack' || kind === 'notice' || kind === 'page' ? [] : asks }, { env: _deps.env });
+      await _deps.append({ type: 'ask', phase: 'sent', askIds: asks.map((a) => a.askId), ...(asks.length === 1 ? { askId: asks[0].askId } : {}), ...(extra ?? {}), channel, kind, ok: true, providerId: r.providerId ?? null, messageIds: r.messageIds ?? [], text: clip(body, 1500) });
       this.tickSends.push({ ts: new Date(_deps.now()).toISOString(), kind, ok: true });
       return { ok: true, providerId: r.providerId };
     } catch (e) {
       _deps.log(`send ${channel} failed`, e.message);
       // Twilio 21610: the owner texted STOP, and the carrier opt-out blocks every text until they text START.
       if (channel === 'sms' && Number(e.code) === 21610) this.disabled.set('sms', 'the owner texted STOP to the SMS number: Twilio sends nothing until they text START');
-      await _deps.append({ type: 'ask', phase: 'sent', askIds: asks.map((a) => a.askId), ...(asks.length === 1 ? { askId: asks[0].askId } : {}), channel, kind, ok: false, error: clip(e.message, 300) });
+      await _deps.append({ type: 'ask', phase: 'sent', askIds: asks.map((a) => a.askId), ...(asks.length === 1 ? { askId: asks[0].askId } : {}), ...(extra ?? {}), channel, kind, ok: false, error: clip(e.message, 300) });
       return { ok: false, error: e.message };
     }
   }
@@ -290,6 +291,9 @@ export class Router {
         }
       }
     }
+    // Pages (heads-ups, not questions) that may go now.
+    const paged = await this.#sendPages();
+    if (paged.sent.length) report.paged = paged.sent;
     // 3. answers recorded here that did not reach the asking host yet, and expiry notices that did not (sent after the
     // lock is let go).
     report.redeliver = [];
@@ -506,6 +510,86 @@ export class Router {
       if (!t) return null;
       return { code: t.code, ...(await this.textOut([t])) };
     });
+  }
+
+  // ------------------------------------------------------------ pages
+  /**
+   * A heads-up for the owner that is not a question (a bot needs them or is blocked, or its urgent alert). Recorded,
+   * then texted under the ask rules: quiet hours, a pause and the hourly limit hold a normal one (sent with the next
+   * pages that may go), urgent skips them, nothing skips a stop. The same key within the cooldown is the same page.
+   * source: who it is about (a bot's id); key: what makes two pages the same (source, state, summary).
+   */
+  page({ source, key, title, body = '', urgent = false }) {
+    return this.exclusive(async () => {
+      const cfg = this.config();
+      if (!cfg.pages) return { skipped: 'pages are off (DROVER_ASK_PAGES)' };
+      const st = await this.state();
+      const now = _deps.now();
+      const k = String(key ?? '').slice(0, 300);
+      const same = [...st.pages.values()].find((p) => p.key === k && !p.withdrawnAt && now - Date.parse(p.ts) < cfg.pageCooldownMs);
+      if (same) return { deduped: true, pageId: same.pageId, sentAt: same.sentAt };
+      const pageId = uuidv7();
+      await _deps.append({ type: 'ask', phase: 'page', pageId, source: String(source).slice(0, 120), key: k, title: clip(oneLine(title), 200), body: clip(oneLine(body), 600), urgent: urgent === true });
+      const r = await this.#sendPages();
+      return { pageId, sent: r.sent.some((x) => x.pageIds.includes(pageId)), held: r.held.find((x) => x.pageId === pageId) ?? null };
+    });
+  }
+
+  /** The source moved on (a status that needs nobody): its pages not texted yet are dropped. */
+  withdrawPages(source) {
+    return this.exclusive(async () => {
+      const st = await this.state();
+      const pending = [...st.pages.values()].some((p) => p.source === source && !p.sentAt && !p.withdrawnAt);
+      if (!pending) return { withdrawn: 0 };
+      await _deps.append({ type: 'ask', phase: 'page', source: String(source).slice(0, 120), withdraw: true });
+      return { withdrawn: [...st.pages.values()].filter((p) => p.source === source && !p.sentAt && !p.withdrawnAt).length };
+    });
+  }
+
+  /** Text the pages that may go now, together in one text per urgency (called with the lock held). */
+  async #sendPages() {
+    const cfg = this.config();
+    const st = await this.state();
+    const now = _deps.now();
+    const out = { sent: [], held: [] };
+    if (!cfg.pages) return out;
+    const all = [...st.pages.values()];
+    const pending = all.filter((p) => !p.sentAt && !p.withdrawnAt && now - Date.parse(p.ts) < cfg.pageStaleMs && retryDue(p.failures.length, p.failures.at(-1), now));
+    if (!pending.length) return out;
+    const usable = this.usable(cfg);
+    const chans = cfg.pageChannels.filter((c) => usable.includes(c));
+    // One text per source per gap: the source's last texted page holds the next one back until then.
+    const lastSent = new Map();
+    for (const p of all) if (p.sentAt) lastSent.set(p.source, Math.max(lastSent.get(p.source) ?? 0, Date.parse(p.sentAt)));
+    const unlimited = { ...cfg, ratePerHour: Infinity };
+    const go = { urgent: [], normal: [] };
+    for (const p of pending.sort((a, b) => (a.ts < b.ts ? -1 : 1))) {
+      const may = mayText({ urgency: p.urgent ? 'urgent' : 'normal' }, { now, config: unlimited, sends: [], controls: st.controls });
+      if (!may.send) { out.held.push({ pageId: p.pageId, why: may.why, until: may.until }); continue; }
+      const gapEnds = (lastSent.get(p.source) ?? -Infinity) + cfg.pageGapMs;
+      if (gapEnds > now) { out.held.push({ pageId: p.pageId, why: 'one text per source per gap', until: gapEnds }); continue; }
+      if (!chans.length) { out.held.push({ pageId: p.pageId, why: 'no page channel is configured on the hub', until: null }); continue; }
+      go[p.urgent ? 'urgent' : 'normal'].push(p);
+    }
+    for (const [kind, group] of Object.entries(go)) {
+      if (!group.length) continue;
+      // Several pages of one source in one batch: only its newest goes, the board has the rest.
+      const bySource = new Map();
+      for (const p of group) bySource.set(p.source, p);
+      const pages = [...bySource.values()];
+      const covered = group.map((p) => p.pageId);
+      if (kind === 'normal') {
+        const rate = rateState(this.sendsSoFar(st), now, cfg);
+        if (!rate.allowed) { for (const p of group) out.held.push({ pageId: p.pageId, why: 'rate limit', until: rate.nextAt }); continue; }
+      }
+      let done = false;
+      for (const ch of chans.filter((c) => !this.disabled.has(c))) {
+        const r = await this.sendOn(ch, [], { kind: 'page', text: pageText(pages, { channel: ch }), extra: { pageIds: covered } });
+        if (r.ok) { out.sent.push({ channel: ch, pageIds: covered }); done = true; break; }
+      }
+      if (!done) for (const p of group) out.held.push({ pageId: p.pageId, why: 'every channel failed', until: now + RETRY_MS });
+    }
+    return out;
   }
 
   // ------------------------------------------------------------ withdrawals
