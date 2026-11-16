@@ -158,6 +158,8 @@ destructive and fleet-wide; decide it separately, after the growth is fixed.
 
 ## Related
 
-- `claude/apx-events.jsonl` (3.1 MB legacy twin) is already due for deletion around
-  2026-11-15 (`syncLegacyEvents`).
+- `claude/apx-events.jsonl` (3.1 MB legacy twin) was due for deletion around
+  2026-11-15 (`syncLegacyEvents`). That date has passed and the import still runs;
+  the file is removed by hand when the apxw shim goes (`web/README.md`,
+  "Renamed from apx-web").
 - `docs/agent-memory.md` says "~21k events in two weeks"; it is now ~62k in 23 days.

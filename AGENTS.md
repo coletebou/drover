@@ -84,10 +84,16 @@ are made from it).
 - The Claude Code message-injection path (`~/.claude/sessions/<pid>.json`, `/tmp/cc-socks/<pid>.sock`) is
   version-pinned behavior verified on Claude Code 2.1.296 (`web/README.md`, "How it talks to agents") — a
   Claude Code update can silently change the socket protocol.
-- The repo was renamed from apx-web (CLI `apxw`) on 2026-10-15; the compatibility shim (`apxw` symlink,
-  `APXW_*` env fallbacks, importing `claude/apx-events.jsonl`) is scheduled to be removed 2026-11-15. Check
-  whether that date has passed before assuming the shim still needs maintaining in `core/envvars.js` /
-  `core/paths.js` / `core/events.js`.
+- `claude agents` and the survey summarizer kill `claude`'s whole process group on timeout
+  (`core/proc.js` `run` with `group: true`). A pid-only kill leaves the `security` child behind when
+  `securityd` hangs, and those orphans filled a Mac's process table on 2026-11-10. `group` stays off
+  for `ssh`, which needs a controlling terminal to ask for a passphrase. After one timeout the agents
+  poll pauses from 1 minute up to 15 minutes (`web/README.md`, "How it talks to agents").
+- The repo was renamed from apx-web (CLI `apxw`) on 2026-10-15. The compatibility shim (`apxw` symlink,
+  `APXW_*` env fallbacks, importing `claude/apx-events.jsonl`) was scheduled to be removed 2026-11-15.
+  That date has passed and, as of 2026-11-16, the shim is still in `web/bin/drover`, `core/envvars.js`,
+  `core/paths.js`, `core/events.js` and `core/remote.js`. The deprecation line still names 2026-11-15.
+  Leave the fallbacks until a change removes them (`web/README.md`, "Renamed from apx-web").
 - The gitleaks RSA-public-key allowlist in `.gitleaks.toml` is scoped by line content (`regexTarget =
   "line"`), not by path, on purpose: gitleaks 8.30 exempts an entire file once any path allowlist matches it,
   even under `condition = "AND"`. Don't "simplify" it back to a path rule.
