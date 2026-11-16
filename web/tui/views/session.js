@@ -2,10 +2,12 @@
 // rule, new turns from `turn` events and `since` reads, an answer card when it waits on a dialog), Screen (the
 // pane, captured every 1.5 s while shown), Info. The composer sends to the session's inbox (sessions.message) or
 // pastes into its pane (tmux.send, which refuses while a dialog is on screen unless forced); K sends one raw key.
+// The mouse: a click on Chat, Screen or Info switches to it, on a chat item selects it (again: expands a tool group,
+// as Enter), on the composer types there; the wheel scrolls without selecting.
 import { Composer } from '../composer.js';
 import { chatItems, chatRows, answerCardRows, keyHints } from '../chat.js';
 import { answerKeys, pressDrawn } from '../board.js';
-import { rule, hints, block, kvRows, ago, tilde } from '../ui.js';
+import { rule, hints, block, kvRows, ago, tilde, spansOf, hitAt } from '../ui.js';
 import { sanitize, truncate, oneLine } from '../width.js';
 import { renderMarkdown } from '../markdown.js';
 
@@ -223,6 +225,29 @@ export class SessionView {
     if (!this.canInbox() || !this.win()) { this.app.toast(this.canInbox() ? 'no pane: messages go to the inbox' : 'no inbox: text goes to the pane', 'dim'); return; }
     this.mode = this.mode === 'inbox' ? 'pane' : 'inbox';
   }
+  mouse(ev) {
+    if (ev.kind === 'wheel') {
+      if (this.tab === 'screen') { for (let n = 0; n < 3; n++) this.#scrollKey({ id: ev.wheel < 0 ? 'k' : 'j' }); return true; }
+      if (this.tab !== 'chat') return false;
+      this.sel = -1; this.follow = false; this.top = Math.max(0, this.top + 3 * ev.wheel);
+      if (this.top === 0 && ev.wheel < 0 && this.limit < 3000 && this.turns.length >= this.limit * 0.9) { this.limit *= 3; this.loadChat(); }
+      return true;
+    }
+    if (ev.kind !== 'down' || ev.button !== 0 || this.keysMode) return false;
+    if (ev.y === 1) { const t = hitAt(this.tabHits, ev.x); if (t) { if (t.id !== this.tab) this.setTab(t.id); return true; } return false; }
+    const inp = this.inLayout;
+    if (inp && ev.y >= inp.inStart - 1) {
+      this.focus = 'input';
+      if (ev.y >= inp.inStart) this.composer.moveTo(inp.inTop + ev.y - inp.inStart, ev.x - 2, this.inputW);
+      return true;
+    }
+    if (this.tab !== 'chat' || ev.y < 3 || ev.y >= 3 + (this.bodyH ?? 0)) return false;
+    const r = this.top + ev.y - 3;
+    const i = (this.spans ?? []).findIndex(([a, b]) => r >= a && r < b);
+    if (i < 0) return false;
+    if (i === this.sel) { const it = this.items?.[i]; if (it?.kind === 'tools') this.expanded.set(it.key, ((this.expanded.get(it.key) ?? 0) + 1) % 3); return true; }
+    this.sel = i; this.follow = false; return true;
+  }
   async #refreshAfterAnswer() { this.app.refreshBoardSoon(0); if (this.tab === 'screen') this.loadScreen(); else this.loadChat({ incremental: true }); }
 
   hints() {
@@ -239,8 +264,9 @@ export class SessionView {
     const status = s.status ?? w.agent?.status ?? this.strip()?.status ?? this.screen?.state ?? '';
     const strip = this.strip();
     const head = [[` ${this.title}`, 'bold'], [`  ${this.engine() ?? (this.t.kind === 'window' ? 'window' : '')}`, 'dim'], [status ? `  ${status}` : '', status === 'busy' ? 'work' : strip?.lane === 'wait' ? 'waitBold' : 'dim'], [`  ${[this.t.host !== 'local' ? this.t.host : null, this.win(), tilde(s.cwd ?? w.cwd ?? this.t.cwd ?? '')].filter(Boolean).join('  ')}`, 'dim']];
-    const tabs = [[' ', null]];
-    for (const [id, label] of TABS) tabs.push([` ${label} `, id === this.tab ? 'tabOn' : 'dim'], [' ', null]);
+    const tabs = [[' ', null]]; const tabIds = [null];
+    for (const [id, label] of TABS) { tabs.push([` ${label} `, id === this.tab ? 'tabOn' : 'dim'], [' ', null]); tabIds.push(id, null); }
+    this.tabHits = spansOf(tabs).map(([x0, x1], i) => (tabIds[i] ? { x0, x1, id: tabIds[i] } : null)).filter(Boolean);
     if (this.pendingForce) tabs.push(['  refused paste waiting: F forces it', 'err']);
     // Composer.
     const target = this.mode === 'pane' ? `pane ${this.win() ?? ''}` : 'session';
@@ -282,6 +308,7 @@ export class SessionView {
     const busy = (this.session?.status ?? this.strip()?.status) === 'busy' || this.strip()?.lane === 'work';
     const footer = !this.chatLoaded ? [[[' reading the transcript…', 'dim']]] : !items.length ? [[[' No turns yet.', 'dim']]] : [];
     const { rows, spans } = chatRows(items, width, { expanded: this.expanded, selected: this.sel, working: busy && !ws, names: { assistant: this.engine() === 'openclaw' ? 'manager' : this.engine() ?? 'assistant' }, footer });
+    this.spans = spans;
     const max = Math.max(0, rows.length - h);
     if (this.follow) this.top = max;
     else if (this.sel >= 0 && spans[this.sel]) {

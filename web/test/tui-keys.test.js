@@ -75,6 +75,22 @@ test('a burst with a line break inside is a paste on terminals without bracketed
   assert.deepEqual(ids(decode('ok\r')), ['o', 'k', 'enter'], 'Enter at the end of a burst is still Enter');
 });
 
-test('mouse and focus reports are ignored', () => {
-  assert.deepEqual(ids(decode('\x1b[<0;10;5M\x1b[I\x1b[Oa')), ['a']);
+test('focus reports are ignored; SGR mouse reports become mouse events', () => {
+  assert.deepEqual(ids(decode('\x1b[<0;10;5M\x1b[I\x1b[Oa')), ['mouse', 'a']);
+  const [down, up, wup, wdown, drag, right, mods] = decode('\x1b[<0;10;5M\x1b[<0;10;5m\x1b[<64;3;4M\x1b[<65;3;4M\x1b[<32;11;5M\x1b[<2;1;1M\x1b[<20;7;8M');
+  assert.deepEqual({ kind: down.kind, button: down.button, x: down.x, y: down.y }, { kind: 'down', button: 0, x: 9, y: 4 }, 'columns and rows from 0');
+  assert.equal(up.kind, 'up');
+  assert.deepEqual([wup.kind, wup.wheel, wdown.wheel, wup.x, wup.y], ['wheel', -1, 1, 2, 3]);
+  assert.equal(drag.kind, 'drag');
+  assert.deepEqual([right.kind, right.button], ['down', 2]);
+  assert.deepEqual([mods.button, mods.shift, mods.ctrl, mods.alt], [0, true, true, false]);
+  assert.deepEqual(decode('\x1b[<66;1;1M\x1b[<0;0;1M\x1b[<1;2Mb').map((e) => e.id), ['b'], 'a sideways wheel, a zero column and a report missing a field are dropped');
+});
+
+test('a mouse report split across reads waits for the rest', () => {
+  const d = createDecoder();
+  assert.deepEqual(d.feed('\x1b[<0;12'), []);
+  assert.ok(d.pending);
+  const [e] = d.feed(';3M');
+  assert.deepEqual([e.kind, e.x, e.y], ['down', 11, 2]);
 });

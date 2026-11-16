@@ -4,7 +4,8 @@
 // the next chunk, and a lone ESC is the Escape key only once flush() runs after a quiet moment (the caller's
 // timer). Pure; tests in test/tui-keys.test.js.
 //
-// An event is { name, ch?, ctrl, alt, shift, id } or { name: 'paste', text, id: 'paste' }. name is the character
+// An event is { name, ch?, ctrl, alt, shift, id }, { name: 'paste', text, id: 'paste' } or a mouse report (SGR,
+// mode 1006: see mouseEvent). name is the character
 // for text keys ("a", "A", "?", "漢") and a word for the rest (enter, tab, backspace, escape, up, down, left,
 // right, home, end, pgup, pgdn, insert, delete, f1..f12, space). id is what bindings match: "a", "C-c", "M-x",
 // "M-enter", "S-tab", "C-up", "pgdn", "f1".
@@ -14,6 +15,23 @@ const CSI_LETTER = { A: 'up', B: 'down', C: 'right', D: 'left', H: 'home', F: 'e
 const SS3 = { A: 'up', B: 'down', C: 'right', D: 'left', H: 'home', F: 'end', P: 'f1', Q: 'f2', R: 'f3', S: 'f4', M: 'enter' };
 const CSI_U = { 9: 'tab', 13: 'enter', 27: 'escape', 32: 'space', 127: 'backspace' };
 const PASTE_END = '\x1b[201~';
+
+/**
+ * An SGR mouse report (CSI < b ; x ; y M, or m for a release) as { name: 'mouse', id: 'mouse', kind, button, x, y,
+ * shift, alt, ctrl }: kind 'down', 'up', 'drag' or 'wheel' (then wheel is -1 for up, 1 for down), x and y from 0.
+ * Bits of b: 0-1 the button, 4 shift, 8 alt, 16 ctrl, 32 motion, 64 the wheel; null for a malformed report.
+ */
+export function mouseEvent(params, final) {
+  const m = params.match(/^<(\d+);(\d+);(\d+)$/);
+  if (!m) return null;
+  const b = Number(m[1]); const x = Number(m[2]) - 1; const y = Number(m[3]) - 1;
+  if (x < 0 || y < 0) return null;
+  const base = { name: 'mouse', id: 'mouse', x, y, shift: Boolean(b & 4), alt: Boolean(b & 8), ctrl: Boolean(b & 16) };
+  if (b & 64) return (b & 3) < 2 ? { ...base, kind: 'wheel', button: null, wheel: (b & 1) ? 1 : -1 } : null;   // 66, 67: sideways
+  const button = b & 3;
+  if (b & 32) return { ...base, kind: 'drag', button: button === 3 ? null : button };
+  return { ...base, kind: final === 'm' ? 'up' : 'down', button: button === 3 ? null : button };
+}
 
 /** The binding id of an event: modifiers C-, M-, S- (S- only on keys that have no shifted character). */
 export function keyId(name, { ctrl = false, alt = false, shift = false, text = false } = {}) {
@@ -88,7 +106,8 @@ export function createDecoder() {
         const params = seq.slice(0, -1); const fin = seq.at(-1);
         if (fin === '~' && params === '200') { paste = ''; continue; }
         if (fin === '~' && params === '201') continue;          // a stray paste end
-        if (params.startsWith('<') || fin === 'M' || fin === 'm' || fin === 'I' || fin === 'O') continue;   // mouse, focus
+        if (params.startsWith('<')) { const ev = (fin === 'M' || fin === 'm') ? mouseEvent(params, fin) : null; if (ev) out.push(ev); continue; }
+        if (fin === 'M' || fin === 'm' || fin === 'I' || fin === 'O') continue;   // another mouse encoding, focus
         out.push(csiKey(params.replace(/^[?>=]/, ''), fin));
         continue;
       }

@@ -1,5 +1,7 @@
 // A navigable table over one op's answer, with a `/` filter, a detail pane for the selected row (beside the table
-// when the terminal is wide, under it otherwise) and per-view keys. tables.js defines one per web UI view.
+// when the terminal is wide, under it otherwise) and per-view keys. tables.js defines one per web UI view. A click
+// selects a row and a second click is Enter; the wheel scrolls without moving the selection (so it loads no row's
+// details on the way).
 // A definition: { id, title, load(app, view) -> data, rows(data, view) -> rows, columns: [{ title, w | flex, get,
 // align }], detail(row, width, view) -> rows, enter?(row, app, view), keys?: { id: fn }, perHost?, query?, meta? }.
 import { rule, hints, block, keepVisible, sideBySide } from '../ui.js';
@@ -63,6 +65,7 @@ export class TableView {
       if (ev.ch && !ev.ctrl && !ev.alt) { this[field] += ev.ch; this.sel = 0; this.top = 0; return true; }
       return false;
     }
+    this.scrolled = false;   // a key brings the selection back into view
     const n = this.visible().length;
     const page = Math.max(1, (this.listH ?? 10) - 1);
     const own = this.def.keys?.[ev.id];
@@ -81,6 +84,18 @@ export class TableView {
       case 'escape': if (this.filter) { this.filter = ''; return true; } return false;
       default: return false;
     }
+  }
+
+  mouse(ev) {
+    const M = this.mm; if (!M) return false;
+    if (ev.kind === 'wheel') { this.top = Math.max(0, Math.min(Math.max(0, M.total - M.h), this.top + 3 * ev.wheel)); this.scrolled = true; return true; }
+    if (ev.kind !== 'down' || ev.button !== 0) return false;
+    if (ev.y === 0 && this.def.query) { this.filtering = true; return true; }   // the head says "press / to search"
+    if (this.filtering || ev.y < M.y0 || ev.y >= M.y0 + M.h || ev.x >= M.w) return false;
+    const i = this.top + ev.y - M.y0;
+    if (i >= M.total) return false;
+    if (i === this.sel) return this.key({ name: 'enter', id: 'enter', ctrl: false, alt: false, shift: false });
+    this.sel = i; return true;
   }
 
   hints() {
@@ -128,7 +143,8 @@ export class TableView {
     let below = [];
     if (showDetail && !wide) { const dh = Math.min(detail.length + 1, Math.floor(bodyH * 0.45)); listH = bodyH - 1 - dh; below = [rule(width), ...detail.slice(0, dh - 1)]; }
     this.listH = listH;
-    this.top = keepVisible(this.sel, this.top, listH, vis.length);
+    this.top = this.scrolled ? Math.max(0, Math.min(this.top, vis.length - listH)) : keepVisible(this.sel, this.top, listH, vis.length);
+    this.mm = { y0: 3, h: listH, w: listW, total: vis.length };
     const list = vis.slice(this.top, this.top + listH).map((row, i) => this.#row(row, cols, this.top + i === this.sel));
     if (!vis.length) list.push([[' ', null], [this.loading ? 'loading…' : this.error ? '' : this.def.query && !this.query ? 'Type a search: / then words, Enter.' : all.length ? 'Nothing matches the filter.' : this.def.empty ?? 'Nothing here.', 'dim']]);
     if (wide) return block([head, rule(width), ...sideBySide([header, ...block(list, listH)], showDetail ? detail : [], listW, width, bodyH)], height);

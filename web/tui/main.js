@@ -5,10 +5,10 @@ import { stateDir as defaultStateDir } from '../core/paths.js';
 import { daemonTarget, Client } from './client.js';
 import { setOwner } from '../ui/owner.js';
 import { OWNER } from '../core/owner.js';
-import { Terminal, guard } from './term.js';
+import { Terminal, guard, mouseWanted } from './term.js';
 import { App, MAIN, ALIASES } from './app.js';
 
-export const USAGE = `drover tui [--manager] [--thread T] [--from TARGET] [--url URL] [--view NAME]
+export const USAGE = `drover tui [--manager] [--thread T] [--from TARGET] [--url URL] [--view NAME] [--no-mouse]
 
   The Drover terminal client: talk to the fleet manager, see the board and answer dialogs, read any session's chat
   and screen, and every table the web UI has (sessions, tmux, events, features, fleet, search, memory, stacks,
@@ -19,8 +19,10 @@ export const USAGE = `drover tui [--manager] [--thread T] [--from TARGET] [--url
   --from TARGET    the tmux pane or window /look captures (drover manager popup passes the one you came from)
   --url URL        the daemon (default: the url in ~/.local/state/drover/daemon.json)
   --view NAME      start in another view: ${MAIN.join(', ')}
+  --no-mouse       leave the mouse to the terminal (as DROVER_TUI_MOUSE=0 does)
 
-  Keys: ? in the TUI. NO_COLOR turns colors off; DROVER_TUI_COLOR=none|16|256|truecolor forces a depth.
+  Keys: ? in the TUI. The mouse clicks tabs, rows and key hints and the wheel scrolls; Shift-drag still selects
+  text in most terminals. NO_COLOR turns colors off; DROVER_TUI_COLOR=none|16|256|truecolor forces a depth.
 `;
 
 const THREAD = /^[A-Za-z0-9_.:@%-]{1,64}$/;
@@ -36,6 +38,7 @@ export function parseArgs(argv) {
     else if (a === '--from') opts.from = val();
     else if (a === '--url') opts.url = val();
     else if (a === '--view') opts.view = val();
+    else if (a === '--no-mouse') opts.noMouse = true;
     else if (a === '--help' || a === '-h' || a === 'help') opts.help = true;
     else throw new Error(`unknown argument ${a}`);
   }
@@ -56,7 +59,7 @@ export async function main(argv, { env = process.env } = {}) {
   // Who "you" is in the chats: this machine's owner actor (core/owner.js) at once, then the daemon's (GET /api/ops)
   // when it answers, so the first frame does not wait for it.
   setOwner(OWNER);
-  const term = new Terminal();
+  const term = new Terminal({ mouse: !opts.noMouse && mouseWanted(env) });
   // A plugin's tables (core/plugins.js tui.tables); a plugin that fails to load costs only its tables.
   const plugins = await import('../core/plugins.js');
   const tables = await plugins.load().then(() => plugins.tuiTables()).catch(() => []);

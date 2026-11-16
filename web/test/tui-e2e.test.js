@@ -10,6 +10,9 @@ import { hasTmux, scratch, testEnv, server, waitFor } from '../tui/test-support/
 
 const BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'drover');
 const count = (hay, needle) => hay.split(needle).length - 1;
+/** Where needle is on a captured screen (column and row from 0), searching from row `from`; the first match. */
+const at = (screen, needle, from = 0) => { const lines = screen.split('\n'); for (let y = from; y < lines.length; y++) { const x = lines[y].indexOf(needle); if (x >= 0) return { x, y }; } throw new Error(`${needle} is not on the screen:\n${screen}`); };
+const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 // The pane runs the TUI under this wrapper, which writes its exit code (or signal) to a file: tmux only knows a dead
 // pane's status once it has reaped the child, and on some hosts (GitHub-hosted Ubuntu) #{pane_dead_status} stays empty.
 const RECORD_EXIT = "const r = require('node:child_process').spawnSync(process.execPath, process.argv.slice(1), { stdio: 'inherit' }); require('node:fs').writeFileSync(process.env.DROVER_TUI_EXIT_FILE, String(r.status ?? r.signal))";
@@ -93,6 +96,50 @@ describe('drover tui against a current daemon', { skip: hasTmux ? false : 'tmux 
     s = await c.until((x) => x.includes('Keys') && x.includes('command palette'), 'help');
     c.tmux.keys('t', 'Escape'); c.tmux.keys('t', '1');
     await c.until((x) => x.includes('thread main'), 'back to the manager');
+  });
+
+  test('the mouse: tabs, a strip picked then opened, session tabs, the wheel, a footer hint, a dialog answered by a second click', async () => {
+    let s = await c.until((x) => x.includes('thread main'), 'the manager');
+    c.tmux.mouse('t', at(s, '2 Board').x + 1, 0);
+    s = await c.until((x) => x.includes('Select an agent'), 'the board, by a click on its tab');
+    c.tmux.mouse('t', 20, 6, 65); c.tmux.mouse('t', 20, 6, 64);
+    await pause(250);
+    assert.ok(c.screen().includes('Select an agent'), 'the wheel selects no strip');
+    const work = at(s, 'demo-work', 2);
+    c.tmux.mouse('t', work.x, work.y);
+    s = await c.until((x) => x.includes('demo-work  claude on'), 'demo-work selected by a click');
+    c.tmux.mouse('t', work.x, work.y);
+    s = await c.until((x) => x.includes('Chat') && x.includes('Read 1 file, ran 1 command'), 'opened by a second click');
+    c.tmux.mouse('t', at(s, 'Info', 2).x + 1, at(s, 'Info', 2).y);
+    s = await c.until((x) => /session id\s+s-work/.test(x), 'Info, by a click on the session tab');
+    c.tmux.mouse('t', at(s, '5 Events').x + 1, 0);
+    s = await c.until((x) => x.includes('a synthetic note'), 'Events, from inside a session');
+    c.tmux.mouse('t', at(s, '/ filter', 44).x, 44);
+    s = await c.until((x) => x.includes('filter: ▍'), 'filtering, by a click on the / hint');
+    c.tmux.mouse('t', at(s, 'Esc clear', 44).x + 4, 44);
+    s = await c.until((x) => !x.includes('filter:'), 'Esc, clicked, ends it');
+    c.tmux.mouse('t', 2, 0);
+    s = await c.until((x) => x.includes('Commands') && x.includes('Go to Board'), 'the palette, by a click on the name');
+    c.tmux.mouse('t', 0, 43);
+    s = await c.until((x) => !x.includes('Go to Board'), 'a click outside closes it');
+    c.tmux.mouse('t', at(s, '1 Manager').x + 1, 0);
+    s = await c.until((x) => x.includes('thread main') && x.includes('3 No'), 'the manager with the waiting dialog');
+    const before = c.daemon.callsOf('sessions.answer').length;
+    const no = at(s, '3 No');
+    c.tmux.mouse('t', no.x + 2, no.y);
+    await c.until((x) => x.includes('click 3 again'), 'the first click picks the strip');
+    await pause(250);
+    assert.equal(c.daemon.callsOf('sessions.answer').length, before, 'and presses nothing');
+    c.tmux.mouse('t', no.x + 2, no.y);
+    const call = await waitFor(() => c.daemon.callsOf('sessions.answer').slice(before)[0], { what: 'sessions.answer from the second click' });
+    assert.deepEqual(call.args, { id: 's-build', key: '3', expect: HASH });
+    s = await c.until((x) => x.includes('pressed 3 on demo-build'), 'the confirmation');
+    const lines = s.split('\n'); const box = { x: 0, y: lines.findLastIndex((l) => l.startsWith('›')) };   // the composer
+    c.tmux.mouse('t', box.x + 4, box.y);   // back to typing: a click on the composer
+    await pause(150);
+    c.tmux.type('t', 'typed after a click');
+    await c.until((x) => x.includes('› typed after a click'), 'the composer has the focus');
+    c.tmux.keys('t', 'C-u'); c.tmux.keys('t', 'Escape');   // as the test before left it: not typing
   });
 
   test('slash commands: /status and /threads answer inline; q quits and gives the terminal back', async () => {
