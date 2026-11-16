@@ -19,6 +19,28 @@ export function hints(pairs) {
   return segs;
 }
 
+/**
+ * The key event a footer hint (or a key drawn on a dialog) names, for a click on it to press; null for one that names
+ * a range or a group ("j/k", "1-9", "←→", "PgUp/PgDn", "[ ]"), which no single click can mean.
+ */
+export function hintKey(label) {
+  const t = String(label ?? '').trim();
+  const named = { Enter: 'enter', Esc: 'escape', Escape: 'escape', Tab: 'tab', Space: 'space', '/help': 'f1', F1: 'f1', PgUp: 'pgup', PgDn: 'pgdn' }[t];
+  if (named) return { name: named, id: named, ctrl: false, alt: false, shift: false };
+  const c = t.match(/^C-([a-z])$/);
+  if (c) return { name: c[1], id: `C-${c[1]}`, ctrl: true, alt: false, shift: false };
+  if (/^[!-~]$/.test(t)) return { name: t, ch: t, id: t, ctrl: false, alt: false, shift: t !== t.toLowerCase() };
+  return null;
+}
+
+/** The [start, end) columns of each segment of a row drawn from column x. */
+export function spansOf(segs, x = 0) {
+  return segs.map(([t]) => { const w = strWidth(String(t ?? '')); const span = [x, x + w]; x += w; return span; });
+}
+
+/** The first region { x0, x1, ... } holding column x, or null. */
+export const hitAt = (regions, x) => (regions ?? []).find((r) => x >= r.x0 && x < r.x1) ?? null;
+
 /** Key/value rows: keys padded to one column, values cut to the width (or wrapped when wrap is set). */
 export function kvRows(pairs, width, { keyWidth } = {}) {
   const shown = pairs.filter(([, v]) => v !== null && v !== undefined && v !== '');

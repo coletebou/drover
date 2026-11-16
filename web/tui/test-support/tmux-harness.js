@@ -40,6 +40,16 @@ export function server(name, env) {
     capture: (target) => t(['capture-pane', '-p', '-t', target]).stdout,
     keys: (target, ...keys) => t(['send-keys', '-t', target, ...keys]),
     type: (target, text) => t(['send-keys', '-t', target, '-l', text]),
+    /**
+     * A left click (or button b, or a wheel notch: b 64 up, 65 down) at column x, row y from 0, as the SGR report a
+     * terminal sends (mode 1006), written to the pane's input as bytes: what the program in the pane reads from its
+     * terminal. Into a pane that holds a tmux client, it is a mouse event for that client's server.
+     */
+    mouse: (target, x, y, b = 0) => {
+      const at = `${b};${x + 1};${y + 1}`;
+      const seq = b >= 64 ? `\x1b[<${at}M` : `\x1b[<${at}M\x1b[<${at}m`;
+      return t(['send-keys', '-t', target, '-H', ...[...Buffer.from(seq)].map((c) => c.toString(16).padStart(2, '0'))]);
+    },
     kill: () => t(['kill-server']),
   };
 }

@@ -15,7 +15,7 @@ import { SessionView } from './views/session.js';
 import { TableView } from './views/table.js';
 import { TABLES } from './views/tables.js';
 import { Help, Palette, Prompt } from './views/overlays.js';
-import { block, setHomes } from './ui.js';
+import { block, setHomes, hintKey, hitAt } from './ui.js';
 import { strWidth, truncate, oneLine } from './width.js';
 
 export const TOPICS = ['board', 'alerts', 'turn', 'manager', 'mutation'];
@@ -36,6 +36,8 @@ export class App {
     this.live = 'connecting'; this.liveWhy = ''; this.frontHost = null; this.host = 'local'; this.hosts = [];
     this.notifies = {}; this.finished = {}; this.lastFleet = null;
     this.toastMsg = null; this.modal = null; this.overlay = null; this.dirty = false; this.drawTimer = null; this.lastDraw = 0;
+    // What the last frame drew on the tab bar and the footer that a click can press: [{ x0, x1, run }].
+    this.tabHits = []; this.footHits = [];
     this.histories = this.#readHistory();
     this.views = new Map();
     this.views.set('manager', new ManagerView(this, { thread: opts.thread ?? 'main', from: opts.from ?? null }));
@@ -243,6 +245,7 @@ export class App {
   palette() { this.modal = new Palette(this, this.#commands()); this.invalidate(); }
   #helpSections() {
     const out = [['Everywhere', [['1-9, 0', 'switch view (when not typing)'], ['Tab / Shift-Tab', 'next / previous view (in a session: its tabs)'], [': or Ctrl-P', 'command palette: any view, host, thread, action'], ['?  F1', 'this help'], ['Esc', 'back (close a session, leave a text box)'], ['q', this.popup ? 'hide the manager (it keeps running)' : 'quit'], ['Ctrl-C', `clear the text box, else ${this.popup ? 'hide' : 'quit'}`], ['Ctrl-L', 'redraw'], ['Ctrl-Z', 'suspend']]]];
+    out.push(['Mouse', [['click', 'a tab, a row, a session tab, a key hint in the bottom bar'], ['click again', 'open the row (Enter); on a dialog option or key: press it'], ['wheel', 'scroll (it never selects a strip)'], ['Shift-drag', 'select text in most terminals'], ['palette', `Mouse: ${this.term.mouse === false ? 'on' : 'off'}`]]]);
     out.push(['Manager', [['Enter', 'send'], ['Ctrl-J, Alt-Enter', 'new line'], ['↑ ↓', 'history'], ['PgUp PgDn', 'scroll the conversation'], ['Esc then w', 'answer what waits (←→ choose, digits Enter Esc press)'], ...COMMANDS.map(([c, a, d]) => [`${c}${a ? ` ${a}` : ''}`, d])]]);
     out.push(['Board', [['j k', 'select a strip (answer keys work only on a strip you selected)'], ['1-9 Enter Esc', 'answer the selected waiting strip (sessions.answer, guarded by the screen hash)'], ['Enter / o', 'open the session'], ['r', 'reply with a message'], ['/', 'filter'], ['R', 'refresh']]]);
     out.push(['Session', [['Tab', 'Chat / Screen / Info'], ['j k Enter', 'select, expand a tool group (Enter again shows all output)'], ['a', 'jump to the answer card'], ['r or i', 'type a message'], ['t or Ctrl-T', 'send to the session inbox or paste into the pane'], ['K then a key', 'send one key to the pane'], ['F', 'force a paste a dialog refused'], ['Esc', 'back']]]);
@@ -261,6 +264,7 @@ export class App {
     for (const x of ['local', ...this.hosts.map((y) => y.name).filter((n) => n !== 'local')]) items.push({ label: `Host ${this.hostLabel(x)}`, hint: 'for Sessions and Tmux', run: () => { this.host = x; const v = this.front(); if (v.def?.perHost) v.show(); this.toast(`host ${this.hostLabel(x)}`, 'dim', 1500); } });
     items.push({ label: 'Refresh the board', run: () => this.refreshBoardSoon(0, { toast: true }) });
     items.push({ label: 'Redraw the screen', run: () => { this.screen.invalidate(); this.invalidate(); } });
+    items.push({ label: this.term.mouse === false ? 'Mouse: on (click and scroll in the TUI)' : 'Mouse: off (leave it to the terminal: select text, its own scrolling)', run: () => { this.term.setMouse?.(this.term.mouse === false); this.toast(`mouse ${this.term.mouse === false ? 'off' : 'on'}`, 'dim', 1500); } });
     if (this.popup) items.push({ label: 'Hide the manager', hint: 'q', run: () => this.hide() });
     items.push({ label: 'Quit', hint: this.popup ? 'ends this manager window' : 'q', run: () => this.quit() });
     return items;
@@ -268,6 +272,7 @@ export class App {
 
   // ------------------------------------------------------------ keys
   key(ev) {
+    if (ev.name === 'mouse') { this.mouse(ev); return; }
     const v = this.front();
     // An Alt-key is usually ESC and a key that arrived in one read (typed fast, or joined by tmux or ssh): only a
     // text box's word moves (Alt-B, Alt-F) are taken as Alt.
@@ -290,6 +295,25 @@ export class App {
     if (ev.id === ':') { this.palette(); return; }
     if (ev.id === '?') { this.help(); return; }
     if (ev.id === 'q') { this.popup ? this.hide() : this.quit(); }
+  }
+
+  // ------------------------------------------------------------ mouse
+  /**
+   * A mouse report: the tab bar and the footer here (from what the last frame drew there), the rest to the open
+   * dialog box or the front view with y counted from the view's first row. A click is a left button press; the
+   * wheel scrolls. Nothing a click presses differs from the key it stands for, so the keys' guards hold for it too.
+   */
+  mouse(ev) {
+    const { cols, rows } = this.term.size();
+    if (cols < 40 || rows < 10) return;
+    if (this.modal) { if (this.modal.mouse?.(ev)) this.invalidate(); return; }
+    const click = ev.kind === 'down' && ev.button === 0;
+    if (ev.y === 0 || ev.y === rows - 1) {
+      const hit = click ? hitAt(ev.y === 0 ? this.tabHits : this.footHits, ev.x) : null;
+      if (hit) { hit.run(); this.invalidate(); }
+      return;
+    }
+    if (this.front().mouse?.({ ...ev, y: ev.y - 1 })) this.invalidate();
   }
 
   // ------------------------------------------------------------ drawing
@@ -333,21 +357,41 @@ export class App {
       if (hi + 1 < tabs.length && used + strWidth(tabs[hi + 1].text) <= room) { hi++; used += strWidth(tabs[hi].text); grew = true; }
       if (lo > 0 && used + strWidth(tabs[lo - 1].text) <= room) { lo--; used += strWidth(tabs[lo].text); grew = true; }
     }
-    const segs = [...head, [lo > 0 ? '‹' : ' ', 'barDim']];
-    for (let i = lo; i <= hi; i++) segs.push([tabs[i].text, i === active ? 'tabOn' : 'tab']);
-    segs.push([hi < tabs.length - 1 ? '›' : ' ', 'barDim']);
-    const pad = Math.max(0, cols - segs.reduce((s, [t]) => s + strWidth(t), 0) - right.reduce((s, [t]) => s + strWidth(t), 0));
-    return { segs: [...segs, [' '.repeat(pad), 'bar'], ...right], bg: 'bar' };
+    // Each tab is clicked to go there; the arrows go to the tab just out of view; " drover " opens the palette and
+    // the waiting count the board.
+    const hits = []; let x = 0;
+    const segs = [];
+    const put = (seg, run) => { const w = strWidth(seg[0]); if (run && w) hits.push({ x0: x, x1: x + w, run }); x += w; segs.push(seg); };
+    put(head[0], () => this.palette());
+    put([lo > 0 ? '‹' : ' ', 'barDim'], lo > 0 ? () => this.#goTab(tabs[lo - 1].id) : null);
+    for (let i = lo; i <= hi; i++) put([tabs[i].text, i === active ? 'tabOn' : 'tab'], () => this.#goTab(tabs[i].id));
+    put([hi < tabs.length - 1 ? '›' : ' ', 'barDim'], hi < tabs.length - 1 ? () => this.#goTab(tabs[hi + 1].id) : null);
+    const pad = Math.max(0, cols - x - right.reduce((s, [t]) => s + strWidth(t), 0));
+    put([' '.repeat(pad), 'bar']);
+    for (const seg of right) put(seg, seg === right[2] ? () => this.go('board') : null);
+    this.tabHits = hits;
+    return { segs, bg: 'bar' };
   }
+  /** A tab clicked: a view by id, or the open session's own tab (nothing to do, it is in front). */
+  #goTab(id) { if (id !== 'session') this.go(id); }
   #footer(cols, v) {
     const left = (this.modal ? this.modal.hints() : v.hints?.()) ?? [];
     const t = this.toastMsg && this.toastMsg.until > Date.now() ? this.toastMsg : null;
-    if (!t) return { segs: [[' ', 'bar'], ...left], bg: 'bar' };
+    const tw = t ? Math.min(strWidth(t.text) + 2, Math.max(20, Math.floor(cols * 0.6))) : 0;
+    const lw = t ? Math.max(0, cols - tw - 1) : cols;
+    // A hint's key and its words press that key when clicked (only hints that name one key: not j/k or 1-9).
+    const hits = []; const leftSegs = []; let used = 1, key = null;
+    for (const [s, style] of left) {
+      if (used >= lw) break;
+      const x = truncate(s, lw - used); const w = strWidth(x);
+      if (style === 'barKey') key = hintKey(s); else if (style === 'barDim' || /^\s*(·\s*)?$/.test(s)) key = null;
+      if (key && w) { const ev = key; hits.push({ x0: used, x1: used + w, run: () => this.key({ ...ev }) }); }
+      leftSegs.push([x, style]); used += w;
+    }
+    if (!t) { this.footHits = hits; return { segs: [[' ', 'bar'], ...leftSegs], bg: 'bar' }; }
     const st = { ok: 'barOk', err: 'barErr', wait: 'barWait' }[t.style] ?? 'bar';
-    const tw = Math.min(strWidth(t.text) + 2, Math.max(20, Math.floor(cols * 0.6)));
-    const lw = Math.max(0, cols - tw - 1);
-    const leftSegs = []; let used = 1;
-    for (const [s, style] of left) { if (used >= lw) break; const x = truncate(s, lw - used); leftSegs.push([x, style]); used += strWidth(x); }
+    hits.push({ x0: lw, x1: cols, run: () => { this.toastMsg = null; } });   // a click on a toast dismisses it
+    this.footHits = hits;
     return { segs: [[' ', 'bar'], ...leftSegs, [' '.repeat(Math.max(0, lw - used)), 'bar'], [` ${truncate(t.text, tw - 2)} `, st]], bg: 'bar' };
   }
 }

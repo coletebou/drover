@@ -49,6 +49,15 @@ export class Composer {
     this.cur = i; return true;
   }
 
+  /** Put the cursor at a visual row and column of the layout at width (a click): clamped to the text there. */
+  moveTo(row, col, width = this.width) {
+    const L = this.layout(width);
+    const info = L.info[Math.max(0, Math.min(L.rows.length - 1, row))];
+    let i = info.start, c = 0;
+    for (const g of clusters(this.text.slice(info.start, info.end))) { const w = clusterWidth(g); if (c + w > col) break; c += w; i += g.length; }
+    this.cur = i;
+  }
+
   historyPrev() {
     if (this.hi + 1 >= this.history.length) return false;
     if (this.hi === -1) this.draft = this.text;

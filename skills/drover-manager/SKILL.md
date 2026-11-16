@@ -48,7 +48,9 @@ showing it). It returns at once and the popup stays up; the user closes it with 
 Enter sends, Ctrl-J or Alt-Enter adds a line, Up and Down recall history, PgUp and PgDn scroll. `/thread <name>`,
 `/threads`, `/look [target]`, `/sweep`, `/status`, `/board`, `/help`. Esc leaves the composer; then `w` selects
 what waits on the user (left and right choose, digits, Enter and Esc press that dialog's keys through
-`sessions.answer`, guarded by the screen hash), digits switch views, `?` lists every key.
+`sessions.answer`, guarded by the screen hash), digits switch views, `?` lists every key. The mouse works too: click a tab, a row or a key hint in the bottom bar,
+the wheel scrolls; a dialog option answers only on a second click (the first picks it). `drover tui --no-mouse` (or
+`DROVER_TUI_MOUSE=0`) leaves the mouse to the terminal. With tmux's `mouse on`, clicks reach the TUI in the popup.
 
 ## Asking the manager from a script or an agent
 

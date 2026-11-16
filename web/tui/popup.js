@@ -27,7 +27,21 @@ export const SHARED = 'drover-manager';
 const THREAD = /^[A-Za-z0-9_.:@%-]{1,64}$/;
 const SIZE = /^\d{1,3}%?$/;
 const KEY = /^[A-Za-z0-9]$|^[CM]-[A-Za-z0-9]$/;
-const PASS_ENV = ['DROVER_STATE', 'APXW_STATE', 'DROVER_CACHE', 'NO_COLOR', 'DROVER_TUI_COLOR'];
+const PASS_ENV = ['DROVER_STATE', 'APXW_STATE', 'DROVER_CACHE', 'NO_COLOR', 'DROVER_TUI_COLOR', 'DROVER_TUI_MOUSE'];
+// The popup's own style and its border's: the terminal's colors. tmux 3.8 made the default popup-style
+// bg=themedarkgrey, so every cell the TUI leaves at the default background (most of them) came out grey and its
+// dim text unreadable. The TUI paints its own bars and selection, so the popup adds nothing. The colour is
+// `terminal`, not `default`: in a style `default` inherits, and a popup inherits popup-style, the grey again.
+// -s and -S are tmux 3.3+.
+export const POPUP_STYLE = ['-s', 'bg=terminal,fg=terminal', '-S', 'bg=terminal,fg=terminal'];
+
+/** Whether a tmux version string ("3.8", "3.3a", "next-3.6", "openbsd-7.6") takes display-popup -s and -S. */
+export function popupStyles(version) {
+  const m = String(version ?? '').match(/(\d+)\.(\d+)/);
+  if (!m) return Boolean(version);   // unparseable but present (a build with its own name): assume a current one
+  const [maj, min] = [Number(m[1]), Number(m[2])];
+  return maj > 3 || (maj === 3 && min >= 3);
+}
 
 /**
  * The tmux session of a manager thread: main is the shared one, each other thread gets its own. A thread tmux takes
@@ -78,7 +92,7 @@ function innerSize(spec, total) { const n = spec.endsWith('%') ? Math.floor((tot
  * What popup does, from the facts gathered about tmux: { action: 'detach', argv } to hide a manager whose binding
  * was pressed inside it, or { action: 'popup', thread, session, before: [tmux argv...], popup: argv } to show one.
  * facts: { client, clientSession, origin: { paneId, windowId, label }, sessionExists, clientSize: { w, h },
- * command: [node, drover], socket, env }.
+ * command: [node, drover], socket, env, version (the server's tmux) }.
  */
 export function popupPlan(o, f) {
   if (isManagerSession(f.clientSession)) {
@@ -92,7 +106,7 @@ export function popupPlan(o, f) {
   const sock = f.socket ? ['-S', f.socket] : [];
   const title = ` drover manager · ${thread === 'main' ? 'shared' : thread} `.replace(/#/g, '##');
   const where = f.client ? ['-c', f.client] : [];
-  const box = ['-E', '-w', o.width, '-h', o.height, '-T', title];
+  const box = ['-E', '-w', o.width, '-h', o.height, '-T', title, ...(popupStyles(f.version) ? POPUP_STYLE : [])];
   if (o.fresh) return { action: 'popup', thread, session: null, mode: 'fresh', before: [], popup: ['display-popup', ...where, ...box, ...tui] };
   const session = sessionFor(thread);
   // A session is reused only for its own thread (@drover-thread, set when it starts). One without the mark comes
@@ -160,7 +174,8 @@ export function parseKeysArgs(argv) {
 }
 
 // tmux's own default bindings for the keys a popup binding may take: replacing these loses nothing the owner chose.
-export const STOCK = { M: 'select-pane -M', m: 'select-pane -m' };
+// tmux 3.8 binds prefix + g to its floating-pane move menu (the `move` key table).
+export const STOCK = { M: 'select-pane -M', m: 'select-pane -m', g: 'switch-client -T move' };
 
 /** Keys already bound in the prefix table to something that is neither this popup nor a tmux default. */
 export function conflicts(listKeysOut, keys) {
@@ -212,6 +227,8 @@ const fmt = (...names) => names.map((n) => `#{${n}}`).join('\t');
 async function gatherFacts(o, env) {
   const f = { client: o.client ?? null, socket: socketOf(env), command: droverCommand(), env };
   const where = f.client ? ['-c', f.client] : [];
+  // The server's version, not this tmux binary's: the server parses display-popup's flags.
+  f.version = (await tmuxRun(['display-message', '-p', '#{version}'], env)).out.trim() || null;
   let pane = o.from ?? null;
   if (!pane && f.client) { const r = await tmuxRun(['display-message', '-p', ...where, '#{pane_id}'], env); if (r.code === 0) pane = r.out.trim(); }
   if (!pane) pane = env.TMUX_PANE ?? null;
