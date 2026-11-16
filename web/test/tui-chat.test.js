@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { chatItems, chatRows, groupSummary, toolSummary, userTurn, answerCardRows, keyHints, rowsText } from '../tui/chat.js';
-import { renderMarkdown, inline, wrapSegs } from '../tui/markdown.js';
+import { renderMarkdown, inline, wrapSegs, tableCells, tableAligns } from '../tui/markdown.js';
 import { answerKeys } from '../tui/board.js';
 import { strWidth } from '../tui/width.js';
 
@@ -139,4 +139,74 @@ test('a long wrapped paragraph keeps every word once, in order: continuation row
   const first = [['>', null]], rest = [['   ', null]];
   wrapSegs([['one two three four five six seven eight nine ten', null]], 12, { first, rest });
   assert.deepEqual([first, rest], [[['>', null]], [['   ', null]]], 'the prefixes passed in are not changed');
+});
+
+// ------------------------------------------------------------ tables
+const TABLE = [
+  '| What | Memory |',
+  '|------|-------:|',
+  '| TypeScript language server for the `durbofly-awesome` session | **2.9 GB** |',
+  '| 21 Claude Code processes | 6.75 GB |',
+].join('\n');
+const textRows = (rows) => rows.map((r) => r.map(([t]) => t ?? '').join(''));
+const rowW = (r) => r.reduce((n, [t]) => n + strWidth(t ?? ''), 0);
+
+test('a pipe table is drawn in a box: bold headers, the delimiter row\'s alignment, inline Markdown in the cells', () => {
+  const rows = renderMarkdown(TABLE, 100);
+  const long = 'TypeScript language server for the durbofly-awesome session';
+  const bar = (l, m, r) => `${l}${'─'.repeat(long.length + 2)}${m}${'─'.repeat(9)}${r}`;
+  assert.deepEqual(textRows(rows), [
+    bar('┌', '┬', '┐'),
+    `│ ${'What'.padEnd(long.length)} │  Memory │`,
+    bar('├', '┼', '┤'),
+    `│ ${long} │  2.9 GB │`,
+    `│ ${'21 Claude Code processes'.padEnd(long.length)} │ 6.75 GB │`,
+    bar('└', '┴', '┘'),
+  ], 'the Memory column is right-aligned (---:)');
+  assert.equal(new Set(rows.map(rowW)).size, 1, 'every row the same width');
+  assert.ok(rows[1].some(([t, st]) => t === 'What' && st === 'bold'), 'the header is bold');
+  assert.ok(rows[3].some(([t, st]) => t === 'durbofly-awesome' && st === 'code'), 'code in a cell');
+  assert.ok(rows[3].some(([t, st]) => t === '2.9 GB' && st === 'bold'), 'bold in a cell, the ** gone');
+});
+
+test('a table wider than the screen narrows its widest column, wraps its cells and rules between rows', () => {
+  for (const w of [30, 40, 50, 64]) {
+    const rows = renderMarkdown(TABLE, w, { indent: ' ' });
+    assert.ok(rows.every((r) => rowW(r) <= w), `nothing past ${w}: ${textRows(rows).join('\n')}`);
+    const t = textRows(rows).join('\n');
+    for (const word of ['TypeScript', 'session', '6.75', 'Memory', ...(w >= 40 ? ['durbofly-awesome'] : [])]) assert.ok(t.includes(word), `${word} whole at ${w}:\n${t}`);
+    assert.ok(t.includes(' │  2.9 GB │') || t.includes(' │ 2.9 GB │'), 'the narrow column keeps its width');
+    assert.equal(textRows(rows).filter((r) => r.startsWith(' ├')).length, 2, 'a rule under the header and one between the wrapped rows');
+  }
+  const wide = renderMarkdown('| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |', 80);
+  assert.equal(textRows(wide).filter((r) => r.startsWith('├')).length, 1, 'rows that fit on one line need no rules between them');
+});
+
+test('a table too narrow to box without breaking words becomes "header: value" blocks', () => {
+  const t = textRows(renderMarkdown(TABLE, 18));
+  assert.ok(!t.some((r) => /[┌│└]/.test(r)), t.join('\n'));
+  assert.equal(t[0], 'What: TypeScript');
+  assert.ok(t.includes('Memory: 2.9 GB') && t.includes('Memory: 6.75 GB'));
+  assert.ok(t.every((r) => strWidth(r) <= 18));
+});
+
+test('table cells: escaped pipes and pipes in code spans stay in their cell; ragged rows are evened out', () => {
+  assert.deepEqual(tableCells('| a \\| b | `x | y` | c |'), ['a | b', '`x | y`', 'c']);
+  assert.deepEqual(tableCells('no | outer | pipes'), ['no', 'outer', 'pipes']);
+  assert.deepEqual(tableAligns('|:--|:-:|--:|---|'), ['left', 'center', 'right', 'left']);
+  assert.equal(tableAligns('---'), null, 'a rule, not a delimiter row');
+  assert.equal(tableAligns('| a | b |'), null);
+  const t = textRows(renderMarkdown('| k | v |\n|---|:-:|\n| one |\n| two | 2 | extra |', 40));
+  assert.equal(t[3], '│ one │   │');
+  assert.equal(t[4], '│ two │ 2 │', 'a cell past the header is dropped, a centred one centred');
+  assert.equal(textRows(renderMarkdown('| only | header |\n|---|---|', 40)).length, 4, 'a header with no rows is still a box');
+});
+
+test('pipes that are not a table stay as written, and a table ends at the first line without a pipe', () => {
+  assert.deepEqual(textRows(renderMarkdown('a | b\nplain text', 40)), ['a | b', 'plain text']);
+  assert.deepEqual(textRows(renderMarkdown('| a | b |\n---', 40)), ['| a | b |', '─'.repeat(40)], 'a lone rule under it is a rule');
+  assert.deepEqual(textRows(renderMarkdown('| a | b | c |\n|---|---|', 40)), ['| a | b | c |', '┼───┼───┼'], 'a delimiter row with another column count is not a table');
+  const t = textRows(renderMarkdown('| a |\n|---|\n| 1 |\nafter the table', 40));
+  assert.equal(t.at(-1), 'after the table');
+  assert.equal(t.at(-2), '└───┘');
 });
