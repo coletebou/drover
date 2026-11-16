@@ -180,8 +180,9 @@ than ssh) are plugins: directories with a `plugin.js` that add ops, MCP tools, U
 launch profiles, docker labels) are `KEY=value` lines in `~/.config/drover/*.env`. Both usually live in that fleet's
 own private repository, linked in. See `web/README.md`, "Plugins" and "Settings files".
 
-Drover was named apx / apx-web (CLI `apxw`) until 2026-10-15. The `apxw` shim, the `APXW_*` variable fallbacks and the
-import from `claude/apx-events.jsonl` stay until 2026-11-15; see `web/README.md` for what moved where.
+Drover was named apx / apx-web (CLI `apxw`) until 2026-10-15. The removal written for 2026-11-15 has not landed:
+the `apxw` shim, the `APXW_*` variable fallbacks and the import from `claude/apx-events.jsonl` are still in the
+tree. See `web/README.md` for what moved where, and for what still answers to the old name.
 
 ## CI
 

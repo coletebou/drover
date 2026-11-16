@@ -79,6 +79,12 @@ up reading. Redraws are coalesced to at most one per 16 ms, and only changed row
 streaming reply costs a row or two per delta. Text from transcripts and panes is sanitized before it is drawn: no
 escape sequence or control character from data reaches the terminal.
 
+## Chat text
+
+`chat.js` and `markdown.js` turn a transcript into rows no wider than the screen: paragraphs (a source line break stays a line break), headings, lists, quotes, fenced code, and inline code, bold, italic, strikethrough and links.
+
+A pipe table is a header row directly over a delimiter row (`| --- | :---: | ---: |`), then the body lines that contain a pipe. It is drawn in a box: bold headers, the delimiter row's alignment, inline Markdown inside the cells. An escaped pipe (`\|`) and a pipe inside a code span stay in their cell. A short row is padded out to the header's column count. When the table is wider than the screen, the widest columns narrow to one shared cap and their cells wrap, with a rule between rows that took more than one line. When the screen is too narrow to box without breaking a word (a column narrower than its longest word, and that length is counted at most 12), each row is drawn as `header: value` lines instead. A pipe line that is not part of such a table is drawn as text. A delimiter-shaped line on its own becomes a line of `┼`, which is what a real table's delimiter row used to do before it was recognized.
+
 ## Older daemons
 
 A daemon from before the UX overhaul still works: `native.board` "unknown op" switches the board to `fleet.summary`
