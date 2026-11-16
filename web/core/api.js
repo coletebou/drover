@@ -39,6 +39,7 @@ import { filterSessions, filtersGiven } from './session-filter.js';
 import * as version from './version.js';
 import { ops as searchOps } from './search/service.js';
 import * as docker from './docker.js';
+import * as prs from './prs.js';
 import * as vitals from './vitals.js';
 import * as placement from './placement.js';
 import { mergeHosts } from './search/query.js';
@@ -1327,6 +1328,7 @@ async function requireLaunchEfforts(host) {
  * behind it. Pass `fresh: true` to force a load. Mutations invalidate below.
  */
 export const CACHE_POLICY = {
+  'prs.list': 60_000, 'prs.get': 30_000,
   'tmux.windows': 5_000, 'tmux.sessions': 10_000, 'sessions.list': 10_000, 'sessions.get': 10_000,
   'host.facts': 60_000, 'host.identity': 600_000, 'host.list': 60_000, 'launch.profiles': 60_000,
   'events.state': 5_000, 'events.tail': 5_000, 'memory.overview': 30_000, 'memory.repos': 300_000,
@@ -1446,7 +1448,7 @@ export async function dispatchCached(op, args = {}) {
   return { result: r.value, cache: r.meta };
 }
 
-Object.assign(local, survey.ops, credentialOps, settingsOps, notifyOps, uploadOps, fileOps, fileWaitOps, openclaw.consoleOps, native.ops, searchOps, docker.ops, askOps);
+Object.assign(local, survey.ops, credentialOps, settingsOps, notifyOps, uploadOps, fileOps, fileWaitOps, openclaw.consoleOps, native.ops, searchOps, docker.ops, askOps, prs.ops);
 // Asks (core/ask): this host's ops, a peer's over its ssh rpc, and the alerts every client shows.
 askDeps.dispatch = (op, args) => dispatchLocal(op, args);
 askDeps.call = (host, op, args, opts) => (!host || host === hosts.LOCAL ? dispatchLocal(op, args) : callOn(host, op, args, dispatchLocal, opts));

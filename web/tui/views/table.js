@@ -22,14 +22,17 @@ export class TableView {
     if (!this.data || Date.now() - this.at > (this.def.ttl ?? 30_000)) this.load();
   }
   async load() {
-    if (this.loading) return;
-    this.loading = true; this.error = null; this.app.invalidate();
+    // Asked again while a read is out (a toggle pressed twice, a refresh during a load): that read may be for what
+    // was shown before, so another follows it, once, for what is shown now.
+    if (this.loading) { this.again = true; return; }
+    this.loading = true; this.again = false; this.error = null; this.app.invalidate();
     try {
       this.data = await this.def.load(this.app, this);
       this.rowsAll = this.def.rows(this.data, this) ?? [];
       this.at = Date.now();
     } catch (e) { this.error = e.unknownOp ? `this daemon does not know ${e.op}` : e.message; }
     finally { this.loading = false; this.app.invalidate(); }
+    if (this.again) return this.load();
   }
   refresh() { this.cache.clear(); this.load(); }
   /** Re-derive rows (a toggle changed what is shown) without asking the daemon again. */

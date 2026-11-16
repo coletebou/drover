@@ -21,6 +21,7 @@ import sessions from './views/sessions.js';
 import tmux from './views/tmux.js';
 import launch from './views/launch.js';
 import features from './views/features.js';
+import prs from './views/prs.js';
 import memory from './views/memory.js';
 import events from './views/events.js';
 import fleet from './views/fleet.js';
@@ -33,7 +34,7 @@ import manager from './views/manager.js';
 import search from './views/search.js';
 
 // A plugin's views (core/plugins.js ui.views) join at boot (loadPluginViews), each after the view its `after` names.
-const VIEWS = [board, sessions, tmux, launch, features, memory, files, manager, events, fleet, stacks, terminals, survey, search, settings];
+const VIEWS = [board, sessions, tmux, launch, prs, features, memory, files, manager, events, fleet, stacks, terminals, survey, search, settings];
 const byId = new Map(VIEWS.map((v) => [v.id, v]));
 const $ = (id) => document.getElementById(id);
 const main = $('main'), tabsEl = $('tabs'), hostStrip = $('hoststrip'), hostSelect = $('hostSelect'), qInput = $('q'), liveEl = $('live'), liveText = $('liveText'), toastsEl = $('toasts'), stage = $('stage');
