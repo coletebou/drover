@@ -1,10 +1,24 @@
-// The web UI's other views as tables (views/table.js): Sessions and Tmux per host, Events, Features, Fleet,
-// Search, Memory (reflections), Stacks, Launch profiles (read-only), Settings (read-only); a plugin adds its own
+// The web UI's other views as tables (views/table.js): Sessions and Tmux per host, GitHub PRs, Events, Features, Fleet,
+// Search, Memory (reflections), Stacks, Launch profiles (read-only), Settings (edited through settings.set); a plugin adds its own
 // (core/plugins.js tui). Each reads the same op the web view reads; Enter on a session or window opens it.
 import { kvRows, ago, tilde } from '../ui.js';
 import { renderMarkdown } from '../markdown.js';
 import { wrap, oneLine, truncate, sanitize } from '../width.js';
 import { clock } from '../chat.js';
+import { spawn } from 'node:child_process';
+import { Prompt } from './overlays.js';
+
+/** Open a URL in this machine's browser (the TUI's machine, wherever the daemon is). */
+export function openUrl(url, app) {
+  if (!/^https?:\/\//.test(String(url ?? ''))) { app.toast('no link to open', 'err'); return; }
+  const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'explorer.exe' : 'xdg-open';
+  try { const c = spawn(cmd, [url], { stdio: 'ignore', detached: true }); c.on('error', () => app.toast(`could not run ${cmd}`, 'err')); c.unref(); app.toast(`opened ${url}`, 'ok', 2500); }
+  catch (e) { app.toast(`open: ${e.message}`, 'err'); }
+}
+const PR_SCOPES = ['both', 'authored', 'review', 'involves'];
+const PR_STATES = ['open', 'merged', 'closed', 'all'];
+const prRole = (r) => (r.roles?.includes('reviewer') && !r.roles?.includes('author') ? 'review' : r.roles?.includes('author') ? 'mine' : '');
+const prState = (r) => [r.draft && r.state === 'open' ? 'draft' : r.state, r.state === 'merged' ? 'idle' : r.state === 'closed' ? 'dim' : r.draft ? 'dim' : 'work'];
 
 export const h = (host) => (host && host !== 'local' ? { host } : {});
 export const ms = (v) => (v == null ? 0 : typeof v === 'number' ? (v < 1e11 ? v * 1000 : v) : Date.parse(v) || 0);
@@ -75,6 +89,48 @@ export const TABLES = [
     enter: (w, app, v) => app.openSession({ kind: 'window', id: w.target, host: v.host, name: w.agent?.name ?? w.name, engine: w.agent?.engine, sessionId: w.agent?.sessionId, tmux: w.target, tab: w.agent?.sessionId ? 'chat' : 'screen' }), enterHint: 'open',
     keys: { a: (_, app, v) => { v.state.agents = !v.state.agents; v.rederive(); } }, hintKeys: [['a', 'agents only']],
     text: (w) => [w.target, w.name, w.cmd, w.cwd, w.agent?.name, w.agent?.engine, w.screen?.state].join(' '),
+  },
+  {
+    id: 'prs', title: 'PRs', ttl: 60_000, state: { scope: 'both', state: 'open' },
+    load: (app, v) => app.client.call('prs.list', { scope: v.state.scope, state: v.state.state, limit: 200 }, { timeoutMs: 60_000 }),
+    rows: (d) => d?.items ?? [],
+    meta: (d, v) => `${v.visible().length} ${v.state.state === 'all' ? '' : `${v.state.state} `}GitHub pull requests, ${{ both: 'yours and the ones asking your review', authored: 'yours', review: 'asking your review', involves: 'involving you' }[v.state.scope]} · s scope · t state`,
+    columns: [
+      { title: 'pull request', w: 30, get: (r) => [`${r.repo}#${r.number}`, 'accent'] },
+      { title: 'title', flex: 3, get: (r) => r.title },
+      { title: 'you', w: 6, get: (r) => [prRole(r), prRole(r) === 'review' ? 'wait' : 'dim'] },
+      { title: 'state', w: 7, get: prState },
+      { title: 'updated', w: 7, align: 'right', get: (r) => [ago(r.updated), 'dim'] },
+    ],
+    text: (r) => `${r.repo}#${r.number} ${r.title} ${r.author ?? ''} ${r.labels?.join(' ') ?? ''}`,
+    detail: (r, w, v) => {
+      const out = [title(r.title, `${r.repo}#${r.number}`), [[` ${r.url ?? ''}`, 'link']], []];
+      const g = v.lazy(`pr|${r.id}`, () => v.app.client.call('prs.get', { repo: r.repo, number: r.number }, { timeoutMs: 45_000 }));
+      const p = g.value;
+      const c = p?.checks;
+      out.push(...kv([
+        ['state', `${prState(r)[0]}${p?.mergeable ? `, ${p.mergeable}` : ''}${p?.mergeState && p.mergeState !== 'unknown' ? ` (${p.mergeState})` : ''}`],
+        ['author', r.author], ['you', r.roles?.join(', ')],
+        ['branches', p ? `${p.head} → ${p.base}` : null],
+        ['review', p?.reviewDecision ? p.reviewDecision.replace(/_/g, ' ') : p ? 'none yet' : null],
+        ['checks', c ? (c.total ? `${c.pass} passed${c.fail ? `, ${c.fail} failed (${c.failing.slice(0, 3).join(', ')})` : ''}${c.pending ? `, ${c.pending} running` : ''}${c.skipped ? `, ${c.skipped} skipped` : ''}` : 'none') : null, c?.fail ? 'err' : c?.pending ? 'wait' : c?.total ? 'ok' : null],
+        ['size', p?.size ? `+${p.size.additions} −${p.size.deletions} in ${p.size.files} files` : null],
+        ['comments', r.comments], ['labels', r.labels?.join(', ')], ['updated', r.updated ? new Date(r.updated).toLocaleString() : null],
+      ], w));
+      if (g.loading) out.push([], [[' reading the pull request…', 'dim']]);
+      if (g.error) out.push([], [[` ${g.error}`, 'err']]);
+      if (p?.reviews?.length) { out.push([], [[' reviews', 'dim']]); for (const x of p.reviews) out.push([['   ', null], [x.author ?? '?', 'bold'], [`  ${x.state.replace(/_/g, ' ')}`, x.state === 'approved' ? 'ok' : x.state === 'changes_requested' ? 'err' : 'dim']]); }
+      if (p?.body) out.push([], ...para(p.body, w, 14));
+      for (const x of p?.recentComments ?? []) out.push([], [[` ${x.author ?? '?'}`, 'bold'], [`  ${ago(x.at)} ago`, 'dim']], ...para(x.body, w, 6));
+      return out;
+    },
+    enter: (r, app) => openUrl(r.url, app), enterHint: 'open in the browser',
+    keys: {
+      o: (r, app) => openUrl(r?.url, app),
+      s: (_, app, v) => { v.state.scope = PR_SCOPES[(PR_SCOPES.indexOf(v.state.scope) + 1) % PR_SCOPES.length]; v.refresh(); },
+      t: (_, app, v) => { v.state.state = PR_STATES[(PR_STATES.indexOf(v.state.state) + 1) % PR_STATES.length]; v.refresh(); },
+    },
+    hintKeys: [['s', 'scope'], ['t', 'state']],
   },
   {
     id: 'events', title: 'Events', ttl: 10_000,
@@ -216,12 +272,60 @@ export const TABLES = [
     id: 'settings', title: 'Settings', ttl: 60_000,
     load: (app) => app.client.call('settings.get', {}),
     rows: (d) => [...flatten(d?.settings ?? {}).map(([k, val]) => ({ key: k, value: val })), ...(d?.activeMutes ?? []).map((m) => ({ key: `active mute ${m.scope} ${m.target}`, value: m.until ? `until ${new Date(m.until).toLocaleString()}` : 'until unmuted', mute: m }))],
-    meta: (d) => (d ? `settings, read-only here (change them in the web UI or with settings.set) · updated ${d.updated ? new Date(d.updated).toLocaleString() : 'never'}${d.by ? ` by ${d.by}` : ''}` : ''),
-    columns: [{ title: 'setting', flex: 1, get: (r) => [r.key, r.mute ? 'wait' : 'accent'] }, { title: 'value', flex: 1, get: (r) => (typeof r.value === 'object' ? JSON.stringify(r.value) : String(r.value)) }],
-    detail: (r, w) => [title(r.key), [], ...json(r.mute ?? r.value, w)],
+    meta: (d) => (d ? `Enter edits, Space flips a yes/no, u unmutes · updated ${d.updated ? new Date(d.updated).toLocaleString() : 'never'}${d.by ? ` by ${d.by}` : ''}` : ''),
+    columns: [{ title: 'setting', flex: 1, get: (r) => [r.key, r.mute ? 'wait' : READ_ONLY.has(r.key) ? 'dim' : 'accent'] }, { title: 'value', flex: 1, get: (r) => (typeof r.value === 'object' ? JSON.stringify(r.value) : String(r.value)) }],
+    detail: (r, w, v) => [title(r.key), [], ...json(r.mute ?? r.value, w), [], ...(r.mute ? [[[' u unmutes it', 'dim']]] : READ_ONLY.has(r.key) ? [[[' read-only', 'dim']]] : [[[` Enter edits it${typeof r.value === 'boolean' ? ', Space flips it' : ''}; the daemon checks the value (settings.set)`, 'dim']], ...defaultRow(r, v)])],
     text: (r) => `${r.key} ${JSON.stringify(r.value)}`,
+    enter: (r, app, v) => editSetting(r, app, v), enterHint: 'edit',
+    keys: {
+      space: (r, app, v) => toggleSetting(r, app, v), ' ': (r, app, v) => toggleSetting(r, app, v),
+      u: (r, app, v) => { if (!r?.mute) { app.toast('u unmutes an active mute row', 'dim'); return; } app.client.call('notify.unmute', { id: r.mute.id }).then(() => { app.toast(`unmuted ${r.mute.scope} ${r.mute.target}`, 'ok'); v.refresh(); }, (e) => app.toast(`unmute: ${e.message}`, 'err', 8000)); },
+    },
+    hintKeys: [['Space', 'flip'], ['u', 'unmute']],
   },
 ];
+
+// ------------------------------------------------------------ settings, edited through settings.set
+const READ_ONLY = new Set(['version']);
+/** { a: { b: value } } for the dotted key "a.b": the partial patch settings.set merges. */
+export function patchFor(key, value) { return key.split('.').reduceRight((acc, k) => ({ [k]: acc }), value); }
+/** The text a value is edited as: a string as it is, anything else as JSON. */
+export const editText = (v) => (typeof v === 'string' ? v : JSON.stringify(v));
+/** The edited text as the value: for a string setting the text (or a JSON string), else JSON. Throws when it is not. */
+export function parseEdit(text, was) {
+  const t = String(text).trim();
+  if (typeof was === 'string') { if (/^".*"$/s.test(t)) { try { return JSON.parse(t); } catch { /* the quotes are part of it */ } } return t; }
+  try { return JSON.parse(t); } catch { throw new Error(`not ${typeof was === 'number' ? 'a number' : typeof was === 'boolean' ? 'true or false' : 'JSON'}: ${truncate(t, 60)}`); }
+}
+function defaultRow(r, v) {
+  const dflt = r.key.split('.').reduce((o, k) => (o && typeof o === 'object' ? o[k] : undefined), v.data?.defaults);
+  return dflt === undefined || JSON.stringify(dflt) === JSON.stringify(r.value) ? [] : [[[' default ', 'dim'], [truncate(editText(dflt), 200), null]]];
+}
+async function saveSetting(r, value, app, v) {
+  try {
+    const out = await app.client.call('settings.set', { patch: patchFor(r.key, value), reason: 'drover tui' });
+    // What was stored, which the daemon may have brought into range (a volume of 7 is kept as 1).
+    const kept = r.key.split('.').reduce((o, k) => (o && typeof o === 'object' ? o[k] : undefined), out?.settings);
+    const adjusted = kept !== undefined && JSON.stringify(kept) !== JSON.stringify(value);
+    app.toast(`${r.key} = ${truncate(editText(kept === undefined ? value : kept), 60)}${adjusted ? ` (the daemon kept that, not ${truncate(editText(value), 30)})` : ''}`, adjusted ? 'wait' : 'ok', adjusted ? 8000 : 4000);
+    v.refresh();
+  }
+  catch (e) { app.toast(`not saved: ${e.message}`, 'err', 10_000); }
+}
+function editSetting(r, app, v) {
+  if (!r) return;
+  if (r.mute) { app.toast('u unmutes it', 'dim'); return; }
+  if (READ_ONLY.has(r.key)) { app.toast(`${r.key} is read-only`, 'dim'); return; }
+  app.modal = new Prompt(app, {
+    title: `Set ${r.key}`, initial: editText(r.value), placeholder: typeof r.value === 'string' ? 'text' : 'JSON',
+    onSubmit: (text) => { let value; try { value = parseEdit(text, r.value); } catch (e) { app.toast(e.message, 'err', 8000); return; } saveSetting(r, value, app, v); },
+  });
+  app.invalidate();
+}
+function toggleSetting(r, app, v) {
+  if (!r || typeof r.value !== 'boolean' || READ_ONLY.has(r.key)) { app.toast('Space flips a yes/no setting; Enter edits this one', 'dim'); return; }
+  saveSetting(r, !r.value, app, v);
+}
 
 function boardHost(x, v) { const hosts = v.app.board.hosts ?? []; return hosts.find((b) => b.name === x.name) ?? null; }
 function flatten(o, pre = '') {

@@ -17,13 +17,13 @@ drover manager keys [--install] [--key M] [--independent-key N] [--force]
 | 2 | Board | `native.board` and `board` events (`fleet.summary` and `fleet` events on an older daemon); answers with `sessions.answer {id, key, expect}` (`tmux.answer` on an older daemon) |
 | 3 | Sessions (per host) | `sessions.list` |
 | 4 | Tmux (per host) | `tmux.windows {classify: true}` |
-| 5 | Events | `events.tail`, refreshed after `mutation` events |
-| 6 | Features | `events.state` |
-| 7 | Fleet | `host.list`, the board's host counts, `host.facts` for the selected host, `host.probe` on `p` |
-| 8 | Search | `search.fleet` (`/` types the query) |
-| 9 | Memory | `reflections.list` (every repo when no `DROVER_DEFAULT_REPO` is set) |
-| 0 | Stacks | `docker.fleet` |
-| Tab | Launch, Settings, and plugin tables | `launch.profiles` (read-only), `settings.get` (read-only); a plugin's table sits after the view it names as `after` (a digit while it is among the first ten) |
+| 5 | PRs | `prs.list` (GitHub through the host's `gh`): `s` scope (yours and the ones asking your review, yours, asking your review, involving you), `t` state, `prs.get` for the selected one, Enter or `o` opens it in the browser |
+| 6 | Events | `events.tail`, refreshed after `mutation` events |
+| 7 | Features | `events.state` |
+| 8 | Fleet | `host.list`, the board's host counts, `host.facts` for the selected host, `host.probe` on `p` |
+| 9 | Search | `search.fleet` (`/` types the query) |
+| 0 | Memory | `reflections.list` (every repo when no `DROVER_DEFAULT_REPO` is set) |
+| Tab | Stacks, Launch, Settings, and plugin tables | `docker.fleet`, `launch.profiles` (read-only), `settings.get` (Enter edits a setting through `settings.set`, Space flips a yes/no, `u` removes a mute through `notify.unmute`; the toast says when the daemon kept another value, a volume brought into range); a plugin's table sits after the view it names as `after` (a digit while it is among the first ten: the APEX plugin's MRs comes after Tmux and moves the rest one on) |
 | | Session (Enter on a strip, session or window) | `sessions.get`, `sessions.transcript` with `since` every 3 s plus `turn` events (after `/api/follow`), `tmux.capture` every 1.5 s on Screen |
 
 Every table: `j`/`k`, PgUp/PgDn, `/` filter, Enter (open, or details), `R` refresh, and `[` `]` change the host

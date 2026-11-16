@@ -90,7 +90,7 @@ describe('drover tui against a current daemon', { skip: hasTmux ? false : 'tmux 
     s = await c.until((x) => / Sessions {2}on fakehost/.test(x) && x.includes('demo-work'), 'Sessions');
     c.tmux.keys('t', 'Tab');
     s = await c.until((x) => / Tmux {2}on fakehost/.test(x), 'Tmux');
-    c.tmux.keys('t', '5');
+    c.tmux.keys('t', '6');   // after 5 PRs
     s = await c.until((x) => x.includes('a synthetic note'), 'Events');
     c.tmux.keys('t', '?');
     s = await c.until((x) => x.includes('Keys') && x.includes('command palette'), 'help');
@@ -112,7 +112,7 @@ describe('drover tui against a current daemon', { skip: hasTmux ? false : 'tmux 
     s = await c.until((x) => x.includes('Chat') && x.includes('Read 1 file, ran 1 command'), 'opened by a second click');
     c.tmux.mouse('t', at(s, 'Info', 2).x + 1, at(s, 'Info', 2).y);
     s = await c.until((x) => /session id\s+s-work/.test(x), 'Info, by a click on the session tab');
-    c.tmux.mouse('t', at(s, '5 Events').x + 1, 0);
+    c.tmux.mouse('t', at(s, '6 Events').x + 1, 0);
     s = await c.until((x) => x.includes('a synthetic note'), 'Events, from inside a session');
     c.tmux.mouse('t', at(s, '/ filter', 44).x, 44);
     s = await c.until((x) => x.includes('filter: ▍'), 'filtering, by a click on the / hint');

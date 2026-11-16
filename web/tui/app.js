@@ -22,8 +22,8 @@ export const TOPICS = ['board', 'alerts', 'turn', 'manager', 'mutation'];
 // What an older daemon needs instead (it ignores topics and sends everything; these are the ones read).
 const FALLBACK_TOPICS = ['fleet', 'alerts', 'turn', 'mutation', 'notify'];
 // A plugin's tables (opts.tables, from core/plugins.js tuiTables) join this list in the constructor, after their `after`.
-export const MAIN = ['manager', 'board', 'sessions', 'tmux', 'events', 'features', 'fleet', 'search', 'memory', 'stacks', 'launch', 'settings'];
-export const ALIASES = { reflections: 'memory', mr: 'mrs', windows: 'tmux', profiles: 'launch', docker: 'stacks' };
+export const MAIN = ['manager', 'board', 'sessions', 'tmux', 'prs', 'events', 'features', 'fleet', 'search', 'memory', 'stacks', 'launch', 'settings'];
+export const ALIASES = { reflections: 'memory', mr: 'mrs', pr: 'prs', pulls: 'prs', windows: 'tmux', profiles: 'launch', docker: 'stacks' };
 const WORD_MOVES = new Set(['M-b', 'M-f']);
 const digitOf = (i) => (i < 9 ? String(i + 1) : i === 9 ? '0' : null);
 

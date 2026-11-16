@@ -212,7 +212,7 @@ test('app: a click on a tab goes there, on " drover " opens the palette, on a fo
     f.app.mouse(click(bar.indexOf('2 Board'), 0));
     assert.equal(MAIN[f.app.cur], 'board');
     frame = f.last();
-    f.app.mouse(click(rowText(frame[0]).indexOf('5 Events') + 2, 0));
+    f.app.mouse(click(rowText(frame[0]).indexOf('6 Events') + 2, 0));
     assert.equal(MAIN[f.app.cur], 'events');
     f.app.mouse(click(1, 0));
     assert.ok(f.app.modal instanceof Palette, 'the name opens the palette');

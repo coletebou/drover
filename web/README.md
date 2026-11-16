@@ -716,6 +716,22 @@ these ops.
 A bad value is ignored with one line on stderr, and the default applies. For example
 `DROVER_DOCKER_KINDS=[{"kind":"app","match":"^web-app-","label":"apps"},{"kind":"core","match":"^web-"}]`.
 
+## GitHub pull requests
+
+Your pull requests through the host's `gh` login (no token passes through Drover; `gh auth login` once per host): by
+default the ones you opened and the ones that ask your review, each with its roles, newest update first; one PR with
+its branches, mergeable state, review decision, latest review per reviewer, checks (passed, failed with names,
+running, skipped), size and last comments.
+
+```
+drover op prs.list '{"scope":"review"}'          # scope both | authored | review | involves; state open | merged | closed | all; repo, owner, limit
+drover op prs.get '{"repo":"owner/name","number":12}'
+```
+
+Ops `prs.list` (cached 60 s) and `prs.get` (30 s), run on the host `host` names; MCP `drover_prs_list` and
+`drover_prs_get`; the PRs view in the web UI (`u`) and in the TUI (after Tmux: `s` scope, `t` state, Enter opens the PR
+in the browser). A forge that is not GitHub is a plugin's: APEX Repos merge requests are `mrs.*`.
+
 ## Reflections
 
 `drover_reflections` (ops `reflections.*`) fronts the dotfiles `reflections` CLI: `list`, `repos`,
