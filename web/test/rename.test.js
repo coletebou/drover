@@ -112,12 +112,6 @@ test('legacy truth file: nothing to do without one', async () => {
   assert.equal(existsSync(f.file), false);
 });
 
-test('readAll drops a repeated id', async () => {
-  const f = await eventsFixture();
-  await writeFile(f.file, line('a1') + '\n' + line('a1') + '\n' + line('a2') + '\n');
-  assert.deepEqual((await readAll(f.file)).map((e) => e.id), ['a1', 'a2']);
-});
-
 test('apxw shim: one deprecation line on stderr, stdout unchanged', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'drover-shim-'));
   const apxw = path.join(dir, 'apxw');

@@ -8,8 +8,6 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, stat, lstat, chmod, utimes, rmdir } from 'node:fs/promises';
 import { existsSync, realpathSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { EventEmitter } from 'node:events';
-import { PassThrough } from 'node:stream';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -23,7 +21,6 @@ process.env.DROVER_DOTFILES = path.join(T, 'dotfiles');
 process.env.DROVER_EVENTS = path.join(T, 'dotfiles', 'claude', 'drover-events.jsonl');
 process.env.DROVER_CACHE = path.join(T, 'cache');
 process.env.DROVER_HOST = 'testbox';
-await writeFile(path.join(T, 'dotfiles', 'claude', 'fleet-hosts.txt'), 'trustbox\n');
 await writeFile(process.env.DROVER_PROFILES, JSON.stringify({
   claude: { models: [], profiles: [{ id: 'claude-skip', label: 'skip permissions', argv: ['--dangerously-skip-permissions'], env: {}, default: true }] },
   codex: { models: [], profiles: [{ id: 'codex-default', label: 'default', argv: [], env: {}, default: true }] },
@@ -31,8 +28,6 @@ await writeFile(process.env.DROVER_PROFILES, JSON.stringify({
 
 const trust = await import('../core/trust.js');
 const launchMod = await import('../core/launch.js');
-const remote = await import('../core/remote.js');
-const api = await import('../core/api.js');
 const codex = await import('../core/codex.js');
 const logs = [];
 trust._deps.home = () => HOME;
@@ -54,7 +49,7 @@ async function repoWithWorktree() {
 const readJson = async (f) => JSON.parse(await readFile(f, 'utf8'));
 const modeOf = async (f) => (await stat(f)).mode & 0o777;
 
-after(async () => { codex.sharedClient().stop(); remote.stopAll(); await rm(T, { recursive: true, force: true }); });   // nothing may keep this process alive
+after(async () => { codex.sharedClient().stop(); await rm(T, { recursive: true, force: true }); });   // nothing may keep this process alive
 
 describe('Claude Code: first-run onboarding, ~/.claude.json hasCompletedOnboarding', () => {
   test('the key is added; every other key and the file mode stay; a second call rewrites nothing', async () => {
@@ -624,25 +619,5 @@ describe('launch.start in tmux', () => {
     const r = await launchMod.launch({ engine: 'claude', mode: 'tmux', cwd: dir, credential: 'none', name: 't4' }, { actor: 't' });
     assert.equal(r.ok, true); assert.match(r.trust.skipped, /does not parse/);
     assert.equal(await readFile(CLAUDE, 'utf8'), '{"projects": ');
-  });
-
-  test('a launch on another host is trusted there: the request goes to that host\'s drover rpc, nothing is written here', async () => {
-    const sent = [];
-    remote._deps.spawn = () => {
-      const c = new EventEmitter();
-      c.stdout = new PassThrough(); c.stderr = new PassThrough();
-      c.stdin = { write(d) { for (const line of String(d).split('\n').filter(Boolean)) { const q = JSON.parse(line); sent.push(q); setImmediate(() => c.stdout.write(JSON.stringify({ id: q.id, ok: true, result: { ok: true, trust: { engine: 'claude', key: '/remote/dir', changed: true } } }) + '\n')); } }, end() { setImmediate(() => c.emit('close', 0)); }, on() {} };
-      c.kill = () => setImmediate(() => c.emit('close', null));
-      return c;
-    };
-    let local = 0;
-    const real = launchMod._deps.trustFolder;
-    launchMod._deps.trustFolder = async () => { local++; return null; };
-    try {
-      const r = await api.dispatch('launch.start', { host: 'trustbox', engine: 'claude', mode: 'tmux', cwd: '/remote/dir', trust: false });
-      assert.deepEqual(sent.map((q) => [q.op, q.args.cwd, q.args.trust]), [['launch.start', '/remote/dir', false]], 'the trust choice travels with the launch');
-      assert.equal(r.trust.key, '/remote/dir');
-      assert.equal(local, 0, 'no trust step on the calling host');
-    } finally { launchMod._deps.trustFolder = real; remote.stopAll(); }
   });
 });

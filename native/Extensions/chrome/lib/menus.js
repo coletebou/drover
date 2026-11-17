@@ -21,8 +21,9 @@ export function childTitle(s) {
   return esc(`${s.state === 'waiting' ? 'Waiting: ' : ''}${truncate(s.name, 40)} (${s.host})`);
 }
 
-export function menuSpec(sessions, { max = 8 } = {}) {
-  const list = (sessions ?? []).slice(0, max);
+const MAX_SESSIONS = 8; // per parent; the rest are one click away in the side panel
+export function menuSpec(sessions) {
+  const list = (sessions ?? []).slice(0, MAX_SESSIONS);
   const spec = PARENTS.map((p) => ({ id: p.id, title: p.title, contexts: p.contexts }));
   for (const p of PARENTS) {
     if (!list.length) {

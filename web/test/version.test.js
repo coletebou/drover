@@ -6,11 +6,10 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, rm, cp } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { EventEmitter } from 'node:events';
-import { PassThrough } from 'node:stream';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { fakePeer } from './fake-peer.js';
 
 const tmp = await mkdtemp(path.join(tmpdir(), 'drover-version-'));
 process.env.DROVER_CACHE = path.join(tmp, 'cache');
@@ -26,7 +25,6 @@ const api = await import('../core/api.js');
 const remote = await import('../core/remote.js');
 const { UPDATE_HINT } = await import('../core/util.js');
 const { META, isMutating } = await import('../core/ops-meta.js');
-const { GENERATED_TOOLS } = await import('../mcp/server.js');
 after(async () => { remote.stopAll(); await rm(tmp, { recursive: true, force: true }); });
 
 const WEB = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -147,27 +145,7 @@ describe('host.version on this machine', () => {
 });
 
 /** A fake `ssh <host> drover rpc` per host: answer(host, op, args) is a result or 'ERR:<message>'. */
-function fakeSpawn(answer) {
-  const calls = [];
-  remote._deps.spawn = (file, argv) => {
-    const host = argv[argv.indexOf('--') - 1];
-    const c = new EventEmitter();
-    c.stdout = new PassThrough(); c.stderr = new PassThrough();
-    c.stdin = {
-      write(d) {
-        for (const line of String(d).split('\n').filter(Boolean)) {
-          const req = JSON.parse(line); calls.push({ host, op: req.op, args: req.args });
-          const a = answer(host, req.op, req.args);
-          setImmediate(() => c.stdout.write(JSON.stringify(typeof a === 'string' && a.startsWith('ERR:') ? { id: req.id, ok: false, error: a.slice(4) } : { id: req.id, ok: true, result: a }) + '\n'));
-        }
-      },
-      end() { setTimeout(() => c.emit('close', 0), 10); }, on() {},
-    };
-    c.kill = () => setImmediate(() => c.emit('close', null));
-    return c;
-  };
-  return calls;
-}
+const fakeSpawn = (answer) => fakePeer(remote, ({ host, op, args }) => answer(host, op, args)).calls;
 
 describe('fleet.versions', () => {
   const real = { ...api.local };
@@ -222,22 +200,13 @@ describe('fleet.versions', () => {
     const r = await api.front['fleet.versions']({ hosts: ['local', 'stalebox'] });
     assert.equal(r.everywhere, undefined); assert.equal(r.commit, undefined);
     assert.deepEqual(r.hosts.map((h) => [h.state, h.loaded]), [['live', 'e3d5b04aaaa'], ['restart', 'd1a1ec8bbbb']]);
-  });
-  test('on the op table and an MCP tool each; reads; never cached; the fleet op is the front\'s own', () => {
+    // Both are reads and never cached (a cached host.version would hide a restart), and both take a commit: the MCP
+    // schema refuses arguments it does not list.
     for (const op of ['host.version', 'fleet.versions']) {
-      assert.ok(api.OPS.includes(op), op);
-      assert.ok(META[op].d.length > 80, op);
+      assert.ok(META[op].s.properties.commit, op);
       assert.equal(isMutating(op), false, op);
       assert.equal(api.CACHE_POLICY[op], undefined, `${op} is never cached`);
-      assert.equal(typeof META[op].s.properties.commit.description, 'string', op);
-      assert.equal(typeof META[op].s.properties.host.description, 'string', `${op} takes host`);
-      const tool = GENERATED_TOOLS.find((t) => t.name === `drover_${op.replace('.', '_')}`);
-      assert.ok(tool, op);
-      assert.ok(JSON.stringify(tool).includes('"host"'), `the ${tool?.name} tool offers host`);
     }
-    assert.equal(typeof api.local['host.version'], 'function');
-    assert.equal(api.local['fleet.versions'], undefined);
-    assert.equal(typeof api.front['fleet.versions'], 'function');
   });
 });
 

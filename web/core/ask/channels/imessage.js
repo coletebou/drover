@@ -199,6 +199,3 @@ export async function health({ env = _deps.env } = {}) {
   if (mine) return { ok: false, configured: true, error: 'this Mac account\'s iMessage is the owner\'s own Apple ID: a text to the owner would be a note to self. Sign it into another Apple ID, or run the daemon as another macOS user' };
   return { ok: true, configured: true, watching: Boolean(rpc?.child) };
 }
-
-/** For tests: forget the running child. */
-export function _reset() { rpc?.stop(); rpc = null; }

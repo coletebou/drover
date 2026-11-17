@@ -23,11 +23,12 @@ function lum(hex) {
   const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 }
-export function contrast(a, b) { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); }
+function contrast(a, b) { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); }
 
 const SURFACES = ['bg', 'bg-2', 'bg-3', 'bg-4'];
 // Minimum ratio for each text token on every surface. Primary and secondary text
-// aim well above AA; muted and state colors stay above AA (4.5) everywhere.
+// aim well above AA; muted and state colors stay above AA (4.5) everywhere. The ratio
+// is symmetric, so --ink on --bg also covers the primary button (a --bg label on an --ink fill).
 const MIN = { ink: 10, 'ink-2': 7, 'ink-3': 5.2, 'ink-4': 4.5, amber: 4.5, steel: 4.5, moss: 4.5, brick: 4.5, lilac: 4.5 };
 
 for (const [scheme, t] of [['dark', dark], ['light', light]]) {
@@ -40,9 +41,6 @@ for (const [scheme, t] of [['dark', dark], ['light', light]]) {
       }
     });
   }
-  test(`${scheme}: primary button label reads on the ink fill`, () => {
-    assert.ok(contrast(t.bg, t.ink) >= 10);
-  });
 }
 
 test('mono and small sizes are not below 13px', () => {

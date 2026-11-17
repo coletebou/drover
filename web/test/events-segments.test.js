@@ -140,7 +140,7 @@ test('a same-size rewrite that keeps the mtime is caught while the file is fresh
   assert.deepEqual(ids(await readAll(base)), ['bbbb']);
 });
 
-test('an old segment that does not change is not reopened, and still reads right when it does change', async () => {
+test('an old segment that does not change reads the same, and still reads right when it does change', async () => {
   const base = await setup();
   const seg = path.join(segmentDir(base), '2026-11-01.jsonl');
   await writeFile(seg, line('o1', '2026-11-01T01:00:00Z'));

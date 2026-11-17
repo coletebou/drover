@@ -9,8 +9,8 @@ import path from 'node:path';
 
 const STATE = await mkdtemp(path.join(tmpdir(), 'drover-search-cov-'));
 process.env.DROVER_STATE = STATE;   // before api.js reads it
-const { claudeLine, codexLine, claudeToolLine, codexToolLines, markdownSections, docSections, COMMAND_CHARS } = await import('../core/search/extract.js');
-const { Store, KEYWORD_ONLY } = await import('../core/search/store.js');
+const { claudeToolLine, codexToolLines, markdownSections, docSections, COMMAND_CHARS } = await import('../core/search/extract.js');
+const { Store } = await import('../core/search/store.js');
 const { Indexer, EXTRACT_VERSION, docPatterns, homeInIdentity, searchKinds } = await import('../core/search/indexer.js');
 const { search } = await import('../core/search/query.js');
 const { truncateNormalize } = await import('../core/search/vec.js');
@@ -52,14 +52,6 @@ describe('command lines', () => {
     assert.deepEqual(codexToolLines({ type: 'custom_tool_call', name: 'apply_patch', input: '*** Begin Patch\n*** Add File: turbo.json\n+{}\n*** Update File: package.json\n*** Delete File: old.ts\n*** End Patch' }), ['wrote turbo.json', 'edited package.json', 'deleted old.ts']);
     assert.deepEqual(codexToolLines({ type: 'custom_tool_call', name: 'exec', input: 'const r = await tools.exec_command({cmd:"rg -n \\"tsgo\\" docs", max_output_tokens: 100}); text(r);' }), ['$ rg -n "tsgo" docs']);
     for (const p of [{ type: 'local_shell_call', action: { command: [''] } }, { type: 'function_call', name: 'send_message', arguments: '{"message":"pv_x"}' }, { type: 'function_call', name: 'sleep', arguments: '{"duration_ms":10}' }, { type: 'function_call', name: 'exec_command', arguments: 'not json' }, { type: 'custom_tool_call', name: 'exec', input: 'text(1)' }]) assert.deepEqual(codexToolLines(p), []);
-  });
-  test('transcript lines carry the commands as their own units; tool output stays out', () => {
-    const a = claudeLine(j({ type: 'assistant', message: { content: [{ type: 'text', text: 'Installing it.' }, { type: 'tool_use', name: 'Bash', input: { command: 'turbo --version' } }] } }));
-    assert.deepEqual(a.units, [{ role: 'assistant', text: 'Installing it.' }, { role: 'command', text: '$ turbo --version' }]);
-    assert.deepEqual(claudeLine(j({ type: 'user', message: { content: [{ type: 'tool_result', content: '1.13.4' }] } })).units, []);
-    const c = codexLine(j({ type: 'response_item', timestamp: 't', payload: { type: 'function_call', name: 'exec_command', arguments: JSON.stringify({ cmd: 'tsgo -b' }) } }));
-    assert.deepEqual(c.units, [{ role: 'command', text: '$ tsgo -b' }]);
-    assert.deepEqual(codexLine(j({ type: 'response_item', payload: { type: 'function_call_output', output: 'done' } })).units, []);
   });
 });
 
@@ -147,7 +139,6 @@ describe('indexing what agents did, documents, scope', () => {
     assert.equal(cmds.length, 1, 'the Write and the Bash call (a tool result between them) are one run');
     assert.match(cmds[0].text, /^wrote \/home\/u\/code\/webapp\/turbo\.json\n\$ npm i -g turbo@1\.13\.4 && turbo --version {2}# Install Turbo 1\.x globally$/);
     assert.equal(cmds[0].session_id, SID); assert.equal(cmds[0].project, 'webapp'); assert.equal(cmds[0].ts, '2026-04-30T21:49:54Z');
-    assert.deepEqual(KEYWORD_ONLY, ['command']);
     assert.equal(store.pendingCount(), 0, 'every other chunk has a vector, and commands are not pending');
     assert.equal(store.stats().keywordOnly, 1);
     const kw = await search(store, null, { query: 'turbo@1.13.4', mode: 'keyword' });

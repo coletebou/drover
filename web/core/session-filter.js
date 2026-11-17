@@ -24,7 +24,7 @@ export function cwdRoots(cwd, home) {
 const inside = (dir, roots) => typeof dir === 'string' && roots.some((r) => dir === r || dir.startsWith(r.endsWith('/') ? r : `${r}/`));
 
 /** When a session last did something, in ms: Claude updatedAt (ms), Codex updatedAt (s), a bot's lastSeenAt, a transcript's mtime, a headless start. */
-export function activityMs(s) {
+function activityMs(s) {
   for (const v of [s?.updatedAt, s?.lastSeenAt, s?.statusUpdatedAt, s?.mtime, s?.startedAt, s?.createdAt]) {
     if (typeof v === 'number' && Number.isFinite(v) && v > 0) return v < 1e12 ? v * 1000 : v;
     if (typeof v === 'string') { const t = Date.parse(v); if (Number.isFinite(t)) return t; }

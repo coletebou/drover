@@ -88,8 +88,11 @@ describe('drover op with a plugin a settings file names', () => {
     const cfg = path.join(DIR, 'cfg3');
     await mkdir(cfg);
     await writeFile(path.join(cfg, '00-plugins.env'), `DROVER_PLUGINS=${plugin}:${broken}\n`);
-    const env = { ...process.env, DROVER_CONFIG_DIR: cfg, DROVER_SECRETS_FILE: path.join(DIR, 'no-secrets') };
-    delete env.DROVER_PLUGINS; delete env.APXW_PLUGINS;
+    // Only what the command needs: a temp HOME (the CLI moves ~/.local/state/apx-web and reads its state and dotfiles
+    // there) and none of this machine's DROVER_* settings; the plugin list comes from the settings file alone.
+    const home = path.join(DIR, 'home');
+    await mkdir(home);
+    const env = { PATH: process.env.PATH, HOME: home, DROVER_CACHE: process.env.DROVER_CACHE, DROVER_CONFIG_DIR: cfg, DROVER_SECRETS_FILE: path.join(DIR, 'no-secrets') };
     const { stdout, stderr } = await run(process.execPath, [BIN, 'op', 'hello.say', '{"to":"you"}'], { env, timeout: 60_000 });
     assert.deepEqual(JSON.parse(stdout), { text: 'hello, you' });
     assert.match(stderr, new RegExp(`drover: plugin ${broken.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} not loaded: plugin name "Not A Valid Name" must be lowercase`));

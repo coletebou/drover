@@ -65,16 +65,6 @@ describe('reading', () => {
     await memory.reflectionsList('webapp', { all: true });
     assert.deepEqual((await last()).argv, ['list', '--all', '--json']);
   });
-  test('list: the default repo when none is named; all needs neither a repo nor a default', async () => {
-    await memory.reflectionsList();
-    assert.deepEqual((await last()).argv, ['list', '--repo=webapp', '--json']);
-    delete process.env.DROVER_DEFAULT_REPO;
-    try {
-      await memory.reflectionsList(undefined, { all: true });
-      assert.deepEqual((await last()).argv, ['list', '--all', '--json']);
-      await assert.rejects(memory.reflectionsList(), /repo is required/);
-    } finally { process.env.DROVER_DEFAULT_REPO = 'webapp'; }
-  });
   test('list and search keep to this machine\'s identity unless anyIdentity; repos maps the CLI\'s counts', async () => {
     await memory.reflectionsList('webapp', { anyIdentity: true });
     assert.deepEqual((await last()).argv, ['list', '--repo=webapp', '--any-identity', '--json']);
@@ -138,17 +128,21 @@ describe('writing', () => {
     await assert.rejects(memory.reflectionAdd({ title: 'x', kind: 'chore' }), /kind must be one of/);
     await assert.rejects(memory.reflectionAdd({ title: 'x', priority: 9 }), /priority must be an integer from 1 to 5/);
   });
-  test('a call that names no repo means DROVER_DEFAULT_REPO; without the setting it is refused before the CLI runs', async () => {
+  test('a call that names no repo means DROVER_DEFAULT_REPO; without the setting it is refused before the CLI runs, and list --all needs neither', async () => {
     process.env.DROVER_DEFAULT_REPO = 'billing';
     try {
       assert.equal((await memory.reflectionAdd({ title: 't' })).repo, 'billing');
       assert.deepEqual((await last()).argv, ['add', '--json', '--repo=billing', '--kind=note', '--title=t']);
+      await memory.reflectionsList();
+      assert.deepEqual((await last()).argv, ['list', '--repo=billing', '--json']);
       delete process.env.DROVER_DEFAULT_REPO;
       await rm(path.join(dir, 'calls.jsonl'), { force: true });
       for (const call of [() => memory.reflectionAdd({ title: 't' }), () => memory.reflectionsCandidates({ query: 'q' }), () => memory.reflectionsList()]) {
         await assert.rejects(call(), /^Error: repo is required \(or set DROVER_DEFAULT_REPO\)$/);
       }
       assert.equal((await calls()).length, 0);
+      await memory.reflectionsList(undefined, { all: true });
+      assert.deepEqual((await last()).argv, ['list', '--all', '--json'], 'all lists every repo: no repo and no default needed');
       assert.equal((await memory.reflectionsList('billing')).items.length, 1, 'a call that names its repo needs no setting');
     } finally { process.env.DROVER_DEFAULT_REPO = 'webapp'; }
   });

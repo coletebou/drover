@@ -4,13 +4,12 @@
 // here reaches the user's tmux, sessions or hosts.
 import { test, describe, before, after, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { EventEmitter } from 'node:events';
-import { PassThrough } from 'node:stream';
-import { mkdtemp, mkdir, writeFile, chmod, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, chmod } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { hasTmux, startPrivateTmux } from './private-tmux.js';
+import { fakePeer } from './fake-peer.js';
 
 const tmp = await mkdtemp(path.join(tmpdir(), 'drover-answer-'));
 process.env.DROVER_CACHE = path.join(tmp, 'cache');
@@ -33,32 +32,23 @@ const { dispatch } = await import('../core/api.js');
 const { capture, screenHash } = await import('../core/tmux.js');
 const remote = await import('../core/remote.js');
 
-const hasTmux = spawnSync('sh', ['-c', 'command -v tmux'], { encoding: 'utf8' }).status === 0;
 const PERMISSION = '\n Bash command\n\n   npm test\n\n Do you want to proceed?\n ❯ 1. Yes\n   2. Yes, and don\'t ask again for npm commands\n   3. No, and tell Claude what to do differently (esc)\n\n Esc to cancel\n';
+// An AskUserQuestion selector, which has "Enter to select" where a permission dialog has its question.
+const QUESTION = 'Which approach should I take for the rebase?\n\n❯ 1. Rebase onto dev (Recommended)\n  2. Merge dev in\n  3. Stop here\n\nEnter to select · ↑/↓ to navigate · Esc to cancel\n';
 
 describe('real tmux: sessions.answer presses one key on the dialog the session shows', { skip: hasTmux ? false : 'tmux is not installed here' }, () => {
-  let env, realTmux, tdir;
+  let server, tdir, tmuxCmd;
   const SESSION = 'drover-sa-test';
-  const tmuxCmd = (args) => spawnSync(realTmux, args, { env, encoding: 'utf8' });
   before(async () => {
-    realTmux = spawnSync('sh', ['-c', 'command -v tmux'], { encoding: 'utf8' }).stdout.trim();
-    tdir = await mkdtemp(path.join(tmpdir(), 'droversa-'));
-    delete process.env.TMUX; delete process.env.TMUX_PANE;
-    process.env.TMUX_TMPDIR = tdir;
-    env = { ...process.env };
-    assert.equal(tmuxCmd(['-f', '/dev/null', 'new-session', '-d', '-s', SESSION, '-x', '120', '-y', '40', 'sleep', '3600']).status, 0);
+    server = await startPrivateTmux({ prefix: 'droversa-', session: SESSION, sessionArgs: ['-x', '120', '-y', '40'] });
+    ({ dir: tdir, tmux: tmuxCmd } = server);
   });
-  after(async () => {
-    // The kill names the private server's socket: with TMUX_TMPDIR alone, a missing folder would send it to the
-    // user's default server.
-    if (env) tmuxCmd(['-S', path.join(tdir, `tmux-${process.getuid()}`, 'default'), 'kill-server']);
-    if (tdir) await rm(tdir, { recursive: true, force: true });
-  });
-  /** A window that draws a dialog and logs every key; a registry entry for a session in it. */
-  const dialogSession = async (name, sid) => {
+  after(() => server?.stop());
+  /** A window that draws a dialog (a permission prompt unless another screen is given) and logs every key; a registry entry for a session in it. */
+  const dialogSession = async (name, sid, screen = PERMISSION) => {
     const log = path.join(tdir, `${name}.keys`), script = path.join(tdir, `${name}.cjs`);
     await writeFile(log, '');
-    await writeFile(script, `const fs = require('node:fs'); process.stdout.write(${JSON.stringify(PERMISSION)}); process.stdin.setRawMode?.(true); process.stdin.on('data', (b) => fs.appendFileSync(${JSON.stringify(log)}, b)); setInterval(() => {}, 1000);`);
+    await writeFile(script, `const fs = require('node:fs'); process.stdout.write(${JSON.stringify(screen)}); process.stdin.setRawMode?.(true); process.stdin.on('data', (b) => fs.appendFileSync(${JSON.stringify(log)}, b)); setInterval(() => {}, 1000);`);
     assert.equal(tmuxCmd(['new-window', '-d', '-t', SESSION, '-n', name, process.execPath, script]).status, 0);
     const [winId, paneId] = tmuxCmd(['display-message', '-p', '-t', `${SESSION}:${name}`, '#{window_id} #{pane_id}']).stdout.trim().split(' ');
     for (let i = 0; i < 100 && !(await capture(`${SESSION}:${name}`, { lines: 60 })).includes('Esc to cancel'); i++) await new Promise((r) => setTimeout(r, 50));
@@ -84,11 +74,15 @@ describe('real tmux: sessions.answer presses one key on the dialog the session s
     assert.equal(yes.refused, true); assert.match(yes.reason, /does not take "y"/);
     assert.equal(await s.keys(), '');
   });
-  test('by window target (an agent seen only as a window): Escape reaches it', async () => {
+  test('by window target (an agent seen only as a window): Escape reaches a permission dialog, a digit a question\'s option', async () => {
     const s = await dialogSession('perm3', null);
     const r = await dispatch('sessions.answer', { id: s.window, key: 'Escape' });
     assert.equal(r.ok, true, r.reason);
     assert.equal(await s.keys(), '\x1b');
+    const q = await dialogSession('question', null, QUESTION);
+    const a = await dispatch('sessions.answer', { id: q.window, key: '1', expect: screenHash(await capture(q.window, { lines: 60 })) });
+    assert.equal(a.ok, true, a.reason);
+    assert.equal(await q.keys(), '1');
   });
   test('a session without a pane, an unknown id and a bad key are errors', async () => {
     await writeFile(path.join(tmp, 'claude', 'sessions', `${process.pid}.json`), JSON.stringify({ pid: process.pid, sessionId: '33333333-3333-4333-8333-333333333333', cwd: tdir, name: 'paneless', status: 'idle', tmux: null }));
@@ -101,25 +95,12 @@ describe('real tmux: sessions.answer presses one key on the dialog the session s
 /** A fake `ssh oldbox drover rpc` from before sessions.answer: it knows sessions.get and tmux.answer only. */
 function oldPeer() {
   const calls = [];
-  remote._deps.spawn = () => {
-    const c = new EventEmitter();
-    c.stdout = new PassThrough(); c.stderr = new PassThrough();
-    c.stdin = {
-      write(d) {
-        for (const line of String(d).split('\n').filter(Boolean)) {
-          const req = JSON.parse(line);
-          calls.push({ op: req.op, args: req.args });
-          const reply = req.op === 'sessions.get' ? { ok: true, result: req.args.id === 'cx1' ? { engine: 'codex', threadId: 'cx1', tmux: 'work:@8.%1' } : { engine: 'claude', sessionId: 'abc', tmux: 'work:@7.%9' } }
-            : req.op === 'tmux.answer' ? { ok: true, result: { ok: true, key: req.args.key, hash: 'h', dialog: { question: 'Go?', options: [] } } }
-            : { ok: false, error: `unknown op ${req.op}` };
-          setImmediate(() => c.stdout.write(JSON.stringify({ id: req.id, ...reply }) + '\n'));
-        }
-      },
-      end() { setTimeout(() => c.emit('close', 0), 10); }, on() {},
-    };
-    c.kill = () => setImmediate(() => c.emit('close', null));
-    return c;
-  };
+  fakePeer(remote, ({ op, args }) => {
+    calls.push({ op, args });
+    return op === 'sessions.get' ? (args.id === 'cx1' ? { engine: 'codex', threadId: 'cx1', tmux: 'work:@8.%1' } : { engine: 'claude', sessionId: 'abc', tmux: 'work:@7.%9' })
+      : op === 'tmux.answer' ? { ok: true, key: args.key, hash: 'h', dialog: { question: 'Go?', options: [] } }
+      : `ERR:unknown op ${op}`;
+  });
   return calls;
 }
 

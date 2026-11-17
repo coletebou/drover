@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, appendFile, readFile, rename, rm, copyFile } from 'node:fs/promises';
+import { mkdtemp, writeFile, appendFile, rename, rm, copyFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { readAll } from '../core/events.js';
@@ -63,25 +63,19 @@ test('lines inserted in the middle of the same inode (a union merge) force a ful
   assert.deepEqual(got, await fresh(file));
 });
 
-test('a rewrite that only changes the start of the file forces a full parse', async () => {
+test('a file replaced by rename (new inode) is parsed in full, even with the same size and the same bytes at both ends', async () => {
+  // A git checkout writes a new file: only the inode tells this one from the file already read.
   const file = await setup();
-  const big = Array.from({ length: 200 }, (_, i) => line(`e${String(i).padStart(3, '0')}`, `2026-01-01T00:${String(Math.floor(i / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}Z`)).join('');
-  await writeFile(file, big);
-  await readAll(file);
-  await writeFile(file, line('zero', '2026-01-01T00:00:00Z') + big);
-  const got = await readAll(file);
-  assert.equal(got[0].id, 'zero');
-  assert.equal(got.length, 201);
-});
-
-test('a file replaced by rename (new inode) is parsed in full', async () => {
-  const file = await setup();
-  await writeFile(file, line('a', '2026-01-01T00:00:01Z'));
+  const ts = (i) => `2026-01-01T00:${String(Math.floor(i / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}Z`;
+  const lines = (mid) => Array.from({ length: 300 }, (_, i) => line(i === 150 ? mid : `e${String(i).padStart(3, '0')}`, ts(i))).join('');
+  await writeFile(file, lines('e150'));
   await readAll(file);
   const tmp = file + '.tmp';
-  await writeFile(tmp, line('x', '2026-01-01T00:00:05Z'));
+  await writeFile(tmp, lines('m150'));
   await rename(tmp, file);
-  assert.deepEqual(ids(await readAll(file)), ['x']);
+  const got = await readAll(file);
+  assert.equal(got[150].id, 'm150');
+  assert.deepEqual(got, await fresh(file));
 });
 
 test('a shorter file is parsed in full', async () => {
@@ -135,8 +129,8 @@ test('multi-byte text split across reads is decoded correctly', async () => {
   await appendFile(file, line('b', '2026-01-01T00:00:02Z', { text: 'naïve — ünïcode ✓' }));
   const got = await readAll(file);
   assert.equal(got[1].text, 'naïve — ünïcode ✓');
+  assert.equal(got[0].text, 'héllo ✓ 日本');
   assert.deepEqual(got, await fresh(file));
-  assert.ok((await readFile(file, 'utf8')).includes('日本'));
 });
 
 test('lines a union merge inserts near the end of a large file force a full parse', async () => {

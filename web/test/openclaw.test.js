@@ -303,7 +303,7 @@ test('console: status reads the service, gateway, health, model, automations, co
   assert.ok(!('budgetUsd' in st.cost) && !('paused' in st.cost), 'no spend cap (removed 2026-10-14)');
   assert.deepEqual([st.wal24h.actor, st.wal24h.notes, st.wal24h.pins, st.wal24h.chats], ['manager-mac', 1, 1, 1], 'this host\'s manager only: its actor, and chat replies on this host');
   assert.deepEqual([st.install.managed, st.install.role, st.install.profile, st.install.overlay, st.install.openclaw, st.install.source.commit], [true, 'mac', 'default', null, '2026.10.1', 'abc123']);
-  assert.ok(Array.isArray(st.install.drift), 'drift is computed against what setup would render');
+  assert.ok(['models.providers.y', 'agents.defaults.heartbeat.every'].every((k) => st.install.drift?.includes(k)), `drift is computed against what setup would render: ${JSON.stringify(st.install.drift)}`);
   assert.equal(st.checks.egress.ok, false);
   assert.equal('linger' in st.checks, false, 'launchd has no linger check');
   assert.ok(st.checks.egress.unexpected.some((u) => u.includes('evil.example.com')), 'a host outside the profile allowlist is flagged');
@@ -358,9 +358,10 @@ test('console: a failing gateway call reports OpenClaw\'s own error, not the com
 });
 
 test('console: check flags launcher switches that are missing and passes a clean install', async () => {
-  let r = await openclaw.check();
-  assert.ok(r.items.filter((i) => i.area === 'launcher').every((i) => i.ok === false), 'no generated launcher yet');
   const install = await import('../core/openclaw-install.js');
+  let r = await openclaw.check();
+  const launcher = r.items.filter((i) => i.area === 'launcher');
+  assert.ok(launcher.length === Object.keys(install.EGRESS_ENV).length && launcher.every((i) => i.ok === false), `no generated launcher yet: every egress switch fails (${JSON.stringify(launcher)})`);
   const lay = install.layout();
   await mkdir(lay.bin, { recursive: true });
   await writeFile(lay.launcher, install.renderLauncher(lay, { node: '/opt/fake/node', mjs: '/opt/fake/openclaw.mjs' }, install.loadProfile('default')));

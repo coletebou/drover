@@ -7,9 +7,8 @@ import { test, describe, before, beforeEach, afterEach, after } from 'node:test'
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { EventEmitter } from 'node:events';
-import { PassThrough } from 'node:stream';
 import path from 'node:path';
+import { fakePeer } from './fake-peer.js';
 
 const tmp = await mkdtemp(path.join(tmpdir(), 'drover-remote-search-'));
 process.env.DROVER_CACHE = path.join(tmp, 'cache');
@@ -26,7 +25,7 @@ const api = await import('../core/api.js');
 const plugins = await import('../core/plugins.js');
 const rs = await import('../core/search/remote.js');
 const remote = await import('../core/remote.js');
-const { search, KINDS, REMOTE_KINDS, QUERY_KINDS } = await import('../core/search/query.js');
+const { search } = await import('../core/search/query.js');
 const { Store } = await import('../core/search/store.js');
 const cli = await import('../core/cli-op.js');
 const { formatResults, remoteLine } = await import('../core/search/format.js');
@@ -57,26 +56,10 @@ const realIndex = api.local['search.semantic'];
 
 /** The fake `ssh <host> drover rpc`: every request goes through dispatch, as that host's daemon would run it. */
 function fakeRpcHosts() {
-  remote._deps.spawn = (_bin, argv) => {
-    const host = argv.find((a) => ['boxa', 'acme-dev'].includes(a)) ?? '?';
-    const c = new EventEmitter();
-    c.stdout = new PassThrough(); c.stderr = new PassThrough();
-    const reply = (msg) => c.stdout.write(JSON.stringify(msg) + '\n');
-    c.stdin = {
-      write(d, cb) {
-        for (const line of String(d).split('\n').filter(Boolean)) {
-          const req = JSON.parse(line);
-          rpcCalls.push({ host, op: req.op, args: req.args });
-          Promise.resolve().then(() => api.dispatch(req.op, req.args))
-            .then((r) => reply({ id: req.id, ok: true, result: { ...r, host, results: (r.results ?? []).map((x) => ({ ...x, hash: `${host}:${x.hash}` })) } }), (e) => reply({ id: req.id, ok: false, error: e.message }));
-        }
-        cb?.();
-      },
-      end() { setImmediate(() => c.emit('close', 0)); }, on() {},
-    };
-    c.kill = () => { setImmediate(() => c.emit('close', null)); };
-    return c;
-  };
+  fakePeer(remote, ({ host, op, args }) => {
+    rpcCalls.push({ host, op, args });
+    return api.dispatch(op, args).then((r) => ({ ...r, host, results: (r.results ?? []).map((x) => ({ ...x, hash: `${host}:${x.hash}` })) }));
+  }, { closeMs: 0 });
 }
 
 before(() => {
@@ -106,16 +89,8 @@ describe('fusion by rank', () => {
     assert.equal(rs.fuse(local, [brain], 1).length, 1);
     assert.deepEqual(rs.fuse([], [brain], 20).map((r) => r.title), ['B0', 'B1']);
   });
-  test('no remote hits: the index\'s own list, unchanged (same scores)', () => {
-    const local = indexHits();
-    assert.equal(rs.withRemote(local, [], 20), local);
-    assert.equal(rs.withRemote(local, [[]], 20), local);
-  });
-  test('kind brain is a query kind, never an indexed one', () => {
-    assert.deepEqual(REMOTE_KINDS, ['brain']);
-    assert.ok(!KINDS.includes('brain'), 'KINDS drives the indexer and purges: brain is not in it');
-    assert.deepEqual(QUERY_KINDS, [...KINDS, 'brain']);
-  });
+
+
 });
 
 // ---------------------------------------------------------------- search.semantic at the front

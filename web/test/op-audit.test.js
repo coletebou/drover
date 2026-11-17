@@ -18,7 +18,6 @@ const ENV = {
 Object.assign(process.env, ENV);
 await mkdir(path.join(tmp, 'dotfiles', 'claude'), { recursive: true });
 const api = await import('../core/api.js');
-const { GENERATED_TOOLS } = await import('../mcp/server.js');
 
 // Credential-shaped values assembled at runtime, so no literal in this file looks like one.
 const GH = ['ghp', 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8'].join('_');
@@ -61,12 +60,14 @@ test('a credential passed as a flag and a separate value is withheld (--password
   const real = api.local['docker.exec'];
   api.local['docker.exec'] = async () => ({ ok: true });
   const [pw, tok, upw] = ['hun7er2', 'Tk9short', 'pAss42'];
-  try { await api.dispatchCached('docker.exec', { project: 'probe', service: 'web', argv: ['docker', 'login', '--password', pw, '--github-token', tok, 'curl', '-u', `alice:${upw}`, '--password-stdin', 'next-arg'] }); }
+  try { await api.dispatchCached('docker.exec', { project: 'probe', service: 'web', argv: ['docker', 'login', '--password', pw, '--github-token', tok, 'curl', '-u', `alice:${upw}`, '-u', '1000:1000', '-u', 'carol:12345678', '--password-stdin', 'next-arg'] }); }
   finally { api.local['docker.exec'] = real; }
   const rec = (await ops()).filter((e) => e.op === 'docker.exec').at(-1);
   for (const s of [pw, tok, upw]) assert.ok(!JSON.stringify(rec).includes(s), `${s} is a flag's value`);
   assert.deepEqual(rec.args.argv.slice(0, 3), ['docker', 'login', '--password']);
   assert.equal(rec.args.argv[8], 'alice:[redacted]', 'the user stays, the password goes');
+  assert.equal(rec.args.argv[10], '1000:1000', 'a docker uid:gid after -u is no password');
+  assert.equal(rec.args.argv[12], 'carol:[redacted]', 'an all-digit password is not a uid:gid');
   assert.equal(rec.args.argv.at(-1), 'next-arg', 'a flag that takes no value (--password-stdin) withholds nothing');
 });
 
@@ -109,18 +110,6 @@ test('the log stays cheap and clean: a 2 MB text, a failing write with a secret 
   assert.equal(rec.ok, false); assert.match(rec.error, /TOKEN=\[redacted\]/);
 });
 
-test('-u keeps a docker uid:gid and withholds any other password; a flag that takes no value withholds nothing', async () => {
-  const real = api.local['docker.exec'];
-  api.local['docker.exec'] = async () => ({ ok: true });
-  try { await api.dispatchCached('docker.exec', { project: 'users', service: 'web', argv: ['-u', '1000:1000', '-u', 'alice:12345678'] }); }
-  finally { api.local['docker.exec'] = real; }
-  const rec = (await ops()).filter((e) => e.op === 'docker.exec' && e.args?.project === 'users').at(-1);
-  assert.deepEqual(rec.args.argv, ['-u', '1000:1000', '-u', 'alice:[redacted]']);
-  const { redactSecrets } = await import('../core/native.js');
-  assert.equal(redactSecrets('docker login --password-stdin x --token-file /run/t'), 'docker login --password-stdin x --token-file /run/t');
-  assert.equal(redactSecrets('gh auth --github-token=abc12 && login --password hunter2'), 'gh auth --github-token=[redacted] && login --password [redacted]');
-});
-
 test('fresh reaches an uncached op that keeps its own cache (fleet.summary)', async () => {
   const real = api.front['fleet.summary'];
   let seen = null;
@@ -134,7 +123,8 @@ test('fresh reaches an uncached op that keeps its own cache (fleet.summary)', as
 });
 
 test('the CLI records its writes in the truth file, as the daemon does, and its reads stay out of it', async () => {
-  const run = (op) => promisify(execFile)(process.execPath, [path.join(import.meta.dirname, '..', 'bin', 'drover'), 'op', op, '{}'], { env: { ...process.env, ...ENV }, timeout: 60_000 });
+  // A temp HOME: the child reads ~/.config/drover/*.env and ~/.env_secrets, which could load this machine's plugins.
+  const run = (op) => promisify(execFile)(process.execPath, [path.join(import.meta.dirname, '..', 'bin', 'drover'), 'op', op, '{}'], { env: { ...process.env, ...ENV, HOME: tmp }, timeout: 60_000 });
   await run('cache.invalidate');
   await run('host.identity');
   const recs = await ops();
@@ -142,14 +132,4 @@ test('the CLI records its writes in the truth file, as the daemon does, and its 
   assert.ok(w, 'drover op cache.invalidate is in the truth file');
   assert.equal(w.actor, 'cli'); assert.equal(w.ok, true);
   assert.ok(!recs.some((e) => e.op === 'host.identity'), 'a read is not logged');
-});
-
-test('every generated MCP tool for a write stamps actor mcp, schema or not; reads get none', async () => {
-  const seen = [];
-  const fake = async (op, args) => { seen.push({ op, args }); return {}; };
-  const tool = (op) => GENERATED_TOOLS.find((t) => t.title === op);
-  await tool('docker.exec').run(fake, { project: 'probe', service: 'web', argv: ['ls'] });
-  await tool('docker.stacks').run(fake, {});
-  assert.equal(seen[0].args.actor, 'mcp', 'docker.exec declares no actor and is still attributed');
-  assert.equal(seen[1].args.actor, undefined);
 });

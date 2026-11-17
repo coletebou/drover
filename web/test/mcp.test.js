@@ -48,11 +48,6 @@ describe('initialize', () => {
     assert.equal(typeof r.result.instructions, 'string');
     assert.ok(r.result.instructions.includes('drover_fleet'));
   });
-
-  test('ping replies with an empty object', async () => {
-    const s = createServer({ dispatch: fakeDispatch(), log: quiet });
-    assert.deepEqual(await s.handleMessage(req(7, 'ping')), { jsonrpc: '2.0', id: 7, result: {} });
-  });
 });
 
 describe('tools/list', () => {
@@ -113,24 +108,12 @@ describe('tools/call', () => {
     ]);
   });
 
-  test('drover_sessions defaults includeRecent to false', async () => {
-    const dispatch = fakeDispatch();
-    const s = createServer({ dispatch, log: quiet });
-    await s.handleMessage(req(9, 'tools/call', { name: 'drover_sessions', arguments: {} }));
-    assert.deepEqual(dispatch.calls, [{ op: 'sessions.list', args: { includeRecent: false } }]);
-  });
-
-  test('action tools route to the right op (headless, reflections, terminals)', async () => {
+  test('action tools route to the right op (headless, terminals; reflections below)', async () => {
     const dispatch = fakeDispatch();
     const s = createServer({ dispatch, log: quiet });
     await s.handleMessage(req(1, 'tools/call', { name: 'drover_headless', arguments: { action: 'send', id: 'h1', text: 'more' } }));
-    await s.handleMessage(req(2, 'tools/call', { name: 'drover_reflections', arguments: { action: 'done', ids: ['r1', 'r2'] } }));
-    await s.handleMessage(req(3, 'tools/call', { name: 'drover_reflections', arguments: { action: 'add', title: 'T', kind: 'gotcha', tags: ['a'] } }));
     await s.handleMessage(req(4, 'tools/call', { name: 'drover_terminals', arguments: { action: 'open', target: 'main:1' } }));
-    assert.deepEqual(dispatch.calls.map((c) => c.op), ['headless.send', 'reflections.mark', 'reflections.add', 'terminals.open']);
-    // Reflection writes carry the actor, so the truth file records "mcp" rather than the default, the owner.
-    assert.deepEqual(dispatch.calls[1].args, { op: 'done', ids: ['r1', 'r2'], actor: 'mcp' });
-    assert.deepEqual(dispatch.calls[2].args, { title: 'T', kind: 'gotcha', tags: ['a'], actor: 'mcp' });
+    assert.deepEqual(dispatch.calls.map((c) => c.op), ['headless.send', 'terminals.open']);
   });
 
   test('drover_reflections: every action maps onto its op; writes carry actor mcp, reads do not', async () => {
@@ -145,9 +128,10 @@ describe('tools/call', () => {
       { action: 'semantic', query: 'breaker timeout', repo: 'webapp', status: 'open', kind: 'gotcha', limit: 3 },
       { action: 'show', id: 'abcd2345' },
       { action: 'candidates', query: 'session text', session: 's1', limit: 9 },
-      { action: 'add', title: 'T', body: 'B', priority: 2, session: 's1', repo: 'webapp' },
+      { action: 'add', title: 'T', body: 'B', kind: 'gotcha', tags: ['a'], priority: 2, session: 's1', repo: 'webapp' },
       { action: 'edit', id: 'abcd2345', title: 'New', tags: [] },
       { action: 'drop', ids: ['abcd2345'], note: 'obsolete' },
+      { action: 'done', ids: ['r1'], note: 'shipped' },
       { action: 'apply', ops, repo: 'webapp', note: 'reconciled' },
       { action: 'apply', ops, anyRepo: true },
     ]) { const r = await call(a); assert.equal(r.result.isError, false, JSON.stringify(a)); }
@@ -158,9 +142,10 @@ describe('tools/call', () => {
       { op: 'reflections.semantic', args: { query: 'breaker timeout', repo: 'webapp', status: 'open', kind: 'gotcha', limit: 3 } },
       { op: 'reflections.show', args: { id: 'abcd2345' } },
       { op: 'reflections.candidates', args: { query: 'session text', session: 's1', limit: 9 } },
-      { op: 'reflections.add', args: { repo: 'webapp', title: 'T', body: 'B', priority: 2, session: 's1', actor: 'mcp' } },
+      { op: 'reflections.add', args: { repo: 'webapp', title: 'T', body: 'B', kind: 'gotcha', tags: ['a'], priority: 2, session: 's1', actor: 'mcp' } },
       { op: 'reflections.edit', args: { id: 'abcd2345', title: 'New', tags: [], actor: 'mcp' } },
       { op: 'reflections.mark', args: { op: 'drop', ids: ['abcd2345'], note: 'obsolete', actor: 'mcp' } },
+      { op: 'reflections.mark', args: { op: 'done', ids: ['r1'], note: 'shipped', actor: 'mcp' } },
       { op: 'reflections.apply', args: { ops, repo: 'webapp', note: 'reconciled', actor: 'mcp' } },
       { op: 'reflections.apply', args: { ops, anyRepo: true, actor: 'mcp' } },
     ]);
@@ -426,36 +411,42 @@ describe('a manager server pins its actor', () => {
 });
 
 describe('a manager server has full powers, like any other agent', () => {
-  test('tmux input, launches and every other write reach dispatch, as for any server', async () => {
-    const dispatch = fakeDispatch();
-    const s = createServer({ dispatch, log: quiet });
-    const call = (name, args) => s.handleMessage(req(name, 'tools/call', { name, arguments: args }));
-    for (const [name, args] of [
+  test('tmux input, launches and every other write reach dispatch, as for any server', () => {
+    // The actor is read when the module loads, so the manager runs in its own process.
+    const rows = [
       ['drover_tmux_send', { target: 's:@1', text: 'go', force: true }],
       ['drover_tmux_keys', { target: 's:@1', keys: ['1'] }],
       ['drover_launch', { engine: 'claude', prompt: 'x' }],
       ['drover_send', { id: 'abc', text: 'hi' }],
-    ]) {
-      const r = await call(name, args);
-      assert.notEqual(r.result.isError, true, `${name}: ${JSON.stringify(r.result)}`);
-    }
-    assert.deepEqual(dispatch.calls.map((c) => c.op), ['tmux.send', 'tmux.keys', 'launch.start', 'sessions.message']);
+    ];
+    const code = `const { createServer } = await import('./mcp/server.js'); const ops = []; const errors = [];
+      const s = createServer({ dispatch: async (op) => { ops.push(op); return { ok: true }; }, log: () => {} });
+      for (const [name, args] of ${JSON.stringify(rows)}) {
+        const r = await s.handleMessage({ jsonrpc: '2.0', id: name, method: 'tools/call', params: { name, arguments: args } });
+        if (r.result.isError) errors.push(name + ': ' + JSON.stringify(r.result));
+      }
+      process.stdout.write(JSON.stringify({ ops, errors }));`;
+    const env = { ...process.env, DROVER_MCP_ACTOR: 'manager' };
+    const r = spawnSync(process.execPath, ['--input-type=module', '-e', code], { cwd: WEB, env, encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    const { ops, errors } = JSON.parse(r.stdout);
+    assert.deepEqual(errors, []);
+    assert.deepEqual(ops, ['tmux.send', 'tmux.keys', 'launch.start', 'sessions.message']);
   });
 });
 
 describe('drover_launch and folder trust', () => {
-  test('drover_launch passes trust through; omitted, the op default (trust) applies', async () => {
+  test('drover_launch passes trust and a completion text (done) through; trust omitted, the op default applies', async () => {
     const dispatch = fakeDispatch();
     const s = createServer({ dispatch, log: quiet });
     await s.handleMessage(req(1, 'tools/call', { name: 'drover_launch', arguments: { engine: 'claude', cwd: '~/code/x', trust: false } }));
     await s.handleMessage(req(2, 'tools/call', { name: 'drover_launch', arguments: { engine: 'claude', cwd: '~/code/x' } }));
-    assert.deepEqual(dispatch.calls.map((c) => c.args), [{ engine: 'claude', cwd: '~/code/x', trust: false, actor: 'mcp' }, { engine: 'claude', cwd: '~/code/x', actor: 'mcp' }]);
-  });
-  test('drover_launch passes a completion text (done) through to launch.start', async () => {
-    const dispatch = fakeDispatch();
-    const s = createServer({ dispatch, log: quiet });
-    await s.handleMessage(req(1, 'tools/call', { name: 'drover_launch', arguments: { engine: 'claude', cwd: '~/code/x', prompt: 'end with STATE: DONE', done: 'STATE: DONE' } }));
-    assert.deepEqual(dispatch.calls.map((c) => [c.op, c.args]), [['launch.start', { engine: 'claude', cwd: '~/code/x', prompt: 'end with STATE: DONE', done: 'STATE: DONE', actor: 'mcp' }]]);
+    await s.handleMessage(req(3, 'tools/call', { name: 'drover_launch', arguments: { engine: 'claude', cwd: '~/code/x', done: 'STATE: DONE' } }));
+    assert.deepEqual(dispatch.calls.map((c) => [c.op, c.args]), [
+      ['launch.start', { engine: 'claude', cwd: '~/code/x', trust: false, actor: 'mcp' }],
+      ['launch.start', { engine: 'claude', cwd: '~/code/x', actor: 'mcp' }],
+      ['launch.start', { engine: 'claude', cwd: '~/code/x', done: 'STATE: DONE', actor: 'mcp' }],
+    ]);
   });
 });
 

@@ -28,19 +28,6 @@ export function quantize(f32) {
   return { q, scale };
 }
 
-export function dequantize(q, scale) {
-  const out = new Float32Array(q.length);
-  for (let i = 0; i < q.length; i++) out[i] = q[i] * scale;
-  return out;
-}
-
-/** Cosine of two normalized float vectors. */
-export function cosine(a, b) {
-  let s = 0;
-  for (let i = 0; i < a.length; i++) s += a[i] * b[i];
-  return s;
-}
-
 /**
  * An append-only matrix of quantized vectors with their keys (chunk text hashes).
  * score(query) returns the best k rows by cosine without allocating per row.

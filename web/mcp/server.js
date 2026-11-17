@@ -733,13 +733,3 @@ export async function serve(deps = {}) {
   log('serving', SERVER_INFO.name, SERVER_INFO.version, 'pid', String(process.pid));
   return finished;   // with the real process.exit this never resolves; tests inject exit and await it
 }
-
-// ---------------------------------------------------------------------------
-// Module-level convenience: a default server over the real core for callers
-// that want to hand messages in without a transport.
-
-let defaultServer = null;
-export function handleMessage(msg) {
-  defaultServer ??= createServer();
-  return defaultServer.handleMessage(msg);
-}

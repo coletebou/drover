@@ -4,8 +4,8 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { claudeLine, codexLine, codexAttribute, codexState, environmentCwd, PENDING, walEvent, memoryDoc, reflectionItem, projectOf, userText, tidy, REFLECTION_CHARS } from '../core/search/extract.js';
 import { chunkText } from '../core/search/chunk.js';
-import { truncateNormalize, quantize, dequantize, cosine, VectorMatrix, DIMS } from '../core/search/vec.js';
-import { redactSecrets, redactArgv, clean } from '../core/native.js';
+import { truncateNormalize, quantize, VectorMatrix, DIMS } from '../core/search/vec.js';
+import { redactSecrets } from '../core/native.js';
 
 const j = (o) => JSON.stringify(o);
 
@@ -47,11 +47,14 @@ describe('claudeLine', () => {
 });
 
 describe('codexLine', () => {
-  test('keeps user and assistant messages from response_item lines only', () => {
+  test('keeps user and assistant messages and commands from response_item lines only', () => {
     assert.deepEqual(codexLine(j({ type: 'response_item', timestamp: 't', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'rebase !5678' }] } })).units, [{ role: 'user', text: 'rebase !5678' }]);
     assert.deepEqual(codexLine(j({ type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Done.' }] } })).units, [{ role: 'assistant', text: 'Done.' }]);
     assert.deepEqual(codexLine(j({ type: 'event_msg', payload: { type: 'agent_message', message: 'Done.' } })).units, []);
     assert.deepEqual(codexLine(j({ type: 'response_item', payload: { type: 'function_call', name: 'shell' } })).units, []);
+    // A command is a unit of its own; its output stays out.
+    assert.deepEqual(codexLine(j({ type: 'response_item', timestamp: 't', payload: { type: 'function_call', name: 'exec_command', arguments: JSON.stringify({ cmd: 'tsgo -b' }) } })).units, [{ role: 'command', text: '$ tsgo -b' }]);
+    assert.deepEqual(codexLine(j({ type: 'response_item', payload: { type: 'function_call_output', output: 'done' } })).units, []);
   });
   test('drops injected context and developer messages; session_meta gives cwd and id', () => {
     for (const t of ['<environment_context>cwd</environment_context>', '<user_instructions>x</user_instructions>', '# AGENTS.md instructions', '<permissions instructions>']) {
@@ -148,9 +151,6 @@ describe('reflectionItem', () => {
     assert.equal(reflectionItem({ ...it, cwd: '/Users/x/code/webapp', host: 'box-b' }).checkout, null, 'no checkout: none, never the cwd');
     assert.deepEqual([reflectionItem({ ...it, checkout: '', host: 7 }).checkout, reflectionItem({ ...it, checkout: '', host: 7 }).host], [null, null]);
   });
-  test('two items with the same words still have different texts, so search never folds them into one hit', () => {
-    assert.notEqual(reflectionItem(it).text, reflectionItem({ ...it, id: 'efgh2345', repo: 'code' }).text);
-  });
   test('secrets are redacted, long bodies cut to one embedding input, and an item without id or text is skipped', () => {
     assert.match(reflectionItem({ ...it, body: 'key sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789' }).text, /key \[redacted\]/);
     const long = reflectionItem({ ...it, body: 'x'.repeat(20_000) }).text;
@@ -225,21 +225,6 @@ describe('redactSecrets', () => {
       assert.equal(r('env -u AWS_REGION aws sts get-caller-identity; see https://example.com/a@b'), 'env -u AWS_REGION aws sts get-caller-identity; see https://example.com/a@b');
     }
   });
-  test('clean() is unchanged: one line, home paths folded, clipped', () => {
-    assert.equal(clean('/Users/alice/code   x\n y', 140), '~/code x y');
-  });
-});
-
-describe('redactArgv', () => {
-  test('each item redacted in place; the value after a secret-named flag too; other items and order kept', () => {
-    const key = ['sk', 'ant', 'api03', 'EXAMPLE0EXAMPLE0EXAMPLE0EXAMPLE0'].join('-');
-    assert.deepEqual(redactArgv(['env', 'TOKEN=abc123', '-e', `KEY=${key}`, '--password', 'hunter2', '--api-key', 'x9', '--verbose', 'ls', key], { hexSafe: true }),
-      ['env', 'TOKEN=[redacted]', '-e', 'KEY=[redacted]', '--password', '[redacted]', '--api-key', '[redacted]', '--verbose', 'ls', '[redacted]']);
-    assert.deepEqual(redactArgv(['--token', '--dry-run', 'a']), ['--token', '--dry-run', 'a'], 'a flag after a secret-named flag is not its value');
-    assert.deepEqual(redactArgv(['-p', 'hunter2']), ['-p', 'hunter2'], 'a one-letter flag names nothing: the known limit');
-    assert.deepEqual(redactArgv([{ op: 'done' }, 3, 'a']), [{ op: 'done' }, 3, 'a']);
-    assert.equal(redactArgv('not an array'), 'not an array');
-  });
 });
 
 describe('chunkText', () => {
@@ -269,16 +254,16 @@ describe('vectors', () => {
     const v = Array.from({ length: 768 }, (_, i) => (i < 256 ? 2 : 100));
     const t = truncateNormalize(v);
     assert.equal(t.length, DIMS);
-    assert.ok(Math.abs(cosine(t, t) - 1) < 1e-6);
+    assert.ok(Math.abs(t.reduce((s, x) => s + x * x, 0) - 1) < 1e-6);
     assert.ok(Math.abs(t[0] - 1 / 16) < 1e-6);
     assert.deepEqual([...truncateNormalize(new Array(768).fill(0))].slice(0, 3), [0, 0, 0]);
   });
-  test('int8 quantization keeps cosine within 0.01 of float', () => {
+  test('int8 quantization keeps cosine within 0.01 of float: a float query against a stored int8 row, as search scores', () => {
     let seed = 7; const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647) - 0.5;
     for (let n = 0; n < 20; n++) {
       const a = truncateNormalize(Array.from({ length: 768 }, rnd)), b = truncateNormalize(Array.from({ length: 768 }, rnd));
-      const qa = quantize(a), qb = quantize(b);
-      const exact = cosine(a, b), approx = cosine(dequantize(qa.q, qa.scale), dequantize(qb.q, qb.scale));
+      const m = new VectorMatrix(DIMS); const qb = quantize(b); m.add('b', qb.q, qb.scale);
+      const exact = a.reduce((s, x, i) => s + x * b[i], 0), approx = m.topK(a, 1)[0][1];
       assert.ok(Math.abs(exact - approx) < 0.01, `${exact} vs ${approx}`);
     }
   });

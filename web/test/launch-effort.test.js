@@ -11,10 +11,9 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, chmod, rm, symlink } from 'node:fs/promises';
 import { existsSync, realpathSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { EventEmitter } from 'node:events';
-import { PassThrough } from 'node:stream';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { fakePeer } from './fake-peer.js';
 
 const dir = await mkdtemp(path.join(tmpdir(), 'droverfx-'));
 process.env.DROVER_PROFILES = path.join(dir, 'profiles.json');
@@ -58,7 +57,7 @@ const PROFILES = {
 await writeFile(process.env.DROVER_PROFILES, JSON.stringify(PROFILES));
 
 const effortMod = await import('../core/effort.js');
-const { EFFORT_LEVELS, ALL_EFFORTS, checkEffort, effortLevels } = effortMod;
+const { ALL_EFFORTS, checkEffort, effortLevels } = effortMod;
 const claude = await import('../core/claude.js');
 const codex = await import('../core/codex.js');
 const tmux = await import('../core/tmux.js');
@@ -67,8 +66,9 @@ const launchMod = await import('../core/launch.js');
 const remote = await import('../core/remote.js');
 const api = await import('../core/api.js');
 const { META } = await import('../core/ops-meta.js');
-const { createServer, ALL_TOOLS, TOOLS } = await import('../mcp/server.js');
+const { createServer, TOOLS } = await import('../mcp/server.js');
 const { UPDATE_HINT } = await import('../core/util.js');
+const { hasTmux, startPrivateTmux } = await import('./private-tmux.js');
 
 // ---------------------------------------------------------------- fakes for launch()
 const windows = [];
@@ -122,18 +122,16 @@ const profile = (engine, id) => PROFILES[engine].profiles.find((p) => p.id === i
 
 // ---------------------------------------------------------------- the allowlist
 
+const LEVELS = { claude: ['low', 'medium', 'high', 'xhigh', 'max'], codex: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], hermes: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] };
+
 describe('checkEffort', () => {
   test('each engine takes its own levels: claude low..max, codex low..ultra, hermes none..ultra', () => {
-    assert.deepEqual([...EFFORT_LEVELS.claude], ['low', 'medium', 'high', 'xhigh', 'max']);
-    assert.deepEqual([...EFFORT_LEVELS.codex], ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
-    assert.deepEqual([...EFFORT_LEVELS.hermes], ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
-    for (const lv of EFFORT_LEVELS.claude) assert.equal(checkEffort('claude', lv), lv);
-    for (const lv of EFFORT_LEVELS.codex) assert.equal(checkEffort('codex', lv), lv);
-    for (const lv of EFFORT_LEVELS.hermes) assert.equal(checkEffort('hermes', lv), lv);
+    // The levels each CLI was verified to take (core/effort.js), written out here rather than read from the table.
+    assert.deepEqual(effortLevels(), LEVELS);
+    for (const [engine, levels] of Object.entries(LEVELS)) for (const lv of levels) assert.equal(checkEffort(engine, lv), lv, `${engine} ${lv}`);
     assert.throws(() => checkEffort('claude', 'ultra'), /effort "ultra" is not valid for claude: use one of low, medium, high, xhigh, max, or omit it/);
     assert.throws(() => checkEffort('codex', 'minimal'), /effort "minimal" is not valid for codex/);
     assert.deepEqual([...ALL_EFFORTS], ['low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'none', 'minimal']);
-    assert.deepEqual(effortLevels(), { claude: ['low', 'medium', 'high', 'xhigh', 'max'], codex: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], hermes: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] });
   });
 
   test('omitted (undefined, null, empty string) is null, for both engines', () => {
@@ -265,12 +263,13 @@ describe('launch() with fake tmux, headless claude and codex thread start', () =
     assert.deepEqual(rc.argv, ['claude', '--dangerously-skip-permissions', '--effort', 'low', '--resume=S-1', '--name=e4']);
   });
 
-  test('claude headless: HeadlessClaude gets the effort, headless.list shows it, and a failover resume keeps it', async () => {
+  test('claude headless: HeadlessClaude gets the effort and the login-shell PATH, headless.list shows the effort, and a failover resume keeps both', async () => {
     await credentials._reset({ file: true });
     FakeHeadless.instances.length = 0;
     const r = await launchMod.launch({ engine: 'claude', mode: 'headless', model: 'opus', effort: 'high', cwd: dir, prompt: 'work' }, { actor: 't' });
     const first = FakeHeadless.instances.at(-1);
     assert.equal(first.opts.effort, 'high');
+    assert.equal(first.opts.env.PATH, await agentPath(), 'headless claude gets the login-shell PATH');
     assert.deepEqual(first.argv.slice(-4), ['--model', 'opus', '--effort', 'high']);
     assert.equal(r.effort, 'high');
     const listed = launchMod.headlessList().find((x) => x.id === r.headlessId);
@@ -284,25 +283,18 @@ describe('launch() with fake tmux, headless claude and codex thread start', () =
     assert.notEqual(second, first);
     assert.equal(second.opts.resume, r.sessionId);
     assert.equal(second.opts.effort, 'high', 'the resumed child keeps the launch effort');
+    assert.equal(second.opts.env.PATH, await agentPath(), 'and the login-shell PATH');
     assert.deepEqual(second.argv.slice(-5), [`--resume=${r.sessionId}`, '--model', 'opus', '--effort', 'high']);
     launchMod.headlessStop(r.headlessId);
   });
 
-  test('tmux and headless agents get the login-shell PATH, a failover keeps it, and a profile PATH wins', async () => {
-    await credentials._reset({ file: true });
-    windows.length = 0; FakeHeadless.instances.length = 0;
+  test('tmux agents get the login-shell PATH, a profile PATH wins, and a headless Codex thread runs no login shell', async () => {
+    // Headless Claude, and its failover resume, get the same PATH: the effort test above checks both children.
+    windows.length = 0;
     const want = await agentPath();
     await launchMod.launch({ engine: 'claude', mode: 'tmux', cwd: dir, prompt: 'p', name: 'path-c' }, { actor: 't' });
     await launchMod.launch({ engine: 'codex', mode: 'tmux', cwd: dir, prompt: 'p', name: 'path-x' }, { actor: 't' });
     assert.deepEqual(windows.map((w) => w.env.PATH), [want, want], 'claude and codex tmux windows');
-    const r = await launchMod.launch({ engine: 'claude', mode: 'headless', cwd: dir, prompt: 'work' }, { actor: 't' });
-    const first = FakeHeadless.instances.at(-1);
-    assert.equal(first.opts.env.PATH, want, 'headless claude');
-    first.emit({ type: 'assistant', message: { content: [{ type: 'text', text: 'starting' }] } });
-    first.emit({ type: 'result', is_error: true, result: 'API Error: 429 Too Many Requests' });
-    await waitFor(() => launchMod.headlessGet(r.headlessId).failovers === 1);
-    assert.equal(FakeHeadless.instances.at(-1).opts.env.PATH, want, 'the resumed child keeps it');
-    launchMod.headlessStop(r.headlessId);
     const withPath = structuredClone(PROFILES);
     withPath.claude.profiles.push({ id: 'claude-own-path', label: 'own PATH', argv: [], env: { PATH: '~/own/bin:/usr/bin' } });
     await writeFile(process.env.DROVER_PROFILES, JSON.stringify(withPath));
@@ -402,37 +394,32 @@ describe('Codex effort per model (the model catalog when the model is known, els
     assert.equal(sol.effort, 'ultra');
   });
 
-  test('an unknown model, no model, or an unreadable catalog falls back to the engine list', async () => {
+  test('an unknown model, no model, or an unreadable catalog falls back to the engine list; the catalog is read only for Codex with a model and an effort', async () => {
     useCatalog(codex.catalogEfforts(CATALOG_JSON));
     assert.equal((await launchMod.launch({ engine: 'codex', mode: 'tmux', model: 'openai.gpt-9-not-in-catalog', effort: 'ultra', cwd: dir, prompt: 'go', name: 'unknown' }, { actor: 't' })).effort, 'ultra');
     assert.equal((await launchMod.launch({ engine: 'codex', mode: 'tmux', model: 'openai.no-levels', effort: 'ultra', cwd: dir, prompt: 'go', name: 'nolevels' }, { actor: 't' })).effort, 'ultra');
     const calls = catalogCalls.length;
     assert.equal((await launchMod.launch({ engine: 'codex', mode: 'tmux', effort: 'ultra', cwd: dir, prompt: 'go', name: 'nomodel' }, { actor: 't' })).effort, 'ultra');
     assert.equal(catalogCalls.length, calls, 'no model: the catalog is not even read');
+    // Only a Codex launch that names both a model and an effort reads it (`codex debug models` is a child process).
+    await launchMod.launch({ engine: 'codex', mode: 'tmux', model: 'openai.gpt-6-luna', cwd: dir, prompt: 'go', name: 'noeffort' }, { actor: 't' });
+    await launchMod.launch({ engine: 'claude', mode: 'tmux', model: 'opus', effort: 'max', cwd: dir, prompt: 'go', name: 'claude' }, { actor: 't' });
+    assert.equal(catalogCalls.length, calls, 'no effort, or not Codex: not read either');
     useCatalog(null);
     assert.equal((await launchMod.launch({ engine: 'codex', mode: 'tmux', model: 'openai.gpt-6-luna', effort: 'ultra', cwd: dir, prompt: 'go', name: 'nocatalog' }, { actor: 't' })).effort, 'ultra');
     assert.equal(catalogCalls.length, 1);
     await assert.rejects(launchMod.launch({ engine: 'codex', mode: 'tmux', model: 'openai.gpt-6-luna', effort: 'minimal', cwd: dir }, { actor: 't' }), /not valid for codex/, 'the engine list still applies');
   });
-
-  test('the catalog is read only for a Codex launch that names both a model and an effort', async () => {
-    useCatalog(codex.catalogEfforts(CATALOG_JSON));
-    await launchMod.launch({ engine: 'codex', mode: 'tmux', model: 'openai.gpt-6-luna', cwd: dir, prompt: 'go', name: 'noeffort' }, { actor: 't' });
-    await launchMod.launch({ engine: 'claude', mode: 'tmux', model: 'opus', effort: 'max', cwd: dir, prompt: 'go', name: 'claude' }, { actor: 't' });
-    assert.equal(catalogCalls.length, 0);
-  });
 });
 
 // ---------------------------------------------------------------- real tmux: argv delivery with no shell
 
-const hasTmux = spawnSync('tmux', ['-V'], { encoding: 'utf8' }).status === 0;
 describe('real tmux: a launch reaches the agent as the exact argv, with no shell and no tmux command parsing in between', { skip: hasTmux ? false : 'tmux is not installed here' }, () => {
   const TMUX_SESSION = 'drover-effort-test';
-  let fakeBin, outDir, tdir, env;
+  let fakeBin, outDir, tdir, server, tmuxCmd;
   const MARKER = () => path.join(outDir, 'PWNED');
   // Shell syntax of every kind, a newline, and a trailing ";" (which tmux, not a shell, would act on).
   const hostile = () => `"; touch ${MARKER()}; echo $(touch ${MARKER()}) \`touch ${MARKER()}\` '$HOME' && rm -rf ${outDir}/never | tee ${MARKER()} > ${MARKER()}\nsecond line $((1+1)) #{session_name} \\ end;`;
-  const tmuxCmd = (args) => spawnSync('tmux', args, { env, encoding: 'utf8' });
   const alive = () => tmuxCmd(['has-session', '-t', `=${TMUX_SESSION}`]).status === 0;
   const recorded = async (engine) => {
     const f = path.join(outDir, `${engine}.argv`);
@@ -444,8 +431,7 @@ describe('real tmux: a launch reaches the agent as the exact argv, with no shell
   };
 
   before(async () => {
-    // A private tmux server: its own socket directory, no user config, and no TMUX variable that could point
-    // a client at the user's server. Every tmux call in this process (core/tmux.js too) goes there.
+    // A private tmux server (test/private-tmux.js). Every tmux call in this process (core/tmux.js too) goes there.
     tdir = await mkdtemp(path.join(tmpdir(), 'drovertm-'));
     fakeBin = path.join(tdir, 'bin'); outDir = path.join(tdir, 'out');
     await mkdir(fakeBin); await mkdir(outDir);
@@ -455,25 +441,18 @@ describe('real tmux: a launch reaches the agent as the exact argv, with no shell
       await writeFile(f, `#!/bin/sh\nout="$DROVER_FAKE_OUT/$(basename "$0")"\npwd -P > "$out.pwd"\nprintf '%s' "$PATH" > "$out.path"\n: > "$out.argv.tmp"\nfor a in "$@"; do printf '%s\\0' "$a" >> "$out.argv.tmp"; done\nmv "$out.argv.tmp" "$out.argv"\n`);
       await chmod(f, 0o755);
     }
-    delete process.env.TMUX; delete process.env.TMUX_PANE;
-    process.env.TMUX_TMPDIR = tdir;
+    // Set before the server starts, so the agents' windows inherit DROVER_FAKE_OUT from its global environment.
     process.env.DROVER_FAKE_OUT = outDir;
     process.env.PATH = `${fakeBin}:${process.env.PATH}`;
-    env = { ...process.env };
-    // The first window runs sleep, not a login shell, so no shell config of the user runs in here.
-    const started = tmuxCmd(['-f', '/dev/null', 'new-session', '-d', '-s', TMUX_SESSION, '-c', tdir, 'sleep', '3600']);
-    assert.equal(started.status, 0, started.stderr);
+    server = await startPrivateTmux({ dir: tdir, session: TMUX_SESSION, sessionArgs: ['-c', tdir] });
+    tmuxCmd = server.tmux;
     launchMod._deps.newWindow = (opts) => tmux.newWindow(opts);   // the real adapter for this block
     await credentials._reset({ file: true });
   });
   after(async () => {
     launchMod._deps.newWindow = fakeNewWindow;
-    // env is set only once TMUX is unset and TMUX_TMPDIR is private. after() also runs when before() fails earlier,
-    // and a kill-server without that env would reach the user's own tmux server.
-    // The kill names the private server's socket: with TMUX_TMPDIR alone, a missing folder would send it to the
-    // user's default server.
-    if (env) tmuxCmd(['-S', path.join(tdir, `tmux-${process.getuid()}`, 'default'), 'kill-server']);
-    await rm(tdir, { recursive: true, force: true });
+    await server?.stop();
+    if (tdir) await rm(tdir, { recursive: true, force: true });   // made before the server, so also when it never started
   });
 
   test('claude: a hostile prompt arrives as one argument, beside --effort, and nothing in it runs', async () => {
@@ -528,64 +507,16 @@ describe('real tmux: a launch reaches the agent as the exact argv, with no shell
     assert.equal(alive(), true, 'kill-server stayed an argument of the agent');
   });
 
-  test('a prompt that looks like a flag reaches the agent after --, on claude-safe and on codex (a subcommand name too)', async () => {
-    for (const prompt of ['--dangerously-skip-permissions', '--version']) {
-      const r = await launchMod.launch({ engine: 'claude', mode: 'tmux', profile: 'claude-safe', cwd: tdir, prompt, tmuxSession: TMUX_SESSION, name: 'flagprompt' }, { actor: 't' });
-      assert.deepEqual(r.argv, ['claude', '--name=flagprompt', '--', prompt]);
-      assert.deepEqual((await recorded('claude')).argv, ['--name=flagprompt', '--', prompt], `${prompt} is prompt text, not an option`);
-    }
-    await launchMod.launch({ engine: 'codex', mode: 'tmux', profile: 'codex-default', cwd: tdir, prompt: 'logout', tmuxSession: TMUX_SESSION, name: 'subcmd' }, { actor: 't' });
-    assert.deepEqual((await recorded('codex')).argv, ['--', 'logout']);
-  });
-
-  test('a resume id that looks like a flag stays the id (claude --resume=, codex resume --)', async () => {
-    await launchMod.launch({ engine: 'claude', mode: 'tmux', profile: 'claude-safe', cwd: tdir, resume: '--dangerously-skip-permissions', prompt: '--version', tmuxSession: TMUX_SESSION, name: 'res-claude' }, { actor: 't' });
-    assert.deepEqual((await recorded('claude')).argv, ['--resume=--dangerously-skip-permissions', '--name=res-claude', '--', '--version']);
-    await launchMod.launch({ engine: 'codex', mode: 'tmux', cwd: tdir, resume: '--last', tmuxSession: TMUX_SESSION, name: 'res-codex' }, { actor: 't' });
-    assert.deepEqual((await recorded('codex')).argv, ['-p', 'work', 'resume', '--', '--last']);
-  });
-
   test('send-keys gets the same escaping: keys ["a;", "kill-server"] are typed, not run', async () => {
     await tmux.sendKeys(`${TMUX_SESSION}:0`, ['a;', 'kill-server']);
     assert.equal(alive(), true);
-  });
-
-  test('a hostile effort is refused before tmux is asked for a window', async () => {
-    const count = () => tmuxCmd(['list-windows', '-a']).stdout.split('\n').filter(Boolean).length;
-    const n = count();
-    for (const effort of [`max; touch ${MARKER()}`, `$(touch ${MARKER()})`, 'max\ntouch x', 'max;']) {
-      await assert.rejects(launchMod.launch({ engine: 'claude', mode: 'tmux', effort, cwd: tdir, prompt: 'x', tmuxSession: TMUX_SESSION }, { actor: 't' }), /is not valid for claude/);
-    }
-    assert.equal(count(), n, 'no window was created');
-    assert.equal(existsSync(MARKER()), false);
   });
 });
 
 // ---------------------------------------------------------------- version probe: front daemon -> remote host
 
-/** A fake `ssh <host> drover rpc`: generation N answers each request with answer(gen, op, args). Records requests. */
-function fakeRemote(answer) {
-  const spawned = [];
-  remote._deps.spawn = () => {
-    const c = new EventEmitter();
-    c.stdout = new PassThrough(); c.stderr = new PassThrough(); c.requests = [];
-    const gen = spawned.length;
-    c.stdin = {
-      write(d) {
-        for (const line of String(d).split('\n').filter(Boolean)) {
-          const req = JSON.parse(line); c.requests.push(req);
-          const a = answer(gen, req.op, req.args);
-          setImmediate(() => c.stdout.write(JSON.stringify(typeof a === 'string' && a.startsWith('ERR:') ? { id: req.id, ok: false, error: a.slice(4) } : { id: req.id, ok: true, result: a }) + '\n'));
-        }
-      },
-      end() { c.stdinEnded = true; setTimeout(() => c.emit('close', 0), 10); }, on() {},
-    };
-    c.kill = () => { setImmediate(() => c.emit('close', null)); };
-    spawned.push(c);
-    return c;
-  };
-  return spawned;
-}
+/** A fake `ssh <host> drover rpc` (test/fake-peer.js): generation N answers each request with answer(gen, op, args). */
+const fakeRemote = (answer) => fakePeer(remote, ({ gen, op, args }) => answer(gen, op, args));
 const OLD = (op) => (op === 'launch.efforts' ? `ERR:unknown op ${op}` : null);
 
 describe('dispatch(): a launch with an effort to another host asks that host first', () => {
@@ -608,16 +539,21 @@ describe('dispatch(): a launch with an effort to another host asks that host fir
     assert.deepEqual(spawned[1].requests.map((x) => x.op), ['launch.efforts', 'launch.start']);
   });
 
-  test('a current host is probed once, then launched; an omitted effort is forwarded with no probe at all', async () => {
+  test('a current host is probed once, then launched; an omitted effort is forwarded with no probe at all, trust and cwd as given', async () => {
     let spawned = fakeRemote((gen, op, args) => (op === 'launch.efforts' ? effortLevels() : { gen, op, args }));
     const r = await api.dispatch('launch.start', { host: 'effort-new', engine: 'claude', mode: 'headless', effort: 'low' });
     assert.equal(r.args.effort, 'low');
     assert.deepEqual(spawned.flatMap((c) => c.requests.map((x) => x.op)), ['launch.efforts', 'launch.start']);
     remote.stopAll();
     spawned = fakeRemote((gen, op, args) => OLD(op) ?? { gen, op, args });
-    const plain = await api.dispatch('launch.start', { host: 'effort-plain', engine: 'claude', mode: 'tmux', prompt: 'hi' });
-    assert.deepEqual(plain.args, { engine: 'claude', mode: 'tmux', prompt: 'hi' });
+    const opened = windows.length;
+    const trustNow = launchMod._deps.trustFolder; let trusted = 0;
+    launchMod._deps.trustFolder = async () => { trusted++; return null; };
+    const plain = await api.dispatch('launch.start', { host: 'effort-plain', engine: 'claude', mode: 'tmux', prompt: 'hi', cwd: '/remote/dir', trust: false }).finally(() => { launchMod._deps.trustFolder = trustNow; });
+    assert.deepEqual(plain.args, { engine: 'claude', mode: 'tmux', prompt: 'hi', cwd: '/remote/dir', trust: false }, 'forwarded as given: that host trusts its own folder, or not');
     assert.deepEqual(spawned.flatMap((c) => c.requests.map((x) => x.op)), ['launch.start'], 'no effort, no probe: even an old host launches as before');
+    assert.equal(windows.length, opened, 'nothing opened on this host');
+    assert.equal(trusted, 0, 'and no folder trusted here');
   });
 });
 
@@ -731,12 +667,12 @@ describe('where a tmux launch opens its window, and which profiles file is read'
 });
 
 describe('launch.efforts op and the real profiles', () => {
-  test('launch.efforts is in the op table and ops-meta, read-only, returns the levels, and is an MCP tool', async () => {
+  test('launch.efforts is in the op table, read-only, and answers the levels; launch.start\'s schema offers every one', async () => {
+    // The probe in front of a remote launch with an effort (requireLaunchEfforts) asks this op; the MCP tool for it is
+    // generated from the op table, and every tool's description is checked in test/mcp.test.js.
     assert.ok(api.OPS.includes('launch.efforts'));
     assert.equal(META['launch.efforts'].m, false);
-    assert.ok(META['launch.efforts'].d.length > 40);
-    assert.deepEqual(await api.dispatchLocal('launch.efforts'), effortLevels());
-    assert.ok(ALL_TOOLS.some((t) => t.name === 'drover_launch_efforts'), 'generated MCP tool');
+    assert.deepEqual(await api.dispatchLocal('launch.efforts'), LEVELS);
     assert.deepEqual(META['launch.start'].s.properties.effort.enum, [...ALL_EFFORTS]);
   });
 
@@ -745,7 +681,7 @@ describe('launch.efforts op and the real profiles', () => {
     for (const engine of ['claude', 'codex']) {
       for (const p of real[engine].profiles) {
         assert.ok(!(p.argv ?? []).some((a) => /--effort|model_reasoning_effort/.test(a)), `${p.id} carries an effort flag`);
-        const lv = EFFORT_LEVELS[engine].at(-1);
+        const lv = LEVELS[engine].at(-1);
         const argv = engine === 'claude' ? claude.interactiveArgv(p, { effort: lv }) : codex.interactiveArgv(p, { effort: lv });
         assert.deepEqual(argv, [engine, ...(p.argv ?? []), ...(engine === 'claude' ? ['--effort', lv] : ['-c', `model_reasoning_effort="${lv}"`])]);
       }

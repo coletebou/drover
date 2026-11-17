@@ -9,7 +9,6 @@
 // Run: node --test test/launch-target.test.js
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { mkdtemp, mkdir, writeFile, readFile, chmod, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -40,6 +39,7 @@ const credentials = await import('../core/credpool.js');
 const api = await import('../core/api.js');
 const { isWindow } = await import('../ui/transcript.js');
 const { stripFor } = await import('../ui/strips.js');
+const { hasTmux, startPrivateTmux } = await import('./private-tmux.js');
 // Here, not in a suite's after(): a suite skipped where tmux is missing runs no hooks.
 after(() => rm(dir, { recursive: true, force: true }));
 
@@ -66,10 +66,8 @@ test('stripFor: a drawer on a launch target finds the board strip through the in
   assert.equal(stripFor(state, { kind: 'window', id: 'work:2', host: 'local' }), strip);
 });
 
-const hasTmux = spawnSync('tmux', ['-V'], { encoding: 'utf8' }).status === 0;
 describe('real tmux, set up as the owner\'s (base-index 1, renumber-windows on)', { skip: hasTmux ? false : 'tmux is not installed here' }, () => {
-  let tdir, env, fakeBin, outDir, savedPath;
-  const tmuxCmd = (args) => spawnSync('tmux', args, { env, encoding: 'utf8' });
+  let tdir, server, tmuxCmd, fakeBin, outDir, savedPath;
   const ok = (r) => { assert.equal(r.status, 0, r.stderr); return r.stdout.trim(); };
   const windowsOf = async (session) => (await tmux.listWindows()).filter((w) => w.session === session).sort((a, b) => a.index - b.index);
   const byTarget = async (target) => (await tmux.listWindows()).find((w) => isWindow(w, target));
@@ -78,17 +76,13 @@ describe('real tmux, set up as the owner\'s (base-index 1, renumber-windows on)'
   const shows = (target, text) => waitFor(async () => (await tmux.capture(target, { lines: 20 }).catch(() => '')).includes(text));
 
   before(async () => {
-    // A private tmux server: its own socket directory, no TMUX variable that could point a client at the user's
-    // server, and its own config. Every tmux call in this process (core/tmux.js too) goes there. This comes before
-    // anything else that can fail: after() runs even when before() throws, and its kill-server must use this env.
-    tdir = await mkdtemp(path.join(tmpdir(), 'drovertt-'));
-    delete process.env.TMUX; delete process.env.TMUX_PANE;
-    process.env.TMUX_TMPDIR = tdir;
-    env = { ...process.env };
+    // A private tmux server (test/private-tmux.js) with a config of its own, the owner's base-index and renumbering.
+    // Every tmux call in this process (core/tmux.js too) goes there. It comes before anything else that can fail.
     // A window opened with no command (a new session's placeholder) runs sh -c, not the user's login shell and its config.
-    const conf = path.join(tdir, 'tmux.conf');
-    await writeFile(conf, "set -g base-index 1\nset -g renumber-windows on\nset -g default-shell /bin/sh\nset -g default-command 'exec sleep 3600'\n");
-    ok(tmuxCmd(['-f', conf, 'new-session', '-d', '-s', 'work', '-n', 'work-notes', '-c', tdir, 'sleep', '3600']));
+    tdir = await mkdtemp(path.join(tmpdir(), 'drovertt-'));
+    server = await startPrivateTmux({ dir: tdir, conf: "set -g base-index 1\nset -g renumber-windows on\nset -g default-shell /bin/sh\nset -g default-command 'exec sleep 3600'\n",
+      session: 'work', sessionArgs: ['-n', 'work-notes', '-c', tdir] });
+    tmuxCmd = server.tmux;
     // The agent: records the credential it was started with, then waits.
     fakeBin = path.join(tdir, 'bin'); outDir = path.join(tdir, 'out');
     await mkdir(fakeBin); await mkdir(outDir);
@@ -100,10 +94,8 @@ describe('real tmux, set up as the owner\'s (base-index 1, renumber-windows on)'
     await credentials._reset({ file: true });
   });
   after(async () => {
-    // The kill names the private server's socket: with TMUX_TMPDIR alone, a missing folder would send it to the
-    // user's default server.
-    if (env) tmuxCmd(['-S', path.join(tdir, `tmux-${process.getuid()}`, 'default'), 'kill-server']);
     if (savedPath) process.env.PATH = savedPath;
+    await server?.stop();
     if (tdir) await rm(tdir, { recursive: true, force: true });
   });
 

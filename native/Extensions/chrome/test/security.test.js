@@ -38,6 +38,7 @@ const FORBIDDEN = [
 const isComment = (l) => /^\s*(\/\/|\/\*|\*)/.test(l);
 
 test('no forbidden APIs or patterns in extension code', () => {
+  assert.ok(codeFiles.some((f) => f.endsWith('lib/api.js')), 'the scan finds extension files');
   const hits = [];
   for (const file of codeFiles) {
     readFileSync(file, 'utf8').split('\n').forEach((line, i) => {
@@ -65,8 +66,4 @@ test('no URLs to other hosts in code, html or json', () => {
     });
   }
   assert.deepEqual(hits, []);
-});
-
-test('the scan finds extension files (sanity)', () => {
-  assert.ok(codeFiles.some((f) => f.endsWith('lib/api.js')));
 });

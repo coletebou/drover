@@ -22,9 +22,9 @@ import { OWNER } from './owner.js';
 
 export const MAX_READ = 2 * 1024 * 1024;
 export const MAX_WRITE = 2 * 1024 * 1024;
-export const _deps = { appendEvent: (ev, opts) => events.append(ev, opts), home: () => process.env.HOME };
+export const _deps = { appendEvent: (ev, opts) => events.append(ev, opts) };
 
-const HOME = () => _deps.home();
+const HOME = () => process.env.HOME;
 export function dirRoots() { return ['.dotfiles', '.claude', '.codex'].map((d) => path.join(HOME(), d)); }
 const CODE = () => path.join(HOME(), 'code');
 const CODE_FILES = new Set(['CLAUDE.md', 'AGENTS.md']);

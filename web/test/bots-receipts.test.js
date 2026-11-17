@@ -10,7 +10,11 @@ import { mkdtemp, readFile, writeFile, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
+// None of this machine's Drover settings (a host DROVER_OWNER or DROVER_TENANT_PREFIX changes who a reply is for and
+// which bots are tenants), and a temp HOME; DROVER_CACHE is isolate-cache.js's.
+for (const k of Object.keys(process.env)) if (/^(DROVER|APXW)_/.test(k) && k !== 'DROVER_CACHE') delete process.env[k];
 const STATE = await mkdtemp(path.join(tmpdir(), 'drover-receipts-'));
+process.env.HOME = STATE;
 const EVENTS = path.join(STATE, 'events.jsonl');
 process.env.DROVER_STATE = STATE;
 process.env.DROVER_EVENTS = EVENTS;

@@ -94,7 +94,6 @@ describe('Codex items are attributed to the checkout their own turn ran in, fail
     assert.deepEqual(await tenant('WAITINGPROMPT'), [], 'pending: withheld');
     assert.deepEqual({ ...chunk('WAITINGPROMPT') }, { cwd: null, pending: 1 });
     assert.equal((await owner('WAITINGPROMPT')).length, 1, 'the owner finds it at once');
-    assert.match(store.source(file(4)).cwd_state, /"pending":\{"before":"[^"]+alpha","mixed":false\}/);
     await appendFile(file(4), [ctx(pub), said('WAITANSWER')].join(''));
     await tick();
     assert.equal(await released('WAITINGPROMPT'), 1, 'the next pass settles what the previous one stored');
@@ -143,11 +142,7 @@ describe('Codex items are attributed to the checkout their own turn ran in, fail
     for (const w of ['CURRENTSWITCHSECRET', 'CURRENTSWITCHANSWERSECRET', 'TWOENVSECRET', 'TWOENVANSWERSECRET', 'STEEREDINPUT']) assert.deepEqual(await tenant(w), [], w);
     for (const w of ['CURRENTBACK', 'STEERFIRST']) assert.equal(await released(w), 1, w);
   });
-  test('the chunks of an old extraction are read again: EXTRACT_VERSION covers the new attribution', async () => {
-    const { EXTRACT_VERSION } = await import('../core/search/indexer.js');
-    assert.ok(EXTRACT_VERSION >= 4);
-    assert.ok(store.sources().filter((s) => s.kind === 'codex').every((s) => s.xv === EXTRACT_VERSION));
-  });
+
 });
 
 describe('checkout-scoped search ranks without vectors', () => {

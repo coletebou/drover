@@ -145,20 +145,4 @@ public enum MockServer {
         let store = InMemoryTokenStore([.main: MockURLProtocol.mainToken, .widget: MockURLProtocol.widgetToken])
         return DroverClient(baseURL: baseURL, tokens: store, scope: scope, session: session)
     }
-
-    // Decoded fixtures for SwiftUI previews. FixturesInSync/ModelDecodingTests prove every fixture decodes.
-    public static var summary: NativeSummary { decodeBare("native-summary.json") }
-    public static var notifications: NativeNotifications { unwrap("native.notifications.json") }
-    public static var sessions: SessionList { unwrap("sessions.list.json") }
-    public static var transcript: Transcript { unwrap("sessions.transcript.json") }
-
-    private static func decodeBare<T: Decodable>(_ name: String) -> T {
-        // swiftlint:disable:next force_try
-        try! JSONDecoder().decode(T.self, from: Fixtures.data(name)!)
-    }
-
-    private static func unwrap<T: Decodable & Sendable>(_ name: String) -> T {
-        // swiftlint:disable:next force_try
-        try! JSONDecoder().decode(OpEnvelope<T>.self, from: Fixtures.data(name)!).result!
-    }
 }

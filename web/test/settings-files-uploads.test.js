@@ -4,7 +4,7 @@
 // conflict-safe atomic writes), the CORS rule for direct peers, and that every
 // new op reaches the MCP tool list.
 import './isolate-cache.js';
-import { test, describe, before } from 'node:test';
+import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, symlink, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -111,10 +111,11 @@ describe('uploads', () => {
 });
 
 describe('files', () => {
-  let home; const evs = [];
+  let home; const evs = []; const realHome = process.env.HOME;
+  after(() => { process.env.HOME = realHome; });
   before(async () => {
     home = await mkdtemp(path.join(tmpdir(), 'drover-home-'));
-    files._deps.home = () => home;
+    process.env.HOME = home;   // the editable roots are under the home the op reads when it runs
     files._deps.appendEvent = async (ev, opts) => { evs.push({ ...ev, actor: opts?.actor }); return { id: `f-${evs.length}`, ...ev }; };
     await mkdir(path.join(home, '.dotfiles', 'claude'), { recursive: true });
     await mkdir(path.join(home, '.claude', 'skills', 'demo'), { recursive: true });
@@ -197,7 +198,8 @@ describe('http: CORS for direct peers', () => {
 });
 
 describe('every new op is described and reaches MCP', () => {
-  const NEW = ['openclaw.status', 'openclaw.check', 'openclaw.sweep', 'openclaw.feed', 'tmux.answer', 'sessions.lastReply', 'settings.get', 'settings.set', 'settings.reset', 'notify.mute', 'notify.unmute', 'notify.recent', 'notify.list', 'notify.test', 'notify.send', 'uploads.put', 'uploads.list', 'uploads.remove', 'files.roots', 'files.list', 'files.read', 'files.write', 'files.find'];
+  const NEW = ['openclaw.status', 'openclaw.check', 'openclaw.sweep', 'openclaw.feed', 'tmux.answer', 'sessions.lastReply', 'settings.get', 'settings.set', 'settings.reset', 'notify.mute', 'notify.unmute', 'notify.recent', 'notify.list', 'notify.test', 'notify.send', 'uploads.put', 'uploads.list', 'uploads.remove', 'files.roots', 'files.list', 'files.read', 'files.write', 'files.find',
+    'docker.stacks', 'docker.fleet', 'docker.logs', 'docker.restart', 'docker.start', 'docker.exec', 'docker.run', 'host.vitals', 'fleet.vitals', 'fleet.place', 'launch.efforts'];
   test('in the op table, in ops-meta, and an drover_* tool each', () => {
     const tools = new Set(ALL_TOOLS.map((t) => t.name));
     for (const op of NEW) {

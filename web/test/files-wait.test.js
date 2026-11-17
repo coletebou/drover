@@ -13,7 +13,6 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { wait, waitLimits, globRe, stopWaits, LIMITS } from '../core/filewait.js';
-import * as files from '../core/files.js';
 import { hostTimeoutMs } from '../core/api.js';
 
 const T = realpathSync(await mkdtemp(path.join(tmpdir(), 'drover-wait-')));
@@ -221,14 +220,14 @@ describe('limits and stopping', () => {
   test('the path is absolute or ~/ (the host\'s home): anything else is refused', async () => {
     await assert.rejects(wait({ path: 'relative/status' }), /path must be absolute or start with ~\//);
     await assert.rejects(wait({}), /path must be a non-empty string/);
-    const home = files._deps.home;
-    files._deps.home = () => T;
+    const home = process.env.HOME;
+    process.env.HOME = T;
     try {
       const d = await fresh(), rel = path.relative(T, d);
       const [r] = await Promise.all([wait({ path: `~/${rel}`, ...FAST }), later(250, () => writeFile(path.join(d, 'n.md'), '1'))]);
       assert.equal(r.path, d);
       assert.deepEqual(r.changes, [{ path: path.join(d, 'n.md'), kind: 'added' }]);
-    } finally { files._deps.home = home; }
+    } finally { process.env.HOME = home; }
   });
 });
 

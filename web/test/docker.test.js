@@ -421,7 +421,7 @@ describe('docker.stacks on a fake host', () => {
     assert.equal(r.docker.available, false); assert.match(r.docker.reason, /no docker daemon is answering/);
     assert.deepEqual(r.stacks, []); assert.equal(r.totals.containers, 0);
     restore();
-    d._deps.env = () => ({ HOME: TMP, PATH: TMP + '/none' }); d._deps.loginPath = async () => '/nonexistent';
+    d._deps.loginPath = async () => '/nonexistent';
     const missing = path.join(TMP, 'nothing');
     d._deps.env = () => ({ HOME: TMP, PATH: missing, DROVER_DOCKER: undefined });
     const real = d._deps.stat; d._deps.stat = (p) => (p.startsWith('/') && !p.startsWith(TMP) ? null : real(p));

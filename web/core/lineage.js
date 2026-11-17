@@ -103,7 +103,7 @@ export async function chainsOf(target, { sessionId = null, dir = markersDir() } 
  * process runs without an inbox), ended, elsewhere (started on another host, alias; only that host knows), or not
  * started (its launch never got that far).
  */
-export function stateOf(g, registry) {
+function stateOf(g, registry) {
   const e = registry.get(g.sessionId);
   if (e?.alive) return e.socket ? 'live' : 'no messaging socket';
   if (e) return 'ended';
@@ -112,7 +112,7 @@ export function stateOf(g, registry) {
 }
 
 /** session id -> registry entry, a live entry ahead of a dead one left by the same session. */
-export function registryIndex(entries = []) {
+function registryIndex(entries = []) {
   const out = new Map();
   for (const e of entries) {
     if (!e?.sessionId) continue;

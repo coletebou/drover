@@ -6,9 +6,8 @@ import { test, describe, before, after, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { EventEmitter } from 'node:events';
-import { PassThrough } from 'node:stream';
 import path from 'node:path';
+import { fakePeer } from './fake-peer.js';
 
 const tmp = await mkdtemp(path.join(tmpdir(), 'drover-placement-'));
 const HOME = path.join(tmp, 'home');
@@ -37,8 +36,6 @@ const vitals = await import('../core/vitals.js');
 const api = await import('../core/api.js');
 const remote = await import('../core/remote.js');
 const hosts = await import('../core/hosts.js');
-const { META } = await import('../core/ops-meta.js');
-const { ALL_TOOLS } = await import('../mcp/server.js');
 after(async () => { remote.stopAll(); await rm(tmp, { recursive: true, force: true }); });
 
 const GB = 1024;
@@ -67,26 +64,10 @@ await writeFile(process.env.DROVER_FLEET_CATALOG, JSON.stringify(catalog));
 
 /** Fake `ssh <host> drover rpc` peers: answers[host](op, args) returns a result, or 'ERR:...'; null means the host is down (exit 255). */
 let answers = {};
-const calls = [];
-remote._deps.spawn = (file, argv) => {
-  const host = argv[argv.indexOf('--') - 1];
-  const c = new EventEmitter();
-  c.stdout = new PassThrough(); c.stderr = new PassThrough();
-  c.stdin = {
-    write(d) {
-      for (const line of String(d).split('\n').filter(Boolean)) {
-        const req = JSON.parse(line); calls.push({ host, op: req.op, args: req.args });
-        const fn = answers[host];   // read per request: a test may take a host down while its peer is still open
-        if (!fn) { setImmediate(() => { c.stderr.write(`ssh: connect to host ${host} port 22: Connection timed out\n`); c.emit('close', 255); }); return; }
-        const a = fn(req.op, req.args);
-        setImmediate(() => c.stdout.write(JSON.stringify(typeof a === 'string' && a.startsWith('ERR:') ? { id: req.id, ok: false, error: a.slice(4) } : { id: req.id, ok: true, result: a }) + '\n'));
-      }
-    },
-    end() { setTimeout(() => c.emit('close', 0), 5); }, on() {},
-  };
-  c.kill = () => setImmediate(() => c.emit('close', null));
-  return c;
-};
+const calls = fakePeer(remote, ({ host, op, args }) => {
+  const fn = answers[host];   // read per request: a test may take a host down while its peer is still open
+  return fn ? fn(op, args) : { $exit: 255, stderr: `ssh: connect to host ${host} port 22: Connection timed out\n` };
+}, { closeMs: 5 }).calls;
 /** This machine's own sample: written where the daemon keeps its last one. */
 const setLocal = (s) => writeFile(path.join(process.env.DROVER_STATE, 'vitals.json'), JSON.stringify(s));
 
@@ -302,12 +283,13 @@ describe('fleet.place, fleet.vitals and launch.start host auto through the op ta
   });
   test('placements are reserved for a few minutes, so back-to-back launches do not all land on one host', async () => {
     await setLocal(sampleOf({ host: 'box-a', availGB: 5 }));
-    answers = { 'box-b': () => sampleOf({ host: 'box-b', availGB: 9 }), 'box-c': () => sampleOf({ host: 'box-c', availGB: 7 }), 'mac-a': null };
+    // box-b's 8 GB take one claude-session (3.5 GB, its 2 GB reserve kept), not a second one while the first starts.
+    answers = { 'box-b': () => sampleOf({ host: 'box-b', availGB: 8 }), 'box-c': () => sampleOf({ host: 'box-c', availGB: 7 }), 'mac-a': null };
     const first = await api.front['fleet.place']({ class: 'claude-session', reserve: true });
     assert.deepEqual([first.host, first.reserved], ['box-b', 3.5]);
     const second = await api.front['fleet.place']({ class: 'claude-session', reserve: true });
     assert.equal(second.host, 'box-c', 'box-b now counts the 3.5 GB just placed there');
-    assert.match(second.candidates.find((c) => c.name === 'box-b').why.join() || 'eligible', /after 3.5 GB just placed there|eligible/);
+    assert.match(second.candidates.find((c) => c.name === 'box-b').why.join(), /^memory: 4\.5 GB available after 3\.5 GB just placed there, and 3\.5 GB for a claude-session would leave 1 GB, under its 2 GB reserve$/);
     const probe = await api.front['fleet.place']({ class: 'claude-session' });
     assert.equal(probe.reserved, undefined, 'a placement without reserve holds nothing');
   });
@@ -341,17 +323,11 @@ describe('the surfaces', () => {
     assert.ok(!names.includes('*'));
     assert.equal(await hosts.assertKnownHost('burst-one'), 'burst-one');
   });
-  test('the new ops are described for MCP; drover_launch takes host auto and a placement class', () => {
-    for (const op of ['host.vitals', 'fleet.vitals', 'fleet.place']) {
-      assert.equal(META[op].m, false, op);
-      assert.ok(META[op].d.length > 80, op);
-      for (const [k, p] of Object.entries(META[op].s.properties)) assert.equal(typeof p.description, 'string', `${op}.${k}`);
-      assert.ok(ALL_TOOLS.some((t) => t.name === `drover_${op.replace(/\./g, '_')}`), op);
-    }
-    const launch = ALL_TOOLS.find((t) => t.name === 'drover_launch');
-    assert.match(launch.inputSchema.properties.host.description, /"auto"/);
-    assert.ok(launch.inputSchema.properties.placement);
-    assert.match(META['launch.start'].s.properties.host.description, /"auto"/);
+  test('the vitals and placement ops are reads; drover_launch offers placement', async () => {
+    const { isMutating } = await import('../core/ops-meta.js');
+    const { ALL_TOOLS } = await import('../mcp/server.js');
+    for (const op of ['host.vitals', 'fleet.vitals', 'fleet.place']) assert.equal(isMutating(op), false, op);
+    assert.ok(ALL_TOOLS.find((t) => t.name === 'drover_launch').inputSchema.properties.placement);
   });
   test('resource is an alert category with its own sound settings', async () => {
     const policy = await import('../ui/notify-policy.js');
