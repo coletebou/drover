@@ -9,6 +9,13 @@
 // the pick/throttle ops, the truth file and the state file carry variable names
 // and credential ids only. A literal (non-$) value in profiles.json is rejected.
 //
+// Routes: a credential only works on the endpoint it was issued for (one
+// cloud partition, one provider account). A pool entry may name its `route`
+// and a launch profile may name the `route` it authenticates on; a launch on a
+// routed profile then only ever gets an entry on that route (or an entry that
+// names no route), for auto, for an explicit id and for headless failover. An
+// entry or profile without a route matches everything, as before routes existed.
+//
 // Usage tracking: active handles (headless ids, tmux targets) live in memory and
 // are lost on a daemon restart. Counters, the round-robin cursor and throttle
 // history persist in $DROVER_STATE/credentials.json (default
@@ -17,8 +24,8 @@ import { readFile, writeFile, mkdir, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { stateDir } from './paths.js';
 // Cycle: launch.js imports this module and this module imports loadProfiles
-// from launch.js. Neither side touches the other at module load, so it is safe.
-import { loadProfiles } from './launch.js';
+// and resolveProfile from launch.js. Neither side touches the other at module load, so it is safe.
+import { loadProfiles, resolveProfile } from './launch.js';
 
 const STATE_DIR = stateDir();
 export const STATE_FILE = path.join(STATE_DIR, 'credentials.json');
@@ -35,6 +42,7 @@ export const _clock = { now: () => Date.now() };
 const HELP = [
   'Credential pool for Claude Code launches (profiles.json "credentials"). Each entry maps child env vars to $NAME references that are read from this daemon\'s environment at launch time; values are never shown here, only names and ids.',
   'available=false means a referenced variable is not set on this host (see missing); such an entry is never picked. active counts sessions launched through Drover: headless sessions until they exit, tmux windows for 6 hours after launch (a tmux window cannot be observed, so it expires on a timer). uses is the lifetime launch count. throttles is the number of 429-style events recorded by credentials.throttle or by headless failover; recentThrottles counts those inside the avoidance window.',
+  'An entry with a route only serves launches whose profile names that route (or no route); a profile with a route only gets entries on it, whether auto, an explicit id or a headless failover picks, because a credential sent to the wrong endpoint is always refused. recommendationByRoute is what auto would pick now for a launch on each route, and profileRoutes is the route each Claude profile resolves to on this host (a profile route may read the daemon environment: $NAME or ${NAME:-default}).',
   'auto picks, among available entries below maxConcurrent, the lowest active/weight ratio, skipping entries throttled in the last 2 minutes when another is free, round robin on ties. recommendation is what auto would pick right now. Pass credential "<id>" to force an entry, or "none" to inherit the daemon environment unmanaged. When you observe a 429 on a session you run yourself, call credentials.throttle with its id so the next pick avoids it.',
 ].join(' ');
 
@@ -60,7 +68,9 @@ export async function loadPool() {
     if (!(weight > 0)) throw new Error(`credential ${raw.id}: weight must be a number above 0`);
     const maxConcurrent = raw.maxConcurrent == null ? Infinity : Number(raw.maxConcurrent);
     if (!(maxConcurrent > 0)) throw new Error(`credential ${raw.id}: maxConcurrent must be a number above 0`);
-    pool.push({ id: raw.id, label: String(raw.label ?? raw.id), env, weight, maxConcurrent });
+    const route = raw.route == null || raw.route === '' ? null : String(raw.route);
+    if (route != null && !ID_RE.test(route)) throw new Error(`credential ${raw.id}: route must be made of letters, digits, _ or -`);
+    pool.push({ id: raw.id, label: String(raw.label ?? raw.id), env, weight, maxConcurrent, route });
   }
   const def = typeof c.default === 'string' && c.default ? c.default : 'auto';
   if (def !== 'auto' && def !== 'none' && !seen.has(def)) throw new Error(`credentials.default ${def} is not auto, none or a pool id`);
@@ -69,6 +79,29 @@ export async function loadPool() {
 }
 
 export async function defaultMode() { return (await loadPool()).default; }
+
+// A profile route may come from the daemon environment, for a profile whose endpoint differs by host (one with no
+// --settings runs whatever that host's own Claude settings say): "$NAME", or "${NAME:-default}" for a fallback.
+const ROUTE_REF_RE = /^\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)(?::-([A-Za-z0-9_-]{1,40}))?\})$/;
+
+/**
+ * A launch profile's route: a literal, or a $NAME / ${NAME:-default} reference read from the daemon environment.
+ * null when it names none, or a reference with no default is unset (every entry fits). Throws on a malformed value.
+ */
+export function profileRoute(profile) {
+  let r = profile?.route;
+  if (r == null || r === '') return null;
+  r = String(r);
+  const ref = r.match(ROUTE_REF_RE);
+  if (ref) r = process.env[ref[1] ?? ref[2]] || ref[3] || '';
+  else if (r.startsWith('$')) throw new Error(`profile ${profile.id}: route ${r} must be a route, $NAME or \${NAME:-default}`);
+  if (!r) return null;
+  if (!ID_RE.test(r)) throw new Error(`profile ${profile.id}: route must be made of letters, digits, _ or -`);
+  return r;
+}
+
+/** Whether an entry (or status row) can serve a launch on route; an unrouted entry or launch fits anything. */
+const fitsRoute = (entry, route) => route == null || entry.route == null || entry.route === route;
 
 const sourcesOf = (entry) => [...new Set(Object.values(entry.env).map((r) => r.slice(1)))];
 const missingOf = (entry) => sourcesOf(entry).filter((n) => !process.env[n]);
@@ -159,7 +192,7 @@ function describeRows(pool, st) {
     const missing = missingOf(e);
     const th = Array.isArray(st.throttles[e.id]) ? st.throttles[e.id] : [];
     return {
-      id: e.id, label: e.label,
+      id: e.id, label: e.label, route: e.route,
       env: { ...e.env },                 // $NAME references, not values
       sources: sourcesOf(e), missing, available: missing.length === 0,
       weight: e.weight, maxConcurrent: Number.isFinite(e.maxConcurrent) ? e.maxConcurrent : null,
@@ -176,15 +209,18 @@ function describeRows(pool, st) {
  * nothing to pick, or { row: null, fail } when the request cannot be honoured
  * (explicit id unknown/unavailable, or every candidate at maxConcurrent).
  */
-function choose(mode, rows, { exclude = [], lastPick = null } = {}) {
+function choose(mode, allRows, { exclude = [], lastPick = null, route = null } = {}) {
   if (mode === 'none') return { row: null, reason: 'credential none: the child inherits the daemon environment unmanaged' };
   if (mode !== 'auto') {
-    const row = rows.find((r) => r.id === mode);
-    if (!row) return { row: null, fail: `unknown credential ${JSON.stringify(mode)}; known: ${rows.map((r) => r.id).join(', ') || '(empty pool)'}, auto, none` };
+    const row = allRows.find((r) => r.id === mode);
+    if (!row) return { row: null, fail: `unknown credential ${JSON.stringify(mode)}; known: ${allRows.map((r) => r.id).join(', ') || '(empty pool)'}, auto, none` };
+    if (!fitsRoute(row, route)) return { row: null, fail: `credential ${mode} is for route ${row.route}, and this launch's profile authenticates on route ${route}; pass a credential on route ${route}${routeIds(allRows, route)}, auto, or none` };
     if (!row.available) return { row: null, fail: `credential ${mode} is unavailable: ${row.missing.join(', ')} not set in the daemon environment` };
     return { row, reason: `explicit: ${mode} (${row.active} active)` };
   }
-  if (!rows.length) return { row: null, reason: 'credential pool is empty' };
+  if (!allRows.length) return { row: null, reason: 'credential pool is empty' };
+  const rows = allRows.filter((r) => fitsRoute(r, route));
+  if (!rows.length) return { row: null, reason: `no credential in the pool is for route ${route} (pool routes: ${[...new Set(allRows.map((r) => r.route ?? 'any'))].join(', ')})` };
   const avail = rows.filter((r) => r.available);
   if (!avail.length) return { row: null, reason: `no credential available on this host: ${rows.map((r) => `${r.id} needs ${r.missing.join(', ')}`).join('; ')}` };
   const open = avail.filter((r) => !exclude.includes(r.id));
@@ -204,16 +240,22 @@ function choose(mode, rows, { exclude = [], lastPick = null } = {}) {
     row = tied[(i + 1) % tied.length];
     how = `tie on load ${Number(min.toFixed(3))} between ${tied.map((r) => r.id).join(', ')}; round robin after ${lastPick ?? 'none'}`;
   }
-  return { row, reason: `auto: ${how}${skipped.length ? `; skipped ${skipped.join(', ')} (throttled in the last 2 min)` : ''}` };
+  return { row, reason: `auto${route ? ` on route ${route}` : ''}: ${how}${skipped.length ? `; skipped ${skipped.join(', ')} (throttled in the last 2 min)` : ''}` };
+}
+
+/** " (a, b)": the ids that serve route, for an error message. */
+function routeIds(rows, route) {
+  const ids = rows.filter((r) => fitsRoute(r, route)).map((r) => r.id);
+  return ids.length ? ` (${ids.join(', ')})` : ' (the pool has none)';
 }
 
 const normMode = (mode) => (mode == null || mode === '' ? 'auto' : String(mode));
 
-async function select(mode, { engine, exclude } = {}) {
+async function select(mode, { engine, exclude, route = null } = {}) {
   const pool = await loadPool();
   if (engine && !pool.appliesTo.includes(engine)) return { pool, st: null, row: null, reason: `credentials apply to ${pool.appliesTo.join(', ') || 'nothing'}, not ${engine}` };
   const st = await loadState();
-  const r = choose(normMode(mode), describeRows(pool, st), { exclude, lastPick: st.lastPick });
+  const r = choose(normMode(mode), describeRows(pool, st), { exclude, lastPick: st.lastPick, route });
   return { pool, st, ...r };
 }
 
@@ -223,10 +265,11 @@ async function select(mode, { engine, exclude } = {}) {
  * none, pool empty or nothing available). Throws when an explicit id is
  * unknown/unavailable or when every candidate is at maxConcurrent. `exclude`
  * skips ids (failover); `record` persists the id as lastPick so repeated picks
- * by an outside orchestrator rotate on ties.
+ * by an outside orchestrator rotate on ties. `route` (the launch profile's,
+ * see profileRoute) limits every mode to entries on that route.
  */
-export async function pick(mode = 'auto', { engine, exclude = [], record = false } = {}) {
-  const r = await select(mode, { engine, exclude });
+export async function pick(mode = 'auto', { engine, exclude = [], record = false, route = null } = {}) {
+  const r = await select(mode, { engine, exclude, route });
   if (r.fail) throw new Error(r.fail);
   if (!r.row) return null;
   const entry = r.pool.pool.find((e) => e.id === r.row.id);
@@ -236,8 +279,8 @@ export async function pick(mode = 'auto', { engine, exclude = [], record = false
 }
 
 /** What pick() would do, as { id, label, reason }, never throwing and never resolving values. */
-export async function recommend(mode = 'auto', { engine, exclude = [] } = {}) {
-  const r = await select(mode, { engine, exclude });
+export async function recommend(mode = 'auto', { engine, exclude = [], route = null } = {}) {
+  const r = await select(mode, { engine, exclude, route });
   if (r.fail) return { id: null, label: null, reason: r.fail };
   return { id: r.row?.id ?? null, label: r.row?.label ?? null, reason: r.reason };
 }
@@ -283,16 +326,32 @@ export async function recordThrottle(id, detail = '') {
   };
 }
 
+/** Each Claude launch profile's route as this host resolves it (null: unrouted, or malformed), for clients that cannot read the daemon environment. */
+async function profileRoutes() {
+  const all = await loadProfiles();
+  const out = {};
+  for (const p of all.claude?.profiles ?? []) { try { out[p.id] = profileRoute(p); } catch { out[p.id] = null; } }
+  return out;
+}
+
 /** The orchestrator view: pool rows (names and ids only), what auto would pick now, and how to read it. */
 export async function status() {
   const pool = await loadPool();
   const st = await loadState();
   const rows = describeRows(pool, st);
   const rec = await recommend('auto', { engine: 'claude' });
+  // What auto picks for a launch on each route the pool names: a routed profile only ever gets its own route's pick.
+  const routes = [...new Set(pool.pool.map((e) => e.route).filter(Boolean))];
+  const byRoute = {};
+  for (const route of routes) {
+    const r = await recommend('auto', { engine: 'claude', route });
+    byRoute[route] = { id: r.id, reason: r.reason };
+  }
   return {
     pool: rows,
     recommendation: rec.id,
     recommendationReason: rec.reason,
+    ...(routes.length ? { recommendationByRoute: byRoute, profileRoutes: await profileRoutes() } : {}),
     defaultMode: pool.default,
     appliesTo: pool.appliesTo,
     lastPick: st.lastPick,
@@ -305,8 +364,9 @@ export async function status() {
 /** Ops for core/api.js to spread into `local`. None of them returns an env value. */
 export const ops = {
   'credentials.status': () => status(),
-  'credentials.pick': async ({ mode = 'auto', engine = 'claude' } = {}) => {
-    const p = await pick(mode, { engine, record: true });
+  'credentials.pick': async ({ mode = 'auto', engine = 'claude', route, profile } = {}) => {
+    const r = route ? String(route) : profile ? profileRoute(await resolveProfile(engine, String(profile))) : null;
+    const p = await pick(mode, { engine, record: true, route: r });
     return p && { id: p.id, label: p.label, reason: p.reason };
   },
   'credentials.throttle': ({ id, detail } = {}) => recordThrottle(String(id ?? ''), String(detail ?? '').slice(0, 200)),

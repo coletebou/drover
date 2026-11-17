@@ -359,3 +359,155 @@ test('headless failover is skipped, with a note, when no other credential is ava
   assert.equal((await credentials.status()).pool.find((p) => p.id === 'main').throttles, 1, 'the throttle is still recorded');
   launchMod.headlessStop(r.headlessId);
 });
+
+// ---------------------------------------------------------------- routes
+
+const ROUTED = {
+  ...PROFILES,
+  claude: {
+    models: PROFILES.claude.models,
+    profiles: [
+      ...PROFILES.claude.profiles,
+      { id: 'claude-gov', label: 'gov endpoint', argv: [], env: {}, route: 'gov' },
+      { id: 'claude-com', label: 'commercial endpoint', argv: [], env: {}, route: 'commercial' },
+      { id: 'claude-sub', label: 'subscription login', argv: [], env: {}, route: 'subscription' },
+    ],
+  },
+  credentials: {
+    pool: [
+      { id: 'main', label: 'Main', env: { FAKE_CHILD_TOKEN: '$DROVER_TEST_MAIN' }, weight: 2, maxConcurrent: 3, route: 'gov' },
+      { id: 'gov2', label: 'Second gov', env: { FAKE_CHILD_TOKEN: '$DROVER_TEST_GOV' }, weight: 1, maxConcurrent: 3, route: 'gov' },
+      { id: 'fallback', label: 'Fallback', env: { FAKE_CHILD_TOKEN: '$DROVER_TEST_FALLBACK' }, weight: 1, maxConcurrent: 3, route: 'commercial' },
+    ],
+    default: 'auto',
+    appliesTo: ['claude'],
+  },
+};
+const FAKE_GOV = 'x-fake-gov-value-000003';
+FAKES.push(FAKE_GOV);
+
+/** Run fn against a profiles.json, then put the shared one back. */
+async function withProfiles(profiles, fn) {
+  await writeFile(process.env.DROVER_PROFILES, JSON.stringify(profiles));
+  try { await fn(); } finally {
+    await writeFile(process.env.DROVER_PROFILES, JSON.stringify(PROFILES));
+    delete process.env.DROVER_TEST_GOV;
+  }
+}
+
+test('routes: a routed launch only gets entries on its route, for auto, an explicit id and status', () => withProfiles(ROUTED, async () => {
+  await credentials._reset({ file: true });
+  for (let i = 0; i < 6; i++) {
+    const p = await credentials.pick('auto', { engine: 'claude', route: 'gov' });
+    assert.equal(p.id, 'main', 'gov2 is unavailable and fallback is on another route');
+    assert.match(p.reason, /^auto on route gov:/);
+    await credentials.acquire(p.id, `g${i}`).catch(() => {});
+    credentials.release(p.id, `g${i}`);
+  }
+  assert.equal((await credentials.pick('auto', { engine: 'claude', route: 'commercial' })).id, 'fallback');
+  await assert.rejects(credentials.pick('fallback', { engine: 'claude', route: 'gov' }), /credential fallback is for route commercial.*route gov \(main, gov2\)/);
+  assert.equal((await credentials.pick('fallback', { engine: 'claude', route: 'commercial' })).id, 'fallback', 'an explicit id on the right route is honoured');
+  assert.equal(await credentials.pick('auto', { engine: 'claude', route: 'subscription' }), null, 'a route no entry serves gets no pool credential');
+  assert.match((await credentials.recommend('auto', { engine: 'claude', route: 'subscription' })).reason, /no credential in the pool is for route subscription \(pool routes: gov, commercial\)/);
+  const st = await credentials.status();
+  assert.deepEqual(st.pool.map((p) => [p.id, p.route]), [['main', 'gov'], ['gov2', 'gov'], ['fallback', 'commercial']]);
+  assert.equal(st.recommendationByRoute.gov.id, 'main');
+  assert.equal(st.recommendationByRoute.commercial.id, 'fallback');
+  assert.deepEqual(st.profileRoutes, { 'claude-skip': null, 'claude-gov': 'gov', 'claude-com': 'commercial', 'claude-sub': 'subscription' });
+  noFakes(st, 'status with routes');
+  assert.deepEqual(await credentials.ops['credentials.pick']({ profile: 'claude-gov' }).then((r) => r.id), 'main');
+  assert.deepEqual(await credentials.ops['credentials.pick']({ route: 'commercial' }).then((r) => r.id), 'fallback');
+}));
+
+test('routes: an unrouted entry serves every route and an unrouted launch takes any entry', () => withProfiles({
+  ...ROUTED,
+  credentials: { ...ROUTED.credentials, pool: [ROUTED.credentials.pool[2], { id: 'shared', label: 'Shared', env: { FAKE_CHILD_TOKEN: '$DROVER_TEST_MAIN' }, weight: 1, maxConcurrent: 3 }] },
+}, async () => {
+  await credentials._reset({ file: true });
+  assert.equal((await credentials.pick('auto', { engine: 'claude', route: 'gov' })).id, 'shared');
+  assert.equal((await credentials.pick('shared', { engine: 'claude', route: 'gov' })).id, 'shared');
+  const ids = new Set();
+  for (let i = 0; i < 4; i++) ids.add((await credentials.pick('auto', { engine: 'claude', record: true })).id);
+  assert.deepEqual([...ids].sort(), ['fallback', 'shared'], 'no route: both entries take turns, as before routes existed');
+}));
+
+test('routes: a malformed route is rejected', () => withProfiles({
+  ...ROUTED,
+  credentials: { ...ROUTED.credentials, pool: [{ ...ROUTED.credentials.pool[0], route: 'gov cloud' }] },
+}, async () => {
+  await assert.rejects(credentials.loadPool(), /route must be made of letters/);
+  assert.throws(() => credentials.profileRoute({ id: 'p', route: 'a;b' }), /route must be made of letters/);
+  assert.equal(credentials.profileRoute({ id: 'p' }), null);
+  // A route read from the daemon environment, for a profile whose endpoint differs by host.
+  delete process.env.DROVER_TEST_ROUTE;
+  assert.equal(credentials.profileRoute({ id: 'p', route: '$DROVER_TEST_ROUTE' }), null, 'unset with no default: unrouted');
+  assert.equal(credentials.profileRoute({ id: 'p', route: '${DROVER_TEST_ROUTE:-commercial}' }), 'commercial');
+  process.env.DROVER_TEST_ROUTE = 'gov';
+  try {
+    assert.equal(credentials.profileRoute({ id: 'p', route: '$DROVER_TEST_ROUTE' }), 'gov');
+    assert.equal(credentials.profileRoute({ id: 'p', route: '${DROVER_TEST_ROUTE:-commercial}' }), 'gov');
+    process.env.DROVER_TEST_ROUTE = 'not ok';
+    assert.throws(() => credentials.profileRoute({ id: 'p', route: '$DROVER_TEST_ROUTE' }), /route must be made of letters/);
+  } finally { delete process.env.DROVER_TEST_ROUTE; }
+  assert.throws(() => credentials.profileRoute({ id: 'p', route: '$(id)' }), /must be a route, \$NAME/);
+  assert.throws(() => credentials.profileRoute({ id: 'p', route: '${X:-a b}' }), /must be a route, \$NAME/);
+}));
+
+test('routes: a profile whose route comes from the daemon environment follows it per host', () => withProfiles({
+  ...ROUTED,
+  claude: { ...ROUTED.claude, profiles: [...ROUTED.claude.profiles, { id: 'claude-host', label: 'host default', argv: [], env: {}, route: '${DROVER_TEST_ROUTE:-commercial}' }] },
+}, async () => {
+  await credentials._reset({ file: true });
+  windows.length = 0;
+  delete process.env.DROVER_TEST_ROUTE;
+  assert.equal((await launchMod.launch({ engine: 'claude', mode: 'tmux', cwd: dir, profile: 'claude-host', name: 'h1' }, { actor: 't' })).credential, 'fallback', 'the default route');
+  process.env.DROVER_TEST_ROUTE = 'gov';
+  try {
+    assert.equal((await launchMod.launch({ engine: 'claude', mode: 'tmux', cwd: dir, profile: 'claude-host', name: 'h2' }, { actor: 't' })).credential, 'main', 'the host\'s own route');
+  } finally { delete process.env.DROVER_TEST_ROUTE; }
+}));
+
+test('routes: launch follows the profile route; a mismatched explicit id starts nothing', () => withProfiles(ROUTED, async () => {
+  await credentials._reset({ file: true });
+  windows.length = 0;
+  const gov = await launchMod.launch({ engine: 'claude', mode: 'tmux', cwd: dir, profile: 'claude-gov', name: 'gov' }, { actor: 't' });
+  assert.equal(gov.credential, 'main'); assert.match(gov.credentialReason, /^auto on route gov:/);
+  assert.equal(windows.at(-1).env.FAKE_CHILD_TOKEN, process.env.DROVER_TEST_MAIN);
+  const com = await launchMod.launch({ engine: 'claude', mode: 'tmux', cwd: dir, profile: 'claude-com', name: 'com' }, { actor: 't' });
+  assert.equal(com.credential, 'fallback');
+  assert.equal(windows.at(-1).env.FAKE_CHILD_TOKEN, process.env.DROVER_TEST_FALLBACK);
+  const sub = await launchMod.launch({ engine: 'claude', mode: 'tmux', cwd: dir, profile: 'claude-sub', name: 'sub' }, { actor: 't' });
+  assert.equal(sub.credential, null); assert.match(sub.credentialReason, /no credential in the pool is for route subscription/);
+  assert.ok(!windows.at(-1).env.FAKE_CHILD_TOKEN, 'a subscription launch gets no pool token');
+  const before = windows.length;
+  await assert.rejects(launchMod.launch({ engine: 'claude', mode: 'tmux', cwd: dir, profile: 'claude-gov', credential: 'fallback' }, { actor: 't' }), /credential fallback is for route commercial/);
+  assert.equal(windows.length, before, 'nothing was started');
+  noFakes([gov, com, sub], 'routed launch results');
+}));
+
+test('routes: headless failover stays on the session\'s route', () => withProfiles(ROUTED, async () => {
+  await credentials._reset({ file: true });
+  FakeHeadless.instances.length = 0;
+  process.env.DROVER_TEST_GOV = FAKE_GOV;
+  const r = await launchMod.launch({ engine: 'claude', mode: 'headless', cwd: dir, profile: 'claude-gov', prompt: 'work' }, { actor: 't' });
+  assert.equal(r.credential, 'main');
+  FakeHeadless.instances.at(-1).emit({ type: 'result', is_error: true, result: 'API Error: 429' });
+  await waitFor(() => launchMod.headlessGet(r.headlessId).failovers === 1);
+  assert.equal(launchMod.headlessGet(r.headlessId).credential, 'gov2', 'the other gov entry, never the commercial one');
+  assert.equal(FakeHeadless.instances.at(-1).opts.env.FAKE_CHILD_TOKEN, FAKE_GOV);
+  noFakes(launchMod.headlessGet(r.headlessId), 'headlessGet after a routed failover');
+  launchMod.headlessStop(r.headlessId);
+
+  // With the second gov entry gone, a throttle has nowhere to go on this route: no failover to commercial.
+  delete process.env.DROVER_TEST_GOV;
+  await credentials._reset({ file: true });
+  const s = await launchMod.launch({ engine: 'claude', mode: 'headless', cwd: dir, profile: 'claude-gov', prompt: 'work' }, { actor: 't' });
+  const inst = FakeHeadless.instances.at(-1);
+  inst.emit({ type: 'result', is_error: true, result: 'API Error: 429' });
+  await waitFor(() => launchMod.headlessGet(s.headlessId).events.some((e) => e.type === 'failover'));
+  const note = launchMod.headlessGet(s.headlessId).events.find((e) => e.type === 'failover');
+  assert.equal(note.to, null); assert.match(note.reason, /no other credential available/);
+  assert.equal(inst.stopped, false);
+  assert.equal(launchMod.headlessGet(s.headlessId).credential, 'main');
+  launchMod.headlessStop(s.headlessId);
+}));

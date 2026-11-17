@@ -177,7 +177,7 @@ async function failover(entry, detail) {
   if (!from) { recordHeadlessEvent(entry, { type: 'failover', from: null, to: null, reason: 'session has no pool credential', detail: clean }); return; }
   if (entry.failovers >= MAX_FAILOVERS) { recordHeadlessEvent(entry, { type: 'failover', from, to: null, reason: `cap of ${MAX_FAILOVERS} failovers reached; throttle recorded only`, detail: clean }); return; }
   let next = null;
-  try { next = await credentials.pick('auto', { engine: 'claude', exclude: [from] }); }
+  try { next = await credentials.pick('auto', { engine: 'claude', exclude: [from], route: entry.credentialRoute ?? null }); }
   catch (e) { recordHeadlessEvent(entry, { type: 'failover', from, to: null, reason: e.message, detail: clean }); return; }
   if (!next) { recordHeadlessEvent(entry, { type: 'failover', from, to: null, reason: 'no other credential available', detail: clean }); return; }
 
@@ -211,6 +211,9 @@ export function checkDone(engine, req) {
 
 /**
  * @param {object} req {engine:'claude'|'codex'|'hermes', mode:'tmux'|'headless', profile, model, effort, cwd, prompt, tmuxSession, name, resume, credential:'auto'|<id>|'none', trust, done}
+ *
+ * credential (Claude only, core/credpool.js): auto, a pool id or none. When the profile names a route, every mode is limited
+ * to pool entries on that route, and an explicit id on another route is refused before anything starts.
  *
  * effort (core/effort.js) is the reasoning effort of this one session: claude `--effort <level>`, codex
  * `-c model_reasoning_effort="<level>"` (a headless Codex thread gets the same key in thread/start config), hermes
@@ -246,10 +249,13 @@ export async function launch(req, { actor = 'drover' } = {}) {
   const cwd = expandHome(req.cwd) || process.env.HOME;
   const profile = await resolveProfile(engine, req.profile);
   const credMode = req.credential == null || req.credential === '' ? await credentials.defaultMode() : String(req.credential);
-  // Throws for an explicit id that is unknown/unavailable and when every candidate is at maxConcurrent;
+  // A profile that names a route (the endpoint its settings authenticate on) only gets pool entries on that route
+  // (or unrouted ones); a route no entry serves, such as a subscription login, gets no pool credential at all.
+  const credRoute = credentials.profileRoute(profile);
+  // Throws for an explicit id that is unknown/unavailable/on another route and when every candidate is at maxConcurrent;
   // null when the pool does not apply (engine, none, nothing available), in which case the child inherits the daemon env.
-  const cred = await credentials.pick(credMode, { engine });
-  const credentialReason = cred ? cred.reason : (await credentials.recommend(credMode, { engine })).reason;
+  const cred = await credentials.pick(credMode, { engine, route: credRoute });
+  const credentialReason = cred ? cred.reason : (await credentials.recommend(credMode, { engine, route: credRoute })).reason;
   const credEnv = cred?.env ?? {};
   // The PATH of a login shell, computed fresh for each launch (about 0.25 s), not the daemon's own: see
   // loginShellPath. Spread before the profile env, so a profile that names a PATH keeps it. A headless Codex
@@ -303,7 +309,7 @@ export async function launch(req, { actor = 'drover' } = {}) {
   const id = uuidv7();
   const entry = {
     id, engine, cwd, profile: profile.id, model: model ?? null, ...withEffort, startedAt: new Date().toISOString(), events: [], subscribers: new Set(), status: 'starting',
-    name: SAFE_NAME(req.name || `${engine}-headless`), credential: cred?.id ?? null, failovers: 0, generation: 0, failoverInFlight: null,
+    name: SAFE_NAME(req.name || `${engine}-headless`), credential: cred?.id ?? null, credentialRoute: credRoute, failovers: 0, generation: 0, failoverInFlight: null,
     profileResolved: profile, profileEnv: profile.env, agentPath,
   };
   headless.set(id, entry);

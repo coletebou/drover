@@ -24,7 +24,7 @@ export default {
       h('option', { value: 'auto', selected: v.credential !== 'none' ? true : null }, 'auto (least loaded, skips throttled)'),
       h('option', { value: 'none', selected: v.credential === 'none' ? true : null }, 'none (inherit the daemon environment)'));   // refilled from credentials.status once the host answers
     const credHint = h('span', { class: 'muted small' }, 'credential pool: loading');
-    f.profile = h('select', { 'aria-label': 'Profile', onchange: preview });
+    f.profile = h('select', { 'aria-label': 'Profile', onchange: () => { if (credStatus !== null) fillCredentials(credStatus, f.host.value); preview(); } });
     f.model = h('select', { 'aria-label': 'Model', onchange: preview });
     f.effort = h('select', { 'aria-label': 'Effort', disabled: true, onchange: preview });
     const effortHint = h('span', { class: 'muted small' }, 'effort levels: loading');
@@ -113,34 +113,58 @@ export default {
       const applies = (credStatus?.appliesTo ?? ['claude']).includes(v.engine);
       credField.hidden = !applies;
     }
-    /** Options: auto, every pool entry (disabled when its variables are unset on the host), none. Names and ids only. */
+    /** The selected profile's route as the host resolves it (credentials.status profileRoutes), or null when it names none. */
+    function selectedRoute() {
+      const id = f.profile.value;
+      const resolved = credStatus?.profileRoutes;
+      if (resolved && id in resolved) return resolved[id];
+      const p = currentProfiles().find((x) => x.id === id);
+      return p?.route && !String(p.route).startsWith('$') ? String(p.route) : null;
+    }
+    /** Whether a pool row can serve a launch on route: an unrouted row or launch fits anything (core/credpool.js fitsRoute). */
+    const fitsRoute = (p, route) => route == null || p.route == null || p.route === route;
+    /** What auto would pick for the selected profile right now: { id, reason }. */
+    function autoPick(st) {
+      const route = selectedRoute();
+      const byRoute = st?.recommendationByRoute;
+      if (!route || !byRoute) return { id: st?.recommendation ?? null, reason: st?.recommendationReason ?? '' };
+      if (byRoute[route]) return byRoute[route];
+      if (!(st.pool ?? []).some((p) => fitsRoute(p, route))) return { id: null, reason: `no credential in the pool is for route ${route}, so the agent keeps the daemon environment` };
+      const rec = (st.pool ?? []).find((p) => p.id === st.recommendation);
+      return rec && fitsRoute(rec, route) ? { id: rec.id, reason: st.recommendationReason ?? '' } : { id: null, reason: `chosen at launch among the entries for route ${route}` };
+    }
+    /** Options: auto, every pool entry (disabled when its variables are unset on the host or it is on another route than the profile), none. Names and ids only. */
     function fillCredentials(st, host) {
       clear(f.credential);
       f.credential.append(h('option', { value: 'auto' }, 'auto (least loaded, skips throttled)'));
+      const route = selectedRoute();
       for (const p of st?.pool ?? []) {
-        const title = p.available
-          ? `${p.active} active${p.maxConcurrent != null ? ` of ${p.maxConcurrent}` : ''}, weight ${p.weight}, ${p.uses} launches so far${p.recentThrottles ? `, throttled ${p.recentThrottles}x in the last 2 min` : ''}`
-          : `needs ${(p.missing ?? []).join(', ')} in the daemon environment on ${host}`;
-        f.credential.append(h('option', { value: p.id, disabled: p.available ? null : true, title }, `${p.label} (${p.id})${p.available ? '' : ', unavailable'}`));
+        const fits = fitsRoute(p, route);
+        const title = !fits ? `for route ${p.route}; this profile authenticates on route ${route}`
+          : p.available
+            ? `${p.route ? `route ${p.route}, ` : ''}${p.active} active${p.maxConcurrent != null ? ` of ${p.maxConcurrent}` : ''}, weight ${p.weight}, ${p.uses} launches so far${p.recentThrottles ? `, throttled ${p.recentThrottles}x in the last 2 min` : ''}`
+            : `needs ${(p.missing ?? []).join(', ')} in the daemon environment on ${host}`;
+        f.credential.append(h('option', { value: p.id, disabled: p.available && fits ? null : true, title }, `${p.label} (${p.id})${!fits ? `, route ${p.route}` : p.available ? '' : ', unavailable'}`));
       }
       f.credential.append(h('option', { value: 'none' }, 'none (inherit the daemon environment)'));
       const usable = [...f.credential.options].some((o) => o.value === v.credential && !o.disabled);
       f.credential.value = usable ? v.credential : 'auto';
       v.credential = f.credential.value;
       if (!st) credHint.textContent = `credential pool not reported by ${host}; auto there follows that daemon's own default`;
-      else if (st.recommendation) {
-        const rec = st.pool.find((p) => p.id === st.recommendation);
-        credHint.textContent = `auto picks ${st.recommendation} right now, ${rec?.active ?? 0} active${rec?.maxConcurrent != null ? ` of ${rec.maxConcurrent}` : ''}`;
-        credHint.title = st.recommendationReason ?? '';
+      else if (autoPick(st).id) {
+        const pickNow = autoPick(st);
+        const rec = st.pool.find((p) => p.id === pickNow.id);
+        credHint.textContent = `auto picks ${pickNow.id} right now${route ? ` for route ${route}` : ''}, ${rec?.active ?? 0} active${rec?.maxConcurrent != null ? ` of ${rec.maxConcurrent}` : ''}`;
+        credHint.title = pickNow.reason ?? '';
       } else {
-        credHint.textContent = `auto has nothing to pick: ${st.recommendationReason ?? 'no credential available'}`;
+        credHint.textContent = `auto has nothing to pick: ${autoPick(st).reason || 'no credential available'}`;
         credHint.title = '';
       }
     }
     /** The $NAME references (never values) that the chosen credential would set, for the command preview. */
     function credentialEnvRefs() {
       if (!credStatus || credField.hidden || v.credential === 'none') return [];
-      const id = v.credential === 'auto' ? credStatus.recommendation : v.credential;
+      const id = v.credential === 'auto' ? autoPick(credStatus).id : v.credential;
       const p = credStatus.pool?.find((x) => x.id === id);
       return p ? Object.entries(p.env ?? {}).map(([k, ref]) => `${k}=${ref}`) : [];
     }
