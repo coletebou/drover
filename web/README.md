@@ -47,17 +47,18 @@ To reach it from a phone or watch, keep it on loopback and publish it on the tai
 network, and the browser UI needs HTTPS for its service worker, so prefer this over binding the daemon to
 the tailnet with `DROVER_BIND=100.x.y.z` in `~/.local/state/drover/env` (which also drops 127.0.0.1).
 
-## Renamed from apx-web (shim until 2026-11-15)
+## Renamed from apx-web (shim still in the tree)
 
-Drover was called apx-web (CLI `apxw`) until 2026-10-15. Until 2026-11-15:
+Drover was called apx-web (CLI `apxw`) until 2026-10-15. The compatibility shim was scheduled to go on 2026-11-15. That date has passed and, as of 2026-11-16, the shim is still what the code does. Do not treat the old name as removed, and do not delete the fallbacks until a change actually removes them.
 
-- `apxw` is a symlink to `drover` that prints one deprecation line on stderr and otherwise behaves the same.
+- `apxw` is a symlink to `drover`. Invoked under that name it prints one deprecation line on stderr (`apxw is deprecated and will be removed on 2026-11-15; use drover`, `web/bin/drover`) and otherwise behaves the same. The help text still says the old name works until that date.
 - Every `DROVER_<NAME>` variable falls back to the old `APXW_<NAME>` (`core/envvars.js`).
 - The first `drover` command on a box moves `~/.local/state/apx-web`, `~/.cache/apx-web` and `~/.local/share/apx-web` (the search embedder) to their `drover` names
   and leaves a symlink at the old path (`core/paths.js`), so the browser keeps its token and an old daemon keeps working.
 - The truth file moves from `claude/apx-events.jsonl` to `claude/drover-events.jsonl`: the first read copies it, and
-  lines that boxes still on the old code append to the legacy file are imported by id (`core/events.js`). The legacy
-  file is never written by Drover; it is removed from dotfiles together with the shim.
+  lines that boxes still on the old code append to the legacy file are imported by id (`core/events.js`
+  `syncLegacyEvents`, which still runs). The legacy file is never written by Drover; it is removed from dotfiles
+  together with the shim. A comment in `core/events.js` still says that import ends on 2026-11-15.
 - Remote rpc over ssh runs `~/.local/bin/drover`, else `~/.local/bin/apxw`, so a box that has not synced still answers.
 - The browser copies its `apxw.*` localStorage keys to `drover.*` once (`ui/legacy-storage.js`).
 - MCP: server `drover`, tools `drover_*`, resources `drover://` (were `apx`, `apx_*`, `apx://`).
@@ -69,6 +70,22 @@ Drover was called apx-web (CLI `apxw`) until 2026-10-15. Until 2026-11-15:
   `{"type":"user","message":{...}}` (verified on 2.1.296). Replies are read from
   the session transcript JSONL. Headless sessions run `claude -p` with
   stream-json in both directions and are held open by the daemon.
+  Two `claude` calls run in their own process group and, on timeout, kill the
+  whole group with SIGKILL (`core/proc.js` `run`, `group: true`): `claude agents
+  --json --all` (15 s, `core/claude.js` `listAgentsCli`) and the survey
+  summarizer (`core/survey.js`, 180 s). `claude` reads its credentials through
+  a `security` child. Killing only the `claude` pid leaves that child behind
+  when `securityd` is wedged; on 2026-11-10 one orphan per 10 s poll filled a
+  Mac's process table (`kern.maxproc`) and the host could not fork for hours.
+  `group` is off by default. A detached child has no controlling terminal, so
+  an `ssh` that still needs a passphrase could no longer ask for one.
+  `runCapped` always kills the group, for the same reason: `docker compose` is
+  a child of the docker CLI, and a shell's commands are its children.
+  After one timed-out `claude agents`, `listAgentsCli` skips the CLI for a
+  doubling pause, from 1 minute up to 15 minutes. The registry files still
+  list sessions during the pause. A call that returns clears the pause, so
+  the next timeout starts again at one minute. Any other error does not
+  start a pause.
 - Codex: the daemon owns the one read-only `codex app-server` for the host.
   `drover rpc`, `drover op` and the MCP server read threads through it
   (`codex.threads`, `codex.thread` in `core/api.js` `preferDaemon`) and share
@@ -449,6 +466,11 @@ rate limit, and escalate to the next channel after `DROVER_ASK_ESCALATE_MINUTES`
 `DROVER_ASK_TTL_HOURS` (24) unless they say otherwise, with one reminder first. The owner can reply `status`,
 `pause asks 2h`, `stop` (nothing until `resume`) and `resume`.
 
+Pages: a Grok bot's `needs-owner` or `blocked` status and its urgent alert are also texted (by SMS unless
+`DROVER_ASK_PAGE_CHANNELS` says otherwise) under the same quiet hours, pause and hourly limit, once per same status per
+`DROVER_ASK_PAGE_COOLDOWN_MINUTES` (60), at most one text per bot per `DROVER_ASK_PAGE_GAP_MINUTES` (10); a later status
+that needs nobody withdraws what has not gone out. `DROVER_ASK_PAGES=off` turns them off. See docs/ask.md, "Pages".
+
 Only a reply its channel authenticated (the webhook's secret or signature, or the Messages database) and that comes
 from the owner's own id counts as an answer; anything else is recorded as an untrusted `inbound` and never delivered
 or acknowledged. `ask.get` returns the answer with its source, provider message id and sender. `events.append`
@@ -715,6 +737,22 @@ these ops.
 
 A bad value is ignored with one line on stderr, and the default applies. For example
 `DROVER_DOCKER_KINDS=[{"kind":"app","match":"^web-app-","label":"apps"},{"kind":"core","match":"^web-"}]`.
+
+## GitHub pull requests
+
+Your pull requests through the host's `gh` login (no token passes through Drover; `gh auth login` once per host): by
+default the ones you opened and the ones that ask your review, each with its roles, newest update first; one PR with
+its branches, mergeable state, review decision, latest review per reviewer, checks (passed, failed with names,
+running, skipped), size and last comments.
+
+```
+drover op prs.list '{"scope":"review"}'          # scope both | authored | review | involves; state open | merged | closed | all; repo, owner, limit
+drover op prs.get '{"repo":"owner/name","number":12}'
+```
+
+Ops `prs.list` (cached 60 s) and `prs.get` (30 s), run on the host `host` names; MCP `drover_prs_list` and
+`drover_prs_get`; the PRs view in the web UI (`u`) and in the TUI (after Tmux: `s` scope, `t` state, Enter opens the PR
+in the browser). A forge that is not GitHub is a plugin's: APEX Repos merge requests are `mrs.*`.
 
 ## Reflections
 

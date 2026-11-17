@@ -2,7 +2,8 @@
 // `board` stream event (fleet.summary on an older daemon), with the selected strip's details beside it. A waiting
 // strip shows its dialog; digits, Enter and Esc answer it (sessions.answer with the hash of the screen shown).
 // Answer keys work only on a strip the owner selected themself: the selection starts empty whenever the board is shown,
-// so a digit pressed to switch views never lands on a dialog.
+// so a digit pressed to switch views never lands on a dialog. The mouse keeps that: a click selects a strip (a
+// second click opens it), and the wheel scrolls the list without selecting anything.
 import { LANES, answerKeys, pressDrawn } from '../board.js';
 import { answerCardRows, keyHints } from '../chat.js';
 import { rule, hints, block, keepVisible, sideBySide, ago, tilde } from '../ui.js';
@@ -15,7 +16,7 @@ export class BoardView {
   constructor(app) { this.app = app; this.id = 'board'; this.title = 'Board'; this.selKey = null; this.top = 0; this.filter = ''; this.filtering = false; }
   get inputActive() { return this.filtering; }
   /** Shown fresh, nothing is selected; back from a session it opened, the selection the owner made stays. */
-  show({ back = false } = {}) { if (!back) this.selKey = null; this.app.refreshBoardSoon(0); }
+  show({ back = false } = {}) { if (!back) this.selKey = null; this.scrolled = false; this.app.refreshBoardSoon(0); }
 
   strips() {
     const q = this.filter.toLowerCase();
@@ -26,7 +27,19 @@ export class BoardView {
     const list = this.strips(); if (!list.length) return;
     const cur = this.selKey ? list.findIndex((s) => s.key === this.selKey) : -1;
     const i = cur < 0 ? (n >= 1e6 ? list.length - 1 : 0) : Math.max(0, Math.min(list.length - 1, cur + n));
-    this.selKey = list[i].key;
+    this.selKey = list[i].key; this.scrolled = false;
+  }
+
+  /** The wheel scrolls the list (the selection stays where it is, even out of view); a click selects, then opens. */
+  mouse(ev) {
+    const M = this.mm; if (!M) return false;
+    if (ev.kind === 'wheel') { this.top = Math.max(0, Math.min(M.total - 1, this.top + 3 * ev.wheel)); this.scrolled = true; return true; }
+    if (ev.kind !== 'down' || ev.button !== 0 || this.filtering) return false;
+    if (ev.y < M.y0 || ev.y >= M.y0 + M.h || ev.x >= M.w) return false;
+    const key = M.index[this.top + ev.y - M.y0];
+    if (!key) return false;
+    if (key === this.selKey) { const s = this.selected(); if (s) this.app.openStrip(s); return true; }
+    this.selKey = key; return true;
   }
   clearInput() { if (this.filtering || this.filter) { this.filter = ''; this.filtering = false; return true; } if (this.selKey) { this.selKey = null; return true; } return false; }
 
@@ -122,7 +135,8 @@ export class BoardView {
     const bodyH = height - 2;
     if (width >= 110) {
       const lw = Math.floor(width * 0.56);
-      this.top = selRow >= 0 ? keepVisible(selRow, this.top, bodyH, rows.length) : Math.min(this.top, Math.max(0, rows.length - bodyH));
+      this.top = selRow >= 0 && !this.scrolled ? keepVisible(selRow, this.top, bodyH, rows.length) : Math.min(this.top, Math.max(0, rows.length - bodyH));
+      this.mm = { y0: 2, h: bodyH, w: lw, index, total: rows.length };
       const left = rows.slice(this.top, this.top + bodyH);
       const right = this.#detailRows(s, width - lw - 3);
       return block([head, rule(width), ...sideBySide(left, right, lw, width, bodyH)], height);
@@ -130,7 +144,8 @@ export class BoardView {
     const detail = s ? this.#detailRows(s, width) : [];
     const dh = s ? Math.min(detail.length + 1, Math.floor(bodyH / 2)) : 0;
     const lh = bodyH - dh;
-    this.top = selRow >= 0 ? keepVisible(selRow, this.top, lh, rows.length) : Math.min(this.top, Math.max(0, rows.length - lh));
+    this.top = selRow >= 0 && !this.scrolled ? keepVisible(selRow, this.top, lh, rows.length) : Math.min(this.top, Math.max(0, rows.length - lh));
+    this.mm = { y0: 2, h: lh, w: width, index, total: rows.length };
     return block([head, rule(width), ...block(rows.slice(this.top, this.top + lh), lh), ...(dh ? [rule(width), ...detail.slice(0, dh - 1)] : [])], height);
   }
 }

@@ -1,15 +1,21 @@
 // The terminal: raw mode, the alternate screen, bracketed paste, no autowrap (a misjudged width then clips instead
-// of scrolling the screen), resize, Ctrl-Z suspend, and a restore that runs on every way out (quit, signal,
-// crash), so a dead TUI never leaves a shell in raw mode on the alternate screen.
+// of scrolling the screen), mouse clicks and the wheel (SGR reports, modes 1000 and 1006; no motion tracking), resize,
+// Ctrl-Z suspend, and a restore that runs on every way out (quit, signal, crash), so a dead TUI never leaves a shell
+// in raw mode on the alternate screen, or reporting the mouse.
 import { StringDecoder } from 'node:string_decoder';
 import { createDecoder } from './keys.js';
 
 const ENTER = '\x1b[?1049h\x1b[?25l\x1b[?7l\x1b[?2004h\x1b[H\x1b[2J';
 const LEAVE = '\x1b[?2004l\x1b[?7h\x1b[0m\x1b[?25h\x1b[?1049l';
+export const MOUSE_ON = '\x1b[?1000h\x1b[?1006h';
+export const MOUSE_OFF = '\x1b[?1006l\x1b[?1000l';
+
+/** Whether the TUI asks for the mouse: on unless DROVER_TUI_MOUSE is 0, off, no or false (or --no-mouse). */
+export function mouseWanted(env = process.env) { return !/^(0|off|no|false)$/i.test(String(env.DROVER_TUI_MOUSE ?? '')); }
 
 export class Terminal {
-  constructor({ input = process.stdin, output = process.stdout, escTimeoutMs = 40 } = {}) {
-    this.input = input; this.output = output; this.escTimeoutMs = escTimeoutMs;
+  constructor({ input = process.stdin, output = process.stdout, escTimeoutMs = 40, mouse = true } = {}) {
+    this.input = input; this.output = output; this.escTimeoutMs = escTimeoutMs; this.mouse = mouse;
     this.decoder = createDecoder(); this.utf8 = new StringDecoder('utf8');
     this.onKey = () => {}; this.onResize = () => {}; this.onResume = () => {};
     this.active = false; this.timer = null; this.pasteTimer = null;
@@ -18,6 +24,8 @@ export class Terminal {
   }
   size() { return { cols: this.output.columns || 80, rows: this.output.rows || 24 }; }
   write(s) { if (this.active) this.output.write(s); }
+  /** Turn mouse reporting on or off while running (kept across a suspend). */
+  setMouse(on) { this.mouse = Boolean(on); if (this.active) this.output.write(this.mouse ? MOUSE_ON : MOUSE_OFF); }
 
   #emit(events) { for (const e of events) { try { this.onKey(e); } catch (err) { this.onError?.(err); } } }
   #data(buf) {
@@ -36,13 +44,13 @@ export class Terminal {
     this.input.on('data', this.data); this.input.resume();
     this.output.on('resize', this.resize);
     this.active = true;
-    this.output.write(ENTER);
+    this.output.write(ENTER + (this.mouse ? MOUSE_ON : ''));
   }
   stop() {
     if (!this.active) return;
     this.active = false;
     clearTimeout(this.timer); clearTimeout(this.pasteTimer);
-    this.output.write(LEAVE);
+    this.output.write(MOUSE_OFF + LEAVE);
     this.input.off('data', this.data); this.output.off('resize', this.resize);
     try { this.input.setRawMode(false); } catch { /* the terminal is gone */ }
     this.input.pause();

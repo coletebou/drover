@@ -2,12 +2,14 @@
 // /thread), its streamed replies, a composer, and a strip at the top with what waits on the owner and the keys that
 // answer it. Messages go out as sessions.message { id: "manager", text, wait: false, thread }; the reply arrives
 // as `manager` stream events and a `turn` event (convo.js merges them). A daemon from before async replies
-// answers in the call itself, minutes later: the view says so while it waits.
+// answers in the call itself, minutes later: the view says so while it waits. The mouse: the wheel scrolls the
+// conversation, a click on the composer types there, a click on the waiting strip picks it (as w does) and a click
+// on one of its options or keys, once it is picked, presses that key, exactly as typing it would.
 import { Convo } from '../convo.js';
 import { Composer } from '../composer.js';
 import { chatItems, chatRows, keyHints } from '../chat.js';
 import { answerKeys, pressDrawn } from '../board.js';
-import { rule, hints, block, keepVisible } from '../ui.js';
+import { rule, hints, block, keepVisible, hintKey, spansOf, hitAt } from '../ui.js';
 import { truncate, oneLine, sanitize } from '../width.js';
 
 const THREAD = /^[A-Za-z0-9_.:@%-]{1,64}$/;   // the daemon's thread names (core/openclaw.js THREAD_RE)
@@ -211,6 +213,32 @@ export class ManagerView {
     this.follow = this.top >= max;
   }
 
+  mouse(ev) {
+    const L = this.lastLayout; if (!L) return false;
+    if (ev.kind === 'wheel') { this.scroll(3 * ev.wheel); return true; }
+    if (ev.kind !== 'down' || ev.button !== 0) return false;
+    if (ev.y < L.waitRows) {
+      if (!this.shown) return false;
+      const b = ev.y === 1 ? hitAt(L.buttons, ev.x) : null;
+      // A press needs two clicks, like w then the key: the first picks the strip, so a click never answers a dialog
+      // the owner had not looked at. The press then goes through the same guard as the key.
+      if (b && this.focus === 'waiting' && this.waitKey === this.shown.key) {
+        const s = this.waiting().find((x) => x.key === this.waitKey) ?? null;
+        pressDrawn(this.app, s, this.shown, b.ev);
+        return true;
+      }
+      this.focus = 'waiting'; this.waitKey = this.shown.key;
+      if (b) this.app.toast(`picked ${oneLine(this.shown.strip.name)}: click ${b.label} again (or press it) to answer`, 'dim', 3000);
+      return true;
+    }
+    if (ev.y >= L.inStart - 1) {
+      this.focus = 'input'; this.waitKey = null;
+      if (ev.y >= L.inStart) this.composer.moveTo(L.inTop + ev.y - L.inStart, ev.x - 2, L.inputW);
+      return true;
+    }
+    return false;
+  }
+
   hints() {
     if (this.focus === 'waiting') {
       const s = this.waiting().find((x) => x.key === this.waitKey);
@@ -225,6 +253,7 @@ export class ManagerView {
   // ------------------------------------------------------------ render
   render(width, height) {
     const out = [];
+    let buttons = [];
     // What waits on the owner, with the keys that answer it.
     const list = this.waiting();
     const sel = this.focus === 'waiting';
@@ -236,9 +265,21 @@ export class ManagerView {
     else {
       out.push([[sel ? '▌' : ' ', 'accent'], [`${list.length} waiting `, 'waitBold'], [list.length > 1 ? `${i + 1}/${list.length} ` : '', 'dim'], [s.name, 'bold'], [`  ${s.host === 'local' ? this.app.frontHost ?? 'local' : s.host}  `, 'dim'], [truncate(oneLine(s.dialog?.question ?? s.ask?.text ?? s.headline ?? ''), Math.max(10, width - 40)), null]]);
       const keys = answerKeys(s);
-      const opts = (s.dialog?.options ?? []).map((o) => [[`${o.selected ? '❯' : ' '}${o.n} `, 'key'], [`${truncate(oneLine(o.label), 28)}  `, null]]).flat();
-      out.push([[sel ? '▌' : ' ', 'accent'], ['  ', null], ...opts, ...(keys.length ? keyHints(keys.filter((k) => !/^[1-9]$/.test(k.key))) : [['r reply', 'dim']]), [sel ? '' : '   w to answer', 'dim']]);
+      // Each segment with the key a click on it means: an option's number and label press that digit, a key hint's
+      // key and words press that key (the separators nothing).
+      const parts = [[[sel ? '▌' : ' ', 'accent']], [['  ', null]]];
+      for (const o of s.dialog?.options ?? []) { const ev = hintKey(String(o.n)); parts.push([[`${o.selected ? '❯' : ' '}${o.n} `, 'key'], ev, String(o.n)], [[`${truncate(oneLine(o.label), 28)}  `, null], ev, String(o.n)]); }
+      let cur = null;
+      for (const seg of keys.length ? keyHints(keys.filter((k) => !/^[1-9]$/.test(k.key))) : [['r reply', 'dim']]) {
+        if (seg[1] === 'key') cur = hintKey(seg[0]) ? [hintKey(seg[0]), seg[0]] : null; else if (/^\s*·\s*$/.test(seg[0])) cur = null;
+        parts.push([seg, ...(cur ?? [])]);
+      }
+      parts.push([[sel ? '' : '   w to answer', 'dim']]);
+      const row = parts.map((p) => p[0]);
+      buttons = spansOf(row).map(([x0, x1], j) => (parts[j][1] ? { x0, x1, ev: parts[j][1], label: parts[j][2] } : null)).filter(Boolean);
+      out.push(row);
     }
+    const waitRows = out.length;
     out.push(rule(width, `manager · thread ${this.thread}`, 'dim', this.app.board.manager ? (this.app.board.manager.up ? 'up' : 'down') : ''));
     // The composer: up to a third of the screen.
     const inputW = Math.max(10, width - 3);
@@ -265,7 +306,7 @@ export class ManagerView {
     out.push(rule(width, '', this.focus === 'input' ? 'accent' : 'dim', this.top < max ? `${max - this.top} more below · End` : ''));
     inRows.forEach((r, i) => out.push([[i === 0 && inTop === 0 ? '› ' : '  ', this.focus === 'input' ? 'accent' : 'dim'], [r, null]]));
     if (!this.composer.value && this.focus === 'input') out[out.length - 1] = [['› ', 'accent'], ['message the manager · /help for commands', 'dim']];
-    this.lastLayout = { chatH, total, inputW, inStart: out.length - inRows.length, inTop, L };
+    this.lastLayout = { chatH, total, inputW, inStart: out.length - inRows.length, inTop, L, waitRows, buttons };
     return block(out, height);
   }
   cursor() {

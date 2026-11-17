@@ -1,5 +1,7 @@
 // Things drawn over a view: the help sheet (?), the command palette (: or Ctrl-P) and a prompt (a reply to a
-// session, a new thread name). Each owns all keys while open and draws a box into the frame.
+// session, a new thread name). Each owns all keys and the mouse while open and draws a box into the frame: the wheel
+// scrolls it, a click on a palette entry runs it, a click outside the help or the palette closes them (never a
+// prompt's: a stray click must not lose a reply being typed).
 import { Composer } from '../composer.js';
 import { fit, truncate, strWidth } from '../width.js';
 import { hints } from '../ui.js';
@@ -23,8 +25,10 @@ function boxOver(frame, cols, rows, { title, body, width, top }) {
     frame[y0 + 1 + i] = frameRow([['│ ', 'accent'], ...cut, [' '.repeat(Math.max(0, inner - used)), null, Array.isArray(r) ? null : r.bg], [' │', 'accent']]);
   }
   frame[y0 + h - 1] = frameRow([[`╰${'─'.repeat(w - 2)}╯`, 'accent']]);
-  return { y0, left, inner };
+  return { y0, left, inner, w, h };
 }
+const inside = (box, ev) => Boolean(box) && ev.x >= box.left && ev.x < box.left + box.w && ev.y >= box.y0 && ev.y < box.y0 + box.h;
+const clicked = (ev) => ev.kind === 'down' && ev.button === 0;
 
 export class Help {
   constructor(app, sections) { this.app = app; this.sections = sections; this.top = 0; }
@@ -34,6 +38,11 @@ export class Help {
     else if (ev.id === 'pgdn' || ev.id === ' ') this.top += 10; else if (ev.id === 'pgup') this.top = Math.max(0, this.top - 10);
   }
   hints() { return hints([['Esc', 'close'], ['j/k', 'scroll']]); }
+  mouse(ev) {
+    if (ev.kind === 'wheel') { this.top = Math.max(0, this.top + 3 * ev.wheel); return true; }
+    if (clicked(ev) && !inside(this.box, ev)) { this.app.closeModal(); return true; }
+    return false;
+  }
   overlay(frame, cols, rows) {
     const body = [];
     for (const [head, list] of this.sections) {
@@ -43,7 +52,7 @@ export class Help {
     }
     const h = Math.min(body.length, rows - 6);
     this.top = Math.min(this.top, Math.max(0, body.length - h));
-    boxOver(frame, cols, rows, { title: 'Keys', body: body.slice(this.top, this.top + h), width: 96 });
+    this.box = boxOver(frame, cols, rows, { title: 'Keys', body: body.slice(this.top, this.top + h), width: 96 });
   }
   cursor() { return null; }
 }
@@ -73,10 +82,21 @@ export class Palette {
     if (this.input.handle(ev) === true) this.sel = 0;
   }
   hints() { return hints([['type', 'to filter'], ['↑↓', 'choose'], ['Enter', 'run'], ['Esc', 'close']]); }
+  mouse(ev) {
+    const m = this.matches();
+    if (ev.kind === 'wheel') { this.sel = Math.max(0, Math.min(m.length - 1, this.sel + ev.wheel)); return true; }
+    if (!clicked(ev)) return false;
+    if (!inside(this.box, ev)) { this.app.closeModal(); return true; }
+    // Entries start two rows into the box body (the input, a blank row); the box body starts a row under its top.
+    const i = (this.top ?? 0) + ev.y - (this.box.y0 + 1) - 2;
+    const it = i >= 0 && ev.y < this.box.y0 + this.box.h - 1 ? m[i] : null;
+    if (!it) return false;
+    this.app.closeModal(); it.run(this.input.value.trim()); return true;
+  }
   overlay(frame, cols, rows) {
     const m = this.matches();
     const h = Math.max(3, Math.min(16, rows - 8));
-    const top = Math.max(0, Math.min(this.sel - h + 1, m.length - h));
+    const top = Math.max(0, Math.min(this.sel - h + 1, m.length - h)); this.top = top;
     const body = [[['› ', 'accent'], [this.input.value, null]], []];
     m.slice(top, top + h).forEach((it, i) => {
       const on = top + i === this.sel;
@@ -84,7 +104,7 @@ export class Palette {
       body.push(on ? { segs, bg: 'sel' } : segs);
     });
     if (!m.length) body.push([['  nothing matches', 'dim']]);
-    const r = boxOver(frame, cols, rows, { title: 'Commands', body, width: 80, top: 2 });
+    const r = boxOver(frame, cols, rows, { title: 'Commands', body, width: 80, top: 2 }); this.box = r;
     this.cur = { row: r.y0 + 1, col: r.left + 4 + this.input.layout(1000).cursorCol };
   }
   cursor() { return this.cur ?? null; }

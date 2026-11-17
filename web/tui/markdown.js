@@ -1,7 +1,7 @@
 // Markdown-ish text to terminal rows: paragraphs (a source line break stays a line break, as agents mean it),
 // headings, bullet and numbered lists with hanging indents, block quotes, fenced code (kept verbatim, broken at
-// the width), rules, pipe tables (as written), and inline code, bold, italic, strikethrough and links. Rows are
-// segment arrays (screen.js) no wider than the width. Pure; tests in test/tui-chat.test.js.
+// the width), rules, pipe tables (drawn in boxes, see renderTable), and inline code, bold, italic, strikethrough and
+// links. Rows are segment arrays (screen.js) no wider than the width. Pure; tests in test/tui-chat.test.js.
 import { strWidth, clusters, clusterWidth, sanitize } from './width.js';
 import { THEME } from './style.js';
 
@@ -81,6 +81,96 @@ function verbatim(line, width, prefix, style) {
   return rows;
 }
 
+/**
+ * The cells of a pipe-table row: the outer pipes dropped, split on the pipes outside code spans, `\|` kept as a
+ * pipe in its cell.
+ */
+export function tableCells(line) {
+  let s = line.trim();
+  if (s.startsWith('|')) s = s.slice(1);
+  if (s.endsWith('|') && !s.endsWith('\\|')) s = s.slice(0, -1);
+  const cells = []; let cur = '', tick = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === '\\' && s[i + 1] === '|') { cur += '|'; i++; continue; }
+    if (c === '`') { let n = 1; while (s[i + n] === '`') n++; cur += s.slice(i, i + n); i += n - 1; tick = tick ? (n === tick ? 0 : tick) : n; continue; }
+    if (c === '|' && !tick) { cells.push(cur.trim()); cur = ''; continue; }
+    cur += c;
+  }
+  cells.push(cur.trim());
+  return cells;
+}
+/** A table's delimiter row ("|---|:--:|"), with a pipe in it: `---` alone is a rule. Its alignments, or null. */
+export function tableAligns(line) {
+  if (!line.includes('|') || !line.includes('-')) return null;
+  const cells = tableCells(line);
+  if (!cells.length || !cells.every((c) => /^:?-+:?$/.test(c))) return null;
+  return cells.map((c) => (c.startsWith(':') && c.endsWith(':') ? 'center' : c.endsWith(':') ? 'right' : 'left'));
+}
+
+const segsWidth = (segs) => segs.reduce((n, [t]) => n + strWidth(t ?? ''), 0);
+
+/**
+ * A pipe table in a box: bold headers, the delimiter row's alignments, inline Markdown in the cells. Columns keep
+ * their natural widths when the table fits; when it does not, the widest are narrowed to a common cap (the narrow
+ * ones keep theirs) and their cells wrap, with a rule between rows so a wrapped row reads as one. Too narrow for a
+ * box without breaking words (a column narrower than its longest word, counting at most 12), each row is a short
+ * block of "header: value" lines instead.
+ */
+export function renderTable(header, aligns, body, width, ind = []) {
+  const n = header.length;
+  const cellsOf = (r) => Array.from({ length: n }, (_, j) => r[j] ?? '');
+  const head = header.map((c) => inline(c, 'bold'));
+  const rows = body.map((r) => cellsOf(r).map((c) => inline(c)));
+  const indW = segsWidth(ind);
+  const avail = width - indW - (3 * n + 1);
+  const word = (segs) => Math.max(0, ...segs.flatMap(([t]) => String(t ?? '').split(/\s+/)).map(strWidth));
+  const need = Array.from({ length: n }, (_, j) => Math.min(12, Math.max(1, word(head[j]), ...rows.map((r) => word(r[j])))));
+  if (avail < need.reduce((a, b) => a + b, 0)) {
+    const out = [];
+    rows.forEach((r, k) => {
+      if (k) out.push([...ind]);
+      r.forEach((cell, j) => out.push(...wrapSegs([[`${header[j] || `column ${j + 1}`}: `, 'bold'], ...cell], width - indW, { first: ind, rest: [...ind, ['  ', null]] })));
+    });
+    return out;
+  }
+  const natural = Array.from({ length: n }, (_, j) => Math.max(1, segsWidth(head[j]), ...rows.map((r) => segsWidth(r[j]))));
+  let widths = natural;
+  if (natural.reduce((a, b) => a + b, 0) > avail) {
+    // The largest cap that fits, then what is left goes one column each to the capped columns.
+    let lo = 1, hi = Math.max(...natural);
+    const total = (cap) => natural.reduce((a, x) => a + Math.min(x, cap), 0);
+    while (lo < hi) { const mid = Math.ceil((lo + hi) / 2); if (total(mid) <= avail) lo = mid; else hi = mid - 1; }
+    widths = natural.map((x) => Math.min(x, lo));
+    let left = avail - widths.reduce((a, b) => a + b, 0);
+    for (let j = 0; j < n && left > 0; j++) if (natural[j] > widths[j]) { widths[j]++; left--; }
+  }
+  const lines = (segs, j) => { const ws = wrapSegs(segs, widths[j]); return ws.length ? ws : [[]]; };
+  const draw = (cells) => {
+    const wrapped = cells.map(lines);
+    const h = Math.max(...wrapped.map((x) => x.length));
+    const out = [];
+    for (let k = 0; k < h; k++) {
+      const row = [...ind, ['│', 'dim']];
+      wrapped.forEach((ls, j) => {
+        const segs = ls[k] ?? [];
+        const gap = Math.max(0, widths[j] - segsWidth(segs));
+        const l = aligns[j] === 'right' ? gap : aligns[j] === 'center' ? Math.floor(gap / 2) : 0;
+        row.push([` ${' '.repeat(l)}`, null], ...segs, [`${' '.repeat(gap - l)} `, null], ['│', 'dim']);
+      });
+      out.push(row);
+    }
+    return out;
+  };
+  const rule = (l, m, r) => [...ind, [`${l}${widths.map((x) => '─'.repeat(x + 2)).join(m)}${r}`, 'dim']];
+  const drawn = rows.map(draw);
+  const between = drawn.some((r) => r.length > 1);
+  const out = [rule('┌', '┬', '┐'), ...draw(head), rule('├', '┼', '┤')];
+  drawn.forEach((r, k) => { if (k && between) out.push(rule('├', '┼', '┤')); out.push(...r); });
+  out.push(rule('└', '┴', '┘'));
+  return out;
+}
+
 /** Markdown text to rows no wider than width. indent prefixes every row (the chat's left margin). */
 export function renderMarkdown(text, width, { indent = '', base = null } = {}) {
   const ind = indent ? [[indent]] : [];
@@ -101,6 +191,15 @@ export function renderMarkdown(text, width, { indent = '', base = null } = {}) {
     }
     if (!line.trim()) { if (!blank && rows.length) rows.push([...ind]); blank = true; continue; }
     blank = false;
+    // A table: a row of cells and the delimiter row under it, then every following line with a pipe in it.
+    const aligns = line.includes('|') && i + 1 < lines.length ? tableAligns(lines[i + 1]) : null;
+    if (aligns && tableCells(line).length === aligns.length) {
+      const header = tableCells(line); const body = [];
+      for (i += 2; i < lines.length && lines[i].trim() && lines[i].includes('|'); i++) body.push(tableCells(lines[i]));
+      i--;
+      rows.push(...renderTable(header, aligns, body, w, ind));
+      continue;
+    }
     const h = line.match(/^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/);
     if (h) { rows.push(...wrapSegs(inline(h[2], h[1].length <= 2 ? 'accentBold' : 'bold'), w, { first: ind, rest: ind })); continue; }
     if (/^\s{0,3}([-*_])(\s*\1){2,}\s*$/.test(line)) { rows.push([...ind, ['─'.repeat(Math.max(1, w - strWidth(indent))), 'dim']]); continue; }

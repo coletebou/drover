@@ -85,6 +85,25 @@ Object.assign(routerDeps, {
   publicBase: () => { try { return publicBase(_deps.env); } catch { return null; } },
 });
 
+/**
+ * Page the owner (core/ask/router.js page): only the hub texts, with its router running; anywhere else it is skipped
+ * (the alert on the owner's screens still went out). Never throws: a page is a courtesy next to that alert.
+ */
+export async function pageOwner(p) {
+  try {
+    if (!isHub()) return { skipped: 'not the ask hub' };
+    if (!router.running) return { skipped: 'the ask router is not running here' };
+    return await router.page(p);
+  } catch (e) { return { error: clip(e.message, 200) }; }
+}
+/** The source needs nobody now: drop its pages not texted yet. Never throws. */
+export async function withdrawPages(source) {
+  try {
+    if (!isHub() || !router.running) return { withdrawn: 0 };
+    return await router.withdrawPages(source);
+  } catch (e) { return { error: clip(e.message, 200) }; }
+}
+
 /** How the hub hears each channel's replies: a webhook URL on the bot gateway, polling, or the imsg watch. */
 function inboundModes() {
   const base = routerDeps.publicBase();

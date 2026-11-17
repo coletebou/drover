@@ -7,8 +7,8 @@ import path from 'node:path';
 import { existsSync, readFileSync, writeFileSync, symlinkSync, mkdirSync, lstatSync, readdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
-import { parsePopupArgs, popupPlan, sessionFor, isManagerSession, socketOf, keysSnippet, conflicts, freeKeys, parseKeysArgs, configFile, configTargetProblem, writeAtomic, keysCli } from '../tui/popup.js';
+import { spawnSync, spawn } from 'node:child_process';
+import { parsePopupArgs, popupPlan, popupStyles, POPUP_STYLE, sessionFor, isManagerSession, socketOf, keysSnippet, conflicts, freeKeys, parseKeysArgs, configFile, configTargetProblem, writeAtomic, keysCli } from '../tui/popup.js';
 import { startFakeDaemon, CAPTURE } from '../tui/test-support/fake-daemon.js';
 import { hasTmux, scratch, testEnv, server, waitFor } from '../tui/test-support/tmux-harness.js';
 
@@ -53,6 +53,16 @@ test('the shared manager: created detached at the popup size, options set, then 
   const again = popupPlan(parsePopupArgs([]), facts({ sessionExists: true, sessionThread: 'main' }));
   assert.deepEqual(again.before.map((s) => s[0]), ['set-option', 'set-option'], 'an existing manager is only told where it was opened from');
   assert.equal(popupPlan(parsePopupArgs([]), facts({ sessionExists: true, sessionThread: null })).action, 'popup', 'a shared session from before the mark ran main');
+});
+
+test('the popup takes the terminal\'s colors, not tmux 3.8\'s grey theme, where the server knows -s and -S', () => {
+  for (const v of ['3.3', '3.3a', '3.4', '3.8', 'next-3.9', 'openbsd-7.6', '4.0']) assert.ok(popupStyles(v), v);
+  for (const v of ['3.2a', '3.1c', '2.9', null, '']) assert.ok(!popupStyles(v), String(v));
+  const p = popupPlan(parsePopupArgs([]), facts({ version: '3.8' }));
+  const at = p.popup.indexOf('-T');
+  assert.deepEqual(p.popup.slice(at + 2, at + 2 + POPUP_STYLE.length), ['-s', 'bg=terminal,fg=terminal', '-S', 'bg=terminal,fg=terminal']);
+  assert.ok(popupPlan(parsePopupArgs(['--fresh']), facts({ version: '3.8' })).popup.includes('bg=terminal,fg=terminal'), 'a fresh popup too');
+  assert.ok(!popupPlan(parsePopupArgs([]), facts({ version: '3.2a' })).popup.includes('bg=terminal,fg=terminal'), 'an older server would refuse the flags');
 });
 
 test('a manager session is reused only for the thread it holds', () => {
@@ -131,6 +141,7 @@ test('conflicts: tmux defaults and our own bindings may be replaced, a binding s
   ].join('\n');
   assert.deepEqual(conflicts(list, ['M', 'N']), []);
   assert.deepEqual(conflicts(list, ['O']), [{ key: 'O', binding: 'resize-pane -U' }]);
+  assert.deepEqual(conflicts('bind-key    -T prefix g       switch-client -T move', ['g', 'G']), [], "tmux 3.8's own prefix + g (its move menu) may be replaced");
   const mine = 'bind-key    -T prefix M       set-option -g mouse \\; display-message "mouse: #{?mouse,on,off}"';
   assert.equal(conflicts(mine, ['M', 'N'])[0].key, 'M', 'a mouse toggle someone bound to prefix + M is protected');
   assert.deepEqual(freeKeys(`${list}\n${mine}`, 2), ['G', 'J']);
@@ -206,5 +217,48 @@ describe('real tmux: the bindings open, hide and reopen the manager; /look captu
     await waitFor(() => daemon.callsOf('sessions.transcript').some((c) => c.args.id === 'manager' && c.args.thread === 'win-@1'), { what: 'the independent thread read' });
     outer.keys('o', 'C-b'); outer.keys('o', 'G');
     await until((x) => !x.includes('drover manager · win-@1'), 'prefix G hides it too');
+  });
+
+  // Background colors of the cells on the row that holds `needle`, from capture-pane -e (SGR 40-47, 100-107, 48;...).
+  const backgrounds = (needle) => {
+    const line = outer.run(['capture-pane', '-e', '-p', '-t', 'o']).stdout.split('\n').find((l) => l.replace(/\x1b\[[0-9;:]*m/g, '').includes(needle)) ?? '';
+    return [...line.matchAll(/\x1b\[([0-9;:]*)m/g)].flatMap((m) => m[1].split(';')).filter((p, i, all) => /^(4[0-7]|10[0-7])$/.test(p) || (p === '48' && all[i - 1] !== '38'));
+  };
+
+  test('the popup is drawn on the terminal\'s own background (tmux 3.8 greys a popup that does not say so)', async () => {
+    outer.keys('o', 'C-b'); outer.keys('o', 'g');
+    await until((x) => x.includes('drover manager · shared') && x.includes('thread main'), 'the popup');
+    assert.deepEqual(backgrounds('manager · thread main'), [], 'no background on a plain row of the TUI inside the popup');
+    outer.keys('o', 'C-b'); outer.keys('o', 'g');
+    await until((x) => !x.includes('drover manager · shared'), 'hidden');
+    const [maj, min] = inner.run(['display-message', '-p', '#{version}']).stdout.match(/(\d+)\.(\d+)/)?.slice(1).map(Number) ?? [0, 0];
+    if (maj > 3 || (maj === 3 && min >= 8)) {
+      // The control: the same capture sees the grey on a popup opened without -s, so the check above can fail.
+      const client = inner.run(['list-clients', '-F', '#{client_name}']).stdout.trim().split('\n')[0];
+      // display-popup returns only when the popup closes: start it in the background.
+      spawn('tmux', ['-L', inner.name, 'display-popup', '-c', client, '-E', 'sh -c "echo plain popup row; sleep 30"'], { env, stdio: 'ignore', detached: true }).unref();
+      await until((x) => x.includes('plain popup row'), 'a popup without -s');
+      assert.notDeepEqual(backgrounds('plain popup row'), [], 'tmux 3.8 greys it');
+      inner.run(['display-popup', '-C', '-c', client]);
+      await until((x) => !x.includes('plain popup row'), 'closed');
+    }
+  });
+
+  test('with the mouse on in tmux, a click inside the popup reaches the TUI', async () => {
+    inner.run(['set-option', '-g', 'mouse', 'on']);
+    outer.keys('o', 'C-b'); outer.keys('o', 'g');
+    let x = await until((y) => y.includes('drover manager · shared') && y.includes('2 Board'), 'the popup');
+    const lines = x.split('\n'); const y = lines.findIndex((l) => l.includes('2 Board'));
+    outer.mouse('o', lines[y].indexOf('2 Board') + 1, y);
+    x = await until((z) => z.includes('Select an agent'), 'the board, by a click on its tab inside the popup');
+    const w = x.split('\n'); const r = w.findIndex((l) => l.includes('demo-work'));
+    outer.mouse('o', w[r].indexOf('demo-work'), r);
+    await until((z) => z.includes('demo-work  claude on'), 'a strip selected by a click inside the popup');
+    const t = x.split('\n'); const m = t.findIndex((l) => l.includes('1 Manager'));
+    outer.mouse('o', t[m].indexOf('1 Manager') + 1, m);
+    await until((z) => z.includes('thread main'), 'back to the manager');
+    outer.keys('o', 'C-b'); outer.keys('o', 'g');
+    await until((z) => !z.includes('drover manager · shared'), 'hidden');
+    inner.run(['set-option', '-g', 'mouse', 'off']);
   });
 });
