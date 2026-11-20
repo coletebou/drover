@@ -146,6 +146,17 @@ Primary model (revised 2026-10-30): GPT-6.1 Sol **Standard** at max thinking on 
 the cliproxy UltraFast alias `gpt-6.1-sol-ultrafast-br` stays as an on-demand `/model` row only. GPT-6
 Astra remains the first fallback (Mantle standard) and an on-demand UltraFast `/model` row.
 
+Revised 2026-11-20 (the fleet's GPT-6.1 Sol / GPT-6 Astra -> GPT-6.2 Sol / GPT-6.2 Astra move): primary
+is now `amazon-bedrock-mantle/openai.gpt-6.2-sol` (Standard, same price as 6.1 Sol; verified live on
+Mantle; **no UltraFast tier** — Mantle answers `validation_error` for `service_tier: ultrafast`, and the
+model is not served on Bedrock Runtime in practice either, so the `gpt-6.1-sol-ultrafast-br` cliproxy
+alias stays the UltraFast Sol row). The first fallback is now `amazon-bedrock-mantle/openai.gpt-6.2-astra`
+(Standard; also has an UltraFast tier, via the `gpt-6.2-astra-ultrafast-br` cliproxy row, an on-demand
+`/model` pick only, once `~/.dotfiles/cliproxyapi/gen-config.sh` carries that alias on this host). The old
+`openai.gpt-6.1-sol` and `openai.gpt-6-astra` rows stay defined (unused by the defaults) so an explicit
+`/model` pick still resolves to them. There is no GPT-6.2 Luna or Terra on Bedrock; Luna stays
+`openai.gpt-6-luna` for compaction/flush/heartbeat/dreaming, untouched by this move.
+
 Context budget (2026-10-30): the Sol Standard row sets `contextWindow: 128000` so OpenClaw's
 auto-compaction (default ~20k reserve) fires near ~108k tokens instead of waiting for the 272k Mantle
 cap. `contextPruning.mode: cache-ttl` (30m, hardClear on) trims old tool results; compaction also has
@@ -250,10 +261,13 @@ USD per 1M tokens, which is what OpenClaw's calculator expects (`dist/usage-cost
 | `amazon-bedrock/us.anthropic.claude-sonnet-5-5` | 2.20 | 11.00 | 0.11 | 2.75 (5m) | none listed | A, cross-check C |
 | `amazon-bedrock/us.anthropic.claude-opus-5-5` | 4.40 | 22.00 | 0.22 | 5.50 (5m) | none listed | A, cross-check C |
 | `amazon-bedrock-mantle/openai.gpt-6-luna` | 0.11 | 0.55 | 0.011 | 0.1375 | 0.22 / 0.825 / 0.022 / 0.275 | B1 |
-| `amazon-bedrock-mantle/openai.gpt-6-astra` (Standard) | 11.00 | 55.00 | 1.10 | 13.75 (30m) | 22 / 82.50 / 2.20 / 27.50 | B2, D |
+| `amazon-bedrock-mantle/openai.gpt-6-astra` (Standard; fallback until 2026-11-20, see 6.2 Astra) | 11.00 | 55.00 | 1.10 | 13.75 (30m) | 22 / 82.50 / 2.20 / 27.50 | B2, D |
 | `cliproxy/gpt-6-astra-ultrafast-br` (Astra, UltraFast) | 66.00 | 330.00 | 6.60 | 82.50 (30m) | 132 / 495 / 13.20 / 165 | B2 |
-| `amazon-bedrock-mantle/openai.gpt-6.1-sol` (6.1 Sol, Standard; primary) | 2.20 | 11.00 | 0.11 | 2.75 (30m) | 4.40 / 16.50 / 0.22 / 5.50 | B3 ÷ 6 (UltraFast is 6× Standard) |
+| `amazon-bedrock-mantle/openai.gpt-6.1-sol` (6.1 Sol, Standard; primary until 2026-11-20, see 6.2 Sol) | 2.20 | 11.00 | 0.11 | 2.75 (30m) | 4.40 / 16.50 / 0.22 / 5.50 | B3 ÷ 6 (UltraFast is 6× Standard) |
 | `cliproxy/gpt-6.1-sol-ultrafast-br` (6.1 Sol, UltraFast; on-demand `/model`) | 13.20 | 66.00 | 0.66 | 16.50 (30m) | 26.40 / 99 / 1.32 / 33 | B3 |
+| `amazon-bedrock-mantle/openai.gpt-6.2-sol` (6.2 Sol, Standard; **primary since 2026-11-20**; same price as 6.1 Sol; no UltraFast tier) | 2.20 | 11.00 | 0.11 | 2.75 (30m) | 4.40 / 16.50 / 0.22 / 5.50 | E |
+| `amazon-bedrock-mantle/openai.gpt-6.2-astra` (6.2 Astra, Standard; **first fallback since 2026-11-20**) | 8.80 | 44.00 | 0.44 | 11.00 (30m) | 17.60 / 66.00 / 0.88 / 22.00 | E |
+| `cliproxy/gpt-6.2-astra-ultrafast-br` (6.2 Astra, UltraFast; on-demand `/model`; promotional 3x Standard through 2027-02-28, 6x from 2027-03-01) | 26.40 | 132.00 | 1.32 | 33.00 (30m) | 52.80 / 198.00 / 2.64 / 66.00 | E |
 
 Long-context rates go in `cost.tieredPricing` with `range: [0, 272001]` and `[272001]`: AWS
 applies them to the whole request when input exceeds 272,000 tokens, and OpenClaw picks the tier
@@ -284,6 +298,13 @@ Sources (fetched 2026-10-13):
   `cache_read_tokens_standard` 1.10, `cache_write_tokens_30m_standard` 13.75. This matches B2.
   Luna and 6.1 Sol are not in that offer file, so B1/B3 rest on the model cards alone. Codex 0.162.1
   ships no prices.
+- **E** (2026-11-20): live probes on Mantle us-east-1 via Codex, plus the public AWS model cards for
+  GPT-6.2 Sol and GPT-6.2 Astra. 6.2 Sol: works at Standard, same price as 6.1 Sol; `service_tier:
+  ultrafast` answers `validation_error` (no UltraFast tier); not served on Bedrock Runtime
+  (`global.`/`us.` ids failed 6/6 live). 6.2 Astra: works at both Standard and UltraFast; UltraFast is
+  a *promotional* 3x Standard through 2027-02-28, rising to 6x from 2027-03-01 (unlike 6.1 Sol/6
+  Astra's flat 6x) — re-check and re-price the UltraFast row before/at that date. No GPT-6.2 Luna or
+  Terra exists on Bedrock (404); Luna stays on `openai.gpt-6-luna`.
 
 Why `cacheWrite` is the 5-minute rate for Claude: OpenClaw's Bedrock Converse provider writes
 5m cache points unless `cacheRetention: "long"` is set (`extensions/amazon-bedrock/dist/stream.runtime.js`,
@@ -305,6 +326,9 @@ removed on 2026-10-14 with no cap in its place.) On Luna the same work is far ch
 ## Still open
 - Spend: no cap by design (2026-10-14). Cost stays visible in `usage-cost` and the Drover
   Manager panel, which is why the price rows above must stay accurate.
+- GPT-6.2 Astra UltraFast pricing is a promotion: 3x Standard through 2027-02-28, 6x from
+  2027-03-01. Re-price the `cliproxy/gpt-6.2-astra-ultrafast-br` row before that date — the
+  long-context tier numbers in the table above are 3x-promo, not the post-promo 6x.
 - `drover manager check --live` lists the TCP peers of the gateway and its direct children at one
   instant; an idle gateway can show none. On 2026-10-13 a 45 s sample of every PID in the unit's cgroup
   during a Luna turn saw only the profile's trace endpoint, 127.0.0.1, one `bedrock-mantle.us-east-1.api.aws`
