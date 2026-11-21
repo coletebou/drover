@@ -4,6 +4,8 @@
 // they are rendered by key, so an update rebuilds only the strips that changed. A waiting strip with a dialog
 // answers it in place (its keys, sent only to the dialog it shows); a Grok bot's approval request is answered in
 // place too (one button per option). Click a strip for the drawer; j/k move, Enter opens, m talks to the manager.
+// This is Agents › Lanes: the selected strip is the one Agents › List, Windows, Wall and Space share (ctx.selected());
+// one carried in from them is marked, never answered: the keys row acts only on a click on its own buttons.
 import { h, clear, engine, ago, dot, empty, loading, fmtTime, plural } from '../dom.js';
 import { mountManagerChat } from '../manager-chat.js';
 import { answerModel, pressKey, pressedLabel, pressApproval, oneTap, approvalToast } from '../answer-model.js';
@@ -45,9 +47,9 @@ export function feedLine(e) {
 }
 
 export default {
-  id: 'board', label: 'Board', key: 'b',
+  id: 'board', label: 'Lanes', key: 'b',
   mount(root, ctx) {
-    let alive = true; let q = ''; let selected = null; let firstPaint = true; const known = new Set();
+    let alive = true; let q = ''; let selected = ctx.selected(); let firstPaint = true; const known = new Set();
     const nodes = { wait: new Map(), work: new Map(), idle: new Map() };
     const busy = new Set();   // strips with a key press on its way
     // A press that went through: the strip's dialog is the one answered until the board shows its screen moved on
@@ -60,7 +62,7 @@ export default {
     // An approval request answered from here is Sent while the board still shows that request (it goes on the next read).
     const sentFor = (s) => { const x = sent.get(s.key); return Boolean(x && Date.now() - x.at < SENT_MS && (x.approval ? x.approval === s.approval?.id : (x.hash && x.hash === s.hash) || x.words === dialogWords(s))); };
     const meta = h('span', { class: 'muted small', id: 'board-meta' }, 'loading');
-    const head = h('div', { class: 'view-head' }, h('h1', null, 'Board'), meta, h('span', { class: 'spacer' }), h('span', { class: 'muted small board-keys' }, 'j k move, enter open, m manager'));
+    const head = h('div', { class: 'view-head' }, h('h1', null, 'Lanes'), meta, h('span', { class: 'spacer' }), h('span', { class: 'muted small board-keys' }, 'j k move, enter open, m manager'));
     const lanesEl = h('div', { class: 'board' });
     const foot = h('div', { class: 'board-foot' });
     const dockEl = h('aside', { class: 'mgr-dock', 'aria-label': 'Manager' });
@@ -94,6 +96,8 @@ export default {
       }
       paintMeta(vis);
       ctx.setCount('board', vis.filter((s) => s.lane === 'wait').length || null);
+      // A selection carried in from another Agents view: in sight on the first paint, nothing more.
+      if (firstPaint && selected) requestAnimationFrame(() => lanesEl.querySelector(`.strip[aria-selected="true"]`)?.scrollIntoView({ block: 'nearest' }));
       firstPaint = false;
       ctx.perf?.('board.render', performance.now() - t0);
       ctx.perf?.('board.stripsBuilt', built);
@@ -131,6 +135,8 @@ export default {
       const tail = keys ? [s.ask?.text ?? s.dialog?.question].filter(Boolean) : s.tail;
       const el = h('article', {
         class: `strip ${color}${s.faded ? ' faded' : ''}${isNew && s.lane === 'wait' ? ' new' : ''}${busy.has(s.key) ? ' sending' : ''}`, tabindex: 0, 'data-key': s.key,
+        // Hover shows the strip's last line whole (the tail clips at three).
+        'data-peek': `${s.name}: ${(s.ask?.text ?? s.tail?.filter(Boolean).at(-1) ?? s.status ?? '').toString().split('\n').filter(Boolean).at(-1) ?? ''}`,
         onclick: () => open(s), onkeydown: (e) => { if (e.key === 'Enter' && e.target === el) open(s); },
       },
       h('div', { class: 'title' }, engine(s.engine), h('span', { class: 'name', title: s.cwd ?? '' }, s.name), s.status === 'busy' || s.lane === 'work' ? dot('busy', { pulse: true }) : null,
@@ -192,9 +198,11 @@ export default {
       busy.delete(s.key); render();
       refreshSoon(600);
     }
+    function mark() { for (const map of Object.values(nodes)) for (const [k, n] of map) n.el.setAttribute('aria-selected', k === selected ? 'true' : 'false'); }
+    const offSel = ctx.onSelect((k) => { selected = k; mark(); });
     function open(s) {
-      selected = s.key;
-      for (const map of Object.values(nodes)) for (const [k, n] of map) n.el.setAttribute('aria-selected', k === selected ? 'true' : 'false');
+      selected = s.key; ctx.select(s.key);
+      mark();
       ctx.open({ kind: s.kind, id: s.id, host: s.host, engine: s.engine, name: s.name, tmux: s.tmux, sessionId: s.sessionId });
     }
 
@@ -285,7 +293,7 @@ export default {
     const timer = setInterval(() => load(true), 60_000);   // the stream carries the updates; this is the safety net
     let footTimer = null;
     return {
-      destroy() { alive = false; clearInterval(timer); clearTimeout(soon); clearTimeout(footTimer); ro.disconnect(); offDock(); offStore(); dock?.destroy(); document.removeEventListener('drover:answered', onAnswered); },
+      destroy() { alive = false; clearInterval(timer); clearTimeout(soon); clearTimeout(footTimer); ro.disconnect(); offDock(); offStore(); offSel(); dock?.destroy(); document.removeEventListener('drover:answered', onAnswered); },
       search(v) { q = v; render(); },
       sse(type, data) {
         if (type === 'board' || (type === 'fleet' && data?.hosts && !ctx.state.board)) render({ age: 0 });
@@ -298,6 +306,8 @@ export default {
         const all = [...root.querySelectorAll('.strip')]; if (!all.length) return;
         const idx = all.findIndex((x) => x.getAttribute('aria-selected') === 'true');
         if (e.key === 'j' || e.key === 'k') { e.preventDefault(); const n = all[Math.max(0, Math.min(all.length - 1, idx + (e.key === 'j' ? 1 : -1)))]; const s = ctx.strips().find((x) => x.key === n.dataset.key); if (s) { open(s); n.scrollIntoView({ block: 'nearest' }); } }
+        // Enter opens the selected strip's drawer (on a focused strip its own handler does).
+        if (e.key === 'Enter' && idx >= 0 && !e.target.closest?.('.strip')) { e.preventDefault(); const s = ctx.strips().find((x) => x.key === all[idx].dataset.key); if (s) open(s); }
       },
     };
   },
