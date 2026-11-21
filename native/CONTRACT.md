@@ -93,6 +93,25 @@ Details as built by core (these refine the bullets above; DroverKit models and `
   `coordinator`) when the session that started a subagent wrote to it, else the inbox `via` above. Show it as sent
   mid-turn; never hide it.
 
+## Ops added 2026-11-21 (design: `docs/specs/2026-11-21-cohesion-overhaul.md`)
+- `prompts.list {q?, host?, hosts?, engine?, label?, via?, since?, until?, session?, cwd?, limit?, before?}` (main token):
+  every prompt typed into Claude Code or Codex, fleet-wide, newest first, merged by id. `->{ms, prompts[{v, id, ts, host,
+  engine, session, cwd, project, label, via, text, from?, route, source?}], more, perHost[{host, ok, count, ms?, error?,
+  source?}], coverage{searched, notCovered, partial}, total?}`. `via` is `typed|queued|peer|drover|headless|sdk`
+  (tolerate others); the default is `typed, queued, drover, headless`, `via: "all"` (or a list) for more. `route` is the
+  `host` to pass back to other ops (`local` for the daemon's machine; `null` when no alias is known). `source:
+  "sink:<name>"` marks a record read from a git sink's clone because its host did not answer. Page with `before` = the
+  last `id` while `more` is true. `since`/`until` take ISO times, epoch ms or spans (`30m`, `12h`, `7d`); `limit`
+  defaults to 200, at most 2000. Show `text` verbatim (secrets are already redacted) and never as markup.
+- `prompts.status {host?}` -> `{host, enabled, files, records, oldest, newest, lastScan, scanning, sources, config{file,
+  found, errors}, sinks[{name, type, labels, lastSync, lastAttempt, lastError, nextAttempt, failures, pending}]}`.
+- `prompts.sync {sinks?, actor}` (a write) -> `{host, scanned, added, sinks[{name, type, ok, added, pushed?, error?, ms}]}`.
+- `prompts.local` is what `prompts.list` asks each host; clients call `prompts.list`.
+- `tmux.captureMany {host?, targets[<=64], lines? (60), escapes? (true)}` -> `{captures[{target, ok, text?, hash?, screen?,
+  error?}]}`, in the order given; one bad or gone target is an `ok:false` row, never a failed call. With escapes, `text`
+  keeps SGR colour escapes: parse them (the web UI's `ui/ansi.js`), never write them to a terminal or the DOM raw.
+  `hash` is what `sessions.answer`/`tmux.answer` take as `expect`. Ask each host once per refresh.
+
 ## Grok bot read receipts (added 2026-10-27)
 - A Grok bot's `sessions.transcript` (`id` `grok:<name>`) turns carry `id` (their event) and `receipt`: a user turn (a
   message to the bot) `{state: queued|delivered|read|answered, delivered?{at,via}, read?{at,via}, answered?{at,event},

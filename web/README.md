@@ -648,6 +648,80 @@ Native tenants). Hits carry `id`, `status` and `repo`; filter with `kinds: ["ref
 and `role` (the item's kind). The export keeps to the host's identity (`DF_IDENTITY`, from the environment or `~/.df-profile`, when there is one). A missing
 or failing CLI is logged and skipped.
 
+## Prompts
+
+Every prompt typed into Claude Code or Codex on a machine, verbatim with secrets redacted, kept in an append-only
+spool on that machine and, when a prompts config names them, in git (`core/prompts.js`, `core/prompt-sinks.js`; spec
+`docs/specs/2026-11-21-cohesion-overhaul.md`, "Prompts: the spool").
+
+```
+drover prompts                        # the newest 50 of yours, on every reachable machine
+drover prompts flaky test --since 7d  # words (all must match) and a time span
+drover prompts --all --host box-a     # peer and sdk turns too, one machine
+drover prompts status                 # this machine's spool, last scan and sinks
+drover prompts sync                   # scan now, then push every sink
+```
+
+What is collected: the daemon reads what each transcript gained since its last pass (byte offsets per file in
+`$STATE/prompts-offsets.json`, a pass every minute, `DROVER_PROMPTS_EVERY_MS`), from `~/.claude/projects/<slug>/*.jsonl`
+and `~/.codex/sessions/**/rollout-*.jsonl`. The first pass reads all history, a file at a time, yielding often. A user
+turn's words are what search keeps (`search/extract.js` `userText`, `tidy`, `codexLine`): reminders stripped, a peer
+envelope unwrapped, secrets redacted. Each record says where it came from in `via`: `typed`, `queued` (typed while a turn
+ran), `peer` (another session's `<cross-session-message>`, with `from`), `drover` (relayed by Drover, or text a `message`
+event in the truth file sent to that host within 5 minutes: `tmux.send`, a Codex turn), `headless` (a headless launch's
+first prompt; a tmux launch's is `drover`) and `sdk` (`claude -p`, the Agent SDK, `codex exec`, that no launch started).
+The default list ("mine") is `typed`, `queued`, `drover` and `headless`.
+
+What is skipped: subagent transcripts and Codex subagent threads, sessions in a temp working directory and sessions
+whose first prompt is a generator's (`search/indexer.js` `skipReason`, with its `DROVER_SEARCH_SKIP_PROMPTS`), tool
+results, compaction summaries, Claude Code bookkeeping (`<command-name>` and the like), background-task notices,
+scheduled and other turns Claude Code starts itself, and skill text. Hermes sessions are not collected yet.
+
+Where it is stored: `$STATE/prompts/<YYYY-MM-DD>.jsonl` (mode 0600; the day of the prompt's own time, in UTC), one JSON
+line per prompt, only ever appended:
+
+```json
+{"v":1,"id":"p_3f9a1c0d2b7e4a61","ts":"2026-11-21T22:03:11.000Z","host":"box-a","engine":"claude",
+ "session":"5c1e...","cwd":"~/code/app","project":"app","label":"work","via":"typed","text":"verbatim prompt"}
+```
+
+`id` is `p_` and 16 hex of sha1(host, engine, session, the line's uuid or time, text), so a transcript read twice, or
+two copies of one, give one record. `label` is the first rule of the config that matches (a `cwd` glob, then a
+`remote` regular expression over the git remotes of the cwd's repository, read from its config, never by running git),
+else the machine's `DF_IDENTITY`, else `default`.
+
+The config, `~/.config/drover/prompts.json` (`DROVER_PROMPTS_CONFIG` moves it; none means the local spool only), is per
+machine:
+
+```json
+{
+  "rules": [{ "cwd": "~/code/work-*", "label": "work" }, { "remote": "github\\.com[:/]me/", "label": "personal" }],
+  "sinks": [
+    { "name": "personal", "labels": ["personal", "default"], "type": "git",
+      "remote": "git@forge.example:me/dotfiles.git", "branch": "drover-prompts", "dir": "prompts" },
+    { "name": "sealed", "labels": ["*"], "type": "command", "argv": ["sync-tool", "push", "--append", "prompts", "{file}"] }
+  ],
+  "syncEveryMinutes": 30
+}
+```
+
+A `git` sink keeps its own clone in `$STATE/prompt-sinks/<name>` on its branch (made as an orphan when the remote has
+none) and writes `<dir>/<host>/<day>.jsonl`, appending only records that file does not hold, commits that host's
+directory alone ("prompts: <host> +N"), pulls with rebase and pushes; never a force push. Each host writes only its own
+files, so hosts sharing a remote never conflict. The clone is also a read source: `prompts.list` shows a host that did
+not answer from it, as of its last pull. A `command` sink runs its argv (no shell) once per day that gained records,
+`{file}` replaced by a file of just those records (`{dayfile}`: the sink's whole copy of that day, `{day}`, `{host}`).
+A sink moves past a record only once it reached it; a failing sink retries after 1 minute, then 2, 4, up to 6 hours
+(`prompts.sync` tries at once). Sinks sync every `syncEveryMinutes` (default 30) and on `prompts.sync`.
+
+Ops: `prompts.list` (front-only, the fan-out: `q`, `host`/`hosts`, `engine`, `label`, `via` (a list, or `all`), `since`,
+`until` (ISO, epoch ms or a span such as `7d`), `session` (prefix), `cwd` (or under it), `limit` (200, at most 2000),
+`before` (an id: the next page) -> `{ prompts: [record + route, source?], more, perHost: [{ host, ok, count, error?,
+source? }], coverage, total? }`), `prompts.local` (one host's spool, what the fan-out asks each host; also `id`, and
+`beforeTs`), `prompts.status`, `prompts.sync` (a write). MCP: `drover_prompts_list`, `drover_prompts_local`,
+`drover_prompts_status`, `drover_prompts_sync`. In `~/.local/state/drover/env`: `DROVER_PROMPTS=off` turns collection
+off on a host (it is off under `node --test` unless a test sets `DROVER_PROMPTS=on`).
+
 ## Plugins
 
 What only one fleet needs (an integration with a private forge or deploy pipeline, a personal memory service, hosts
@@ -1277,10 +1351,11 @@ ops, so no MCP tool and no ssh rpc can approve a pairing.
 ## Layout
 
 ```
-bin/drover      CLI: serve (alias up) | open | status | clients | widget-token | pair | bots | ask | rpc | mcp | op | ops | search | stacks | embed | import-survey | import-legacy
+bin/drover      CLI: serve (alias up) | open | status | clients | widget-token | pair | bots | ask | rpc | mcp | op | ops | search | prompts | stacks | embed | import-survey | import-legacy
 bin/drover-embed-setup  builds llama-server (pinned) and installs EmbeddingGemma 2 for search
 core/           api.js (op table) and adapters: tmux, claude, codex, hosts, events, memory (incl. the reflections CLI), launch, effort, trust (launch trust), remote, terminals, filewait (files.wait), session-filter (sessions.list filters), lineage (handoff successors); plugins (the plugin loader), owner (DROVER_OWNER), env (settings and secrets files)
 core/search/    the search index: extract, chunk, store (node:sqlite), indexer, embed (llama-server), query
+core/prompts.js the prompt spool (collector, labels, prompts.* ops); core/prompt-sinks.js its git and command sinks
 core/ask/       asks (docs/ask.md): model (events, fold, codes, texts), parse (the reply grammar), policy (quiet hours, rate, pause), router (the hub), ops, caller (the asking session), channels/ (telegram, sms, imessage)
 core/bots/      Grok bots: oauth (the gateway's OAuth server), tools (the bot tools), tenant-tools and access (native tenants), policy (what leaves for bots: cleaned, secrets redacted), grok (bots as sessions, Routines)
 core/docker.js  docker stacks and the docker.* verbs (core/docker-format.js: drover stacks text; ui/stacks-text.js: summaries both use)
