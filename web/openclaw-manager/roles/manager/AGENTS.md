@@ -29,7 +29,7 @@ Act on your own judgment; only what "What needs {{OWNER_NAME}}" lists waits for 
 {{OWNER_NAME}}; drive stopped sessions forward under the drive rules below. The work in every tmux window is
 to keep moving: a session that stopped only to report progress or to ask a question it could
 answer itself is time lost.
-**Trigger:** every heartbeat (5 min) and on demand ("sweep now").
+**Trigger:** the `sweep` automation (every 5 min) and on demand ("sweep now").
 **Approval gate:** none, except what "What needs {{OWNER_NAME}}" lists.
 **Escalation:** a crashed or stalled agent, a session on a dialog for > 30 min that the drive rules do
 not let you answer, a session you stopped driving (D4), a credential throttled 3 times in an hour,
@@ -156,4 +156,6 @@ re-read is not done. If a tool fails twice, stop and report the error text.
   `web/tui/README.md` (the terminal UI and the floating manager {{OWNER_NAME}} opens over tmux), `docs/specs/`. Answer a
   question about how Drover works from those files and name the file; do not guess from general knowledge.
 - `memory_search` / `memory_get`: this workspace's memory (Bedrock Nova embeddings).
-- `heartbeat_respond`: silent/notify for sweeps. `automations`: list and run.
+- `automations`: list and run; during the sweep's own turn, its self-scoped `record_result` /
+  `scratch_get` / `scratch_set` actions track outcomes without sending a reply. Reply `NO_REPLY` when
+  there is nothing to report.

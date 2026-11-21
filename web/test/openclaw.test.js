@@ -287,7 +287,7 @@ test('console: status reads the service, gateway, health, model, automations, co
   const install = await import('../core/openclaw-install.js');
   const lay = install.layout();
   await mkdir(lay.bin, { recursive: true });
-  await writeFile(lay.launcher, install.renderLauncher(lay, { node: '/opt/fake/node', mjs: '/opt/fake/openclaw.mjs' }, install.loadProfile('default'), { heartbeatThinking: 'high' }));
+  await writeFile(lay.launcher, install.renderLauncher(lay, { node: '/opt/fake/node', mjs: '/opt/fake/openclaw.mjs' }, install.loadProfile('default')));
   const st = await openclaw.status();
   await rm(lay.launcher);   // the check test starts from no launcher
   assert.equal(st.role, 'mac');
@@ -295,7 +295,7 @@ test('console: status reads the service, gateway, health, model, automations, co
   assert.deepEqual([st.unit.kind, st.unit.active, st.unit.uptimeSec, st.unit.lastExitCode], ['launchd', 'active', 3600, 78]);
   assert.equal(st.gateway.up, true);
   assert.deepEqual([st.health.ok, st.health.configReload, st.health.heartbeat.every], [true, 'active', '15m']);
-  assert.deepEqual([st.model.primary, st.model.thinking, st.model.heartbeatEvery, st.model.heartbeatModel, st.model.heartbeatThinking], ['cliproxy/gpt-6.1-sol-ultrafast-br', 'max', '15m', 'amazon-bedrock-mantle/openai.gpt-6-luna', 'high'], 'the sweep\'s level comes from the launcher, not the chat default');
+  assert.deepEqual([st.model.primary, st.model.thinking], ['cliproxy/gpt-6.1-sol-ultrafast-br', 'max']);
   assert.equal(st.automations.jobs[0].schedule, 'every 15 min');
   assert.equal(st.automations.jobs[0].lastStatus, 'ok');
   assert.equal(st.automations.lastRunAt, new Date(NOW - 600000).toISOString());
@@ -303,7 +303,7 @@ test('console: status reads the service, gateway, health, model, automations, co
   assert.ok(!('budgetUsd' in st.cost) && !('paused' in st.cost), 'no spend cap (removed 2026-10-14)');
   assert.deepEqual([st.wal24h.actor, st.wal24h.notes, st.wal24h.pins, st.wal24h.chats], ['manager-mac', 1, 1, 1], 'this host\'s manager only: its actor, and chat replies on this host');
   assert.deepEqual([st.install.managed, st.install.role, st.install.profile, st.install.overlay, st.install.openclaw, st.install.source.commit], [true, 'mac', 'default', null, '2026.10.1', 'abc123']);
-  assert.ok(['models.providers.y', 'agents.defaults.heartbeat.every'].every((k) => st.install.drift?.includes(k)), `drift is computed against what setup would render: ${JSON.stringify(st.install.drift)}`);
+  assert.ok(['models.providers.y', 'agents.defaults.heartbeat'].every((k) => st.install.drift?.includes(k)), `drift is computed against what setup would render: ${JSON.stringify(st.install.drift)}`);
   assert.equal(st.checks.egress.ok, false);
   assert.equal('linger' in st.checks, false, 'launchd has no linger check');
   assert.ok(st.checks.egress.unexpected.some((u) => u.includes('evil.example.com')), 'a host outside the profile allowlist is flagged');

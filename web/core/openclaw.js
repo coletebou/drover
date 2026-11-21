@@ -316,7 +316,7 @@ const errInfo = (e) => ({ error: String(e?.message ?? e).slice(0, 300) });
 /** The model and loop settings from openclaw.json (no secrets live there; env refs only). */
 export function modelInfo(cfg) {
   const d = cfg?.agents?.defaults ?? {};
-  return { primary: d.model?.primary ?? null, fallbacks: d.model?.fallbacks ?? [], thinking: d.thinkingDefault ?? null, heartbeatEvery: d.heartbeat?.every ?? null, heartbeatModel: d.heartbeat?.model ?? null, timeoutSeconds: d.timeoutSeconds ?? null };
+  return { primary: d.model?.primary ?? null, fallbacks: d.model?.fallbacks ?? [], thinking: d.thinkingDefault ?? null, timeoutSeconds: d.timeoutSeconds ?? null };
 }
 
 /** Automations -> { jobs, lastRunAt, nextRunAt } with only the fields the console shows. */
@@ -497,8 +497,7 @@ export async function status() {
     unit,
     gateway: { url: base(), up },
     health,
-    // The sweep's effort is not in openclaw.json: the launcher hands it to the heartbeat-thinking patch.
-    model: { ...modelInfo(cfg), heartbeatThinking: install.launcherHeartbeatThinking(await readFile(lay.launcher, 'utf8').catch(() => null)) },
+    model: modelInfo(cfg),
     automations: jobs,
     cost,
     wal24h: { actor, notes: mine.filter((e) => e.type === 'note').length, pins: mine.filter((e) => e.type === 'pin').length, chats: mine.filter((e) => e.type === 'chat').length, events: mine.length, last: mine.at(-1)?.ts ?? null },

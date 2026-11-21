@@ -42,10 +42,10 @@ describe('pure parts', () => {
 
   test('the committed lockfile pins openclaw with its engines; the tree directory is version + lock hash', () => {
     const l = install.lockInfo();
-    assert.equal(l.version, '2026.10.1');
+    assert.equal(l.version, '2026.11.6');
     assert.equal(l.engines, '>=24.16.0 <25 || >=26.1.0');
-    assert.match(l.dirName, /^2026\.10\.1-[0-9a-f]{12}-p[0-9a-f]{8}$/, 'version, lock hash and patch-set hash');
-    assert.deepEqual(l.patches.map((p) => p.name), ['heartbeat-thinking']);
+    assert.match(l.dirName, /^2026\.11\.6-[0-9a-f]{12}$/, 'version and lock hash; no patch set (npm\/patches.json is empty)');
+    assert.deepEqual(l.patches, [], 'the heartbeat-thinking patch is gone: the sweep\'s thinking level is a native automation field now');
   });
 
   test('roles and profiles load from the repo; the code holds no identity, the data does', () => {
@@ -66,7 +66,7 @@ describe('pure parts', () => {
     const dir = await makeOverlay({
       'profiles/box-b.json': boxB(),
       'roles/manager/AGENTS.md': 'You are **{{ACTOR}}** on {{HOST}}, for {{OWNER_NAME}}.\n',
-      'roles/scout/role.json': { summary: 'a scout that only looks', profile: 'box-b', heartbeatPrompt: 'Look ({{SCOPE_SHORT}}).' },
+      'roles/scout/role.json': { summary: 'a scout that only looks', profile: 'box-b' },
       'workspace/box-b/USER.md': '# USER.md\n\nbox-b seed\n',
       'workspace/SOUL.md': '# SOUL.md\n\nthe overlay soul\n',
     });
@@ -155,16 +155,20 @@ describe('pure parts', () => {
   test('renderConfig fills every token per role and profile, gives every manager full powers, keeps what OpenClaw owns', async () => {
     const template = JSON.parse(await readFile(install.loadProfile('default').config, 'utf8'));
     const vars = { ...install.loadProfile('default').vars, NODE: '/n/node', DROVER_BIN: '/h/.local/bin/drover', HOME: '/h' };
-    const live = { meta: { lastTouchedVersion: '2026.10.1' }, wizard: { lastRunCommand: 'doctor' }, agents: { entries: { main: {} }, defaults: { heartbeat: { every: '1m' } } } };
+    const live = { meta: { lastTouchedVersion: '2026.10.1' }, wizard: { lastRunCommand: 'doctor' }, agents: { entries: { main: {} }, defaults: { thinkingDefault: 'low' } } };
     const role = install.loadRole('manager');
-    const fleet = install.renderConfig({ template, role: install.roleView(role, install.resolveScope({ ...{ scope: 'all', exclude: ['laptop'], digest: true, actor: 'manager' }, host: 'box-a' }), 'box-a'), vars, live });
-    const mac = install.renderConfig({ template, role: install.roleView(role, install.resolveScope({ scope: 'local', actor: 'manager-laptop', host: 'LAPTOP' }), 'LAPTOP'), vars, live });
+    const fleetView = install.roleView(role, install.resolveScope({ ...{ scope: 'all', exclude: ['laptop'], digest: true, actor: 'manager' }, host: 'box-a' }), 'box-a');
+    const macView = install.roleView(role, install.resolveScope({ scope: 'local', actor: 'manager-laptop', host: 'LAPTOP' }), 'LAPTOP');
+    const fleet = install.renderConfig({ template, role: fleetView, vars, live });
+    const mac = install.renderConfig({ template, role: macView, vars, live });
     assert.ok(!JSON.stringify(fleet).includes('{{') && !JSON.stringify(mac).includes('{{'), 'no token left');
     const d = (c) => c.mcp.servers.drover;
     assert.deepEqual([d(fleet).command, d(fleet).args, d(fleet).cwd, d(fleet).env], ['/n/node', ['/h/.local/bin/drover', 'mcp'], '/h', { HOME: '/h', DROVER_MCP_ACTOR: 'manager' }]);
     assert.equal(d(mac).env.DROVER_MCP_ACTOR, 'manager-laptop');
-    assert.match(fleet.agents.defaults.heartbeat.prompt, /'Sweep and drive' in AGENTS\.md for the hosts in your scope \(every host it reaches, except laptop\).*\(actor manager\)/);
-    assert.match(fleet.agents.defaults.heartbeat.prompt, /answered the way the owner would, except what 'What needs the owner' lists\); fix what you can yourself; pin what only the owner can answer;/, 'the owner\'s name is install data (DROVER_OWNER_NAME)');
+    // The sweep is a role automation (every install owns it, renderConfig never sees it): the heartbeat prompt moved here.
+    const sweep = (v) => v.automations.find((a) => a.name === 'sweep');
+    assert.match(sweep(fleetView).message, /'Sweep and drive' in AGENTS\.md for the hosts in your scope \(every host it reaches, except laptop\).*\(actor manager\)/);
+    assert.match(sweep(fleetView).message, /answered the way the owner would, except what 'What needs the owner' lists\); fix what you can yourself; pin what only the owner can answer;/, 'the owner\'s name is install data (DROVER_OWNER_NAME)');
     for (const c of [fleet, mac]) {
       assert.equal(d(c).toolFilter, undefined, 'every drover tool: launches, tmux input, MR and file writes included');
       assert.deepEqual([c.tools.profile, c.tools.exec.security, c.tools.exec.ask, c.tools.deny, c.tools.fs, c.plugins.allow], ['full', 'full', 'off', undefined, undefined, undefined], 'the full tool profile: no deny list, no workspace-only files, no plugin allowlist');
@@ -172,8 +176,8 @@ describe('pure parts', () => {
       assert.deepEqual([c.gateway.port, c.diagnostics.otel.endpoint], [18789, 'http://127.0.0.1:3000/api/public/otel'], 'the default profile\'s port and trace endpoint');
       assert.equal(c.models.providers.cliproxy.apiKey, '${CLIPROXY_API_KEY}', 'the loopback proxy key is an env ref, never a literal in the config');
     }
-    for (const c of [fleet, mac]) assert.match(c.agents.defaults.heartbeat.prompt, /^Execute the program 'Sweep and drive'/, 'no directive: a heartbeat turn never sees its prompt as a message');
-    assert.match(mac.agents.defaults.heartbeat.prompt, /\(this host only\).*\(actor manager-laptop\)/);
+    for (const v of [fleetView, macView]) assert.match(sweep(v).message, /^Execute the program 'Sweep and drive'/, 'no directive: the sweep\'s message is the plain prompt text');
+    assert.match(sweep(macView).message, /\(this host only\).*\(actor manager-laptop\)/);
     // The template holds no key: every provider key is a template token (the profile fills it) or an env ref (the .env does).
     const keys = []; const walk = (v, k) => { if (v && typeof v === 'object') for (const [kk, vv] of Object.entries(v)) walk(vv, kk); else if (/apikey|token/i.test(k ?? '') && typeof v === 'string') keys.push(v); };
     walk(template);
@@ -183,7 +187,7 @@ describe('pure parts', () => {
     const { CLIPROXY_API_KEY: _key, ...noKey } = vars;
     assert.throws(() => install.renderConfig({ template, role: install.roleView(role, install.resolveScope({ scope: 'local', actor: 'manager', host: 'h' }), 'h'), vars: noKey }), /token \{\{CLIPROXY_API_KEY\}\} has no value/, 'a profile without it fails setup, not the gateway');
     for (const c of [fleet, mac]) { assert.deepEqual(c.meta, live.meta); assert.deepEqual(c.wizard, live.wizard); assert.deepEqual(c.agents.entries, { main: {} }); }
-    assert.equal(fleet.agents.defaults.heartbeat.every, '5m', 'everything else comes from the template');
+    assert.equal(fleet.agents.defaults.thinkingDefault, 'max', 'agents.defaults is not OpenClaw-owned: everything else comes from the template, not the live file');
     assert.throws(() => install.fillTokens({ a: '{{NOPE}}' }, {}), /token \{\{NOPE\}\} has no value/);
     assert.equal(install.fillTokens('keep ${AWS_BEARER_TOKEN_BEDROCK} and {{X}} inside text', { X: 'y' }), 'keep ${AWS_BEARER_TOKEN_BEDROCK} and {{X}} inside text', 'whole strings only');
   });
@@ -224,16 +228,16 @@ describe('pure parts', () => {
     }
   });
 
-  test('a role\'s thinking levels are OpenClaw\'s: heartbeatThinking and each automation\'s', async () => {
+  test('a role\'s thinking levels are OpenClaw\'s: a role automation\'s and each duty automation\'s', async () => {
     const src = await mkdtemp(path.join(tmpdir(), 'drover-roles-'));
-    const role = (extra) => ({ summary: 's', profile: 'default', heartbeatPrompt: 'p', ...extra });
+    const role = (extra) => ({ summary: 's', profile: 'default', ...extra });
     const write = async (name, body) => { await mkdir(path.join(src, 'roles', name), { recursive: true }); await writeFile(path.join(src, 'roles', name, 'role.json'), JSON.stringify(body)); };
-    // OpenClaw 2026.10.1's own set (normalizeThinkLevel; automations --thinking lists the same nine).
-    await write('ok', role({ heartbeatThinking: 'medium', duties: { d: { automations: [{ name: 'a', thinking: 'max' }, { name: 'b', thinking: 'adaptive' }, { name: 'c', thinking: 'ultra' }] } } }));
-    await write('turbo', role({ heartbeatThinking: 'turbo' }));
+    // OpenClaw 2026.11.6's own set (normalizeThinkLevel; automations --thinking lists the same nine).
+    await write('ok', role({ automations: [{ name: 'sweep', thinking: 'medium' }], duties: { d: { automations: [{ name: 'a', thinking: 'max' }, { name: 'b', thinking: 'adaptive' }, { name: 'c', thinking: 'ultra' }] } } }));
+    await write('turbo', role({ automations: [{ name: 'sweep', thinking: 'turbo' }] }));
     await write('auto', role({ duties: { d: { automations: [{ name: 'a', thinking: 'extreme' }] } } }));
-    assert.equal(install.loadRole('ok', src).heartbeatThinking, 'medium');
-    assert.throws(() => install.loadRole('turbo', src), /heartbeatThinking must be one of off, minimal, low, medium, high, xhigh, adaptive, max, ultra, not "turbo"/);
+    assert.equal(install.loadRole('ok', src).automations.find((a) => a.name === 'sweep').thinking, 'medium');
+    assert.throws(() => install.loadRole('turbo', src), /automation sweep thinking must be one of off, minimal, low, medium, high, xhigh, adaptive, max, ultra, not "turbo"/);
     assert.throws(() => install.loadRole('auto', src), /duties\.d automation a thinking must be one of/);
     await rm(src, { recursive: true, force: true });
   });
@@ -259,12 +263,8 @@ describe('pure parts', () => {
         assert.match(text, /for v in [A-Z_ ]*\bXDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS; do/, 'the user\'s session bus survives the clean re-exec');
         assert.match(text, /'\/o\/it'\\''s\/openclaw\.mjs'/, 'quoted for the shell');
         assert.equal(/NODE_EXTRA_CA_CERTS/.test(text), platform === 'linux');
-        assert.equal(/OPENCLAW_HEARTBEAT_THINKING/.test(text), false, 'no level unless the role sets one');
       }
       assert.match(install.renderLauncher(lay, { node: '/n/bin/node', mjs: '/o/m.mjs' }, profile), /exec '\/n\/bin\/node' '\/o\/m\.mjs' gateway --port 18789\n$/);
-      const high = install.renderLauncher(lay, { node: '/n/bin/node', mjs: '/o/m.mjs' }, profile, { heartbeatThinking: 'high' });
-      assert.match(high, /\nexport OPENCLAW_HEARTBEAT_THINKING='high'\n/);
-      assert.deepEqual([install.launcherHeartbeatThinking(high), install.launcherHeartbeatThinking(install.renderLauncher(lay, { node: '/n/bin/node', mjs: '/o/m.mjs' }, profile)), install.launcherHeartbeatThinking(null)], ['high', null, null], 'status reads the level back from the launcher');
       assert.match(install.renderOc(lay, { node: '/n/bin/node', mjs: '/o/m.mjs' }, profile), /exec '\/n\/bin\/node' '\/o\/m\.mjs' "\$@"\n$/);
     }
     const plist = install.renderPlist(install.layout({ home: '/h/a&b', platform: 'darwin', env: {} }));
@@ -446,9 +446,6 @@ function fakeHost(home) {
         await mkdir(path.join(opts.cwd, 'node_modules', 'openclaw'), { recursive: true });
         await writeFile(path.join(opts.cwd, 'node_modules', 'openclaw', 'package.json'), JSON.stringify({ name: 'openclaw', version: lock.version }));
         await writeFile(path.join(opts.cwd, 'node_modules', 'openclaw', 'openclaw.mjs'), '// fake\n');
-        await mkdir(path.join(opts.cwd, 'node_modules', 'openclaw', 'dist'), { recursive: true });
-        await writeFile(path.join(opts.cwd, 'node_modules', 'openclaw', 'dist', 'heartbeat-runner-run-A1.mjs'), host.anchorMoved ? 'heartbeatModelOverride: model,\n' : 'replyOptions({ isHeartbeat: true, heartbeatModelOverride: heartbeat?.model?.trim(), abortSignal })\n');
-        await writeFile(path.join(opts.cwd, 'node_modules', 'openclaw', 'dist', 'heartbeat-runner-run-B2.mjs'), '// another runner chunk\n');
         host.npmEnv = opts.env;
         return ok();
       }
@@ -510,6 +507,7 @@ describe('setup in a sandbox', () => {
     assert.equal(by(r1, 'approvals').action, 'imported');
     assert.equal(by(r1, 'service').action, 'restarted');
     assert.equal(by(r1, 'gateway').action, 'answering');
+    assert.equal(by(r1, 'automation sweep').action, 'created');
     assert.equal(by(r1, 'automation fleet-digest').action, 'created');
     assert.equal(by(r1, 'health').action, 'ok');
     const env = install.parseEnvFile(await readFile(L.env, 'utf8'));
@@ -524,17 +522,18 @@ describe('setup in a sandbox', () => {
     assert.equal(r1.steps.some((s) => s.step === 'overlay'), false, 'no overlay, no overlay step');
     const orders = await readFile(path.join(L.workspace, 'AGENTS.md'), 'utf8');
     assert.match(orders, /You are \*\*manager\*\*/); assert.match(orders, /Program 2: Daily digest/); assert.ok(!orders.includes('{{'));
-    assert.match(JSON.parse(await readFile(L.config, 'utf8')).agents.defaults.heartbeat.prompt, /never for lane counts, lane moves or headline changes/);
+    assert.match(host.jobs.find((j) => j.name === 'sweep').payload.message, /never for lane counts, lane moves or headline changes/, 'the sweep automation carries what used to be the heartbeat prompt');
     assert.match(await readFile(path.join(L.workspace, 'MEMORY.md'), 'utf8'), /^# MEMORY\.md \(manager's curated/, 'seeds are filled too');
     for (const f of ['SOUL.md', 'USER.md', 'IDENTITY.md', 'MEMORY.md']) assert.ok(existsSync(path.join(L.workspace, f)), f);
     assert.equal((await stat(L.ro)).mode & 0o777, 0o755);
     assert.equal((await stat(L.launcher)).mode & 0o777, 0o700);
     assert.deepEqual([host.approvals.defaults.security, host.approvals.agents.main.security, host.approvals.agents.main.ask, host.approvals.agents.main.allowlist], ['full', 'full', 'off', undefined], 'full exec, no prompts');
     assert.equal(existsSync(L.approvalsFile), false, 'the import file is removed after doctor');
-    assert.deepEqual(host.jobs.map((j) => j.name), ['fleet-digest']);
+    assert.deepEqual(host.jobs.map((j) => j.name), ['sweep', 'fleet-digest'], 'the sweep (every install owns it) is created before the digest duty\'s automation');
+    assert.ok(host.calls.some((c) => c.includes('automations add --name sweep --declaration-key drover:manager:sweep --cron */5 * * * * --tz UTC --session isolated') && c.endsWith('--no-deliver')));
     assert.ok(host.calls.some((c) => c.includes('automations add --name fleet-digest --declaration-key drover:manager:fleet-digest --cron 0 7 * * * --tz UTC --session isolated') && c.endsWith('--no-deliver')));
     const m = install.readManifest(L);
-    assert.deepEqual([m.role, m.profile, m.overlay, m.actor, m.openclaw.version, m.node.version, m.node.path], ['manager', 'default', null, 'manager', '2026.10.1', 'v24.21.0', nodePath]);
+    assert.deepEqual([m.role, m.profile, m.overlay, m.actor, m.openclaw.version, m.node.version, m.node.path], ['manager', 'default', null, 'manager', '2026.11.6', 'v24.21.0', nodePath]);
     assert.deepEqual(m.scope, { hosts: 'all', exclude: ['laptop'], digest: true });
     assert.equal(m.openclaw.mjs, path.join(home, '.local', 'share', 'drover', 'openclaw', install.lockInfo().dirName, 'node_modules', 'openclaw', 'openclaw.mjs'));
     assert.deepEqual(install.runtimeFor(L), { node: nodePath, mjs: m.openclaw.mjs, from: 'manifest' });
@@ -547,22 +546,22 @@ describe('setup in a sandbox', () => {
     // 2. Nothing changed: nothing written, nothing restarted.
     const r2 = await install.setup({});
     assert.deepEqual([r2.role, r2.actor, r2.scope.hosts], ['manager', 'manager', 'all'], 'later runs reuse the manifest scope');
-    for (const s of ['openclaw', 'secrets', 'config', 'AGENTS.md', 'bin/ro', 'bin/run-gateway', 'bin/oc', 'service file', 'service', 'approvals', 'automation fleet-digest']) assert.equal(by(r2, s).action, 'unchanged', s);
+    for (const s of ['openclaw', 'secrets', 'config', 'AGENTS.md', 'bin/ro', 'bin/run-gateway', 'bin/oc', 'service file', 'service', 'approvals', 'automation sweep', 'automation fleet-digest']) assert.equal(by(r2, s).action, 'unchanged', s);
     assert.equal(restartCalls().length, 1, 'no restart');
     assert.equal(install.readManifest(L).installedAt, m.installedAt);
 
     // 3. Drift in an owned key is fixed, OpenClaw's own keys stay, hand edits are backed up; a config change alone restarts nothing.
     const live = JSON.parse(await readFile(L.config, 'utf8'));
-    live.agents.defaults.heartbeat.every = '1m';
+    live.agents.defaults.thinkingDefault = 'low';
     Object.assign(live, { meta: { lastTouchedVersion: '2026.10.1', migrations: { x: true } }, wizard: { lastRunCommand: 'doctor' } });
     live.agents.entries = { main: {} };
     await writeFile(L.config, JSON.stringify(live));
     await writeFile(path.join(L.workspace, 'AGENTS.md'), 'hand edit\n');
     const r3 = await install.setup({});
     assert.equal(by(r3, 'config').action, 'updated');
-    assert.equal(by(r3, 'config').detail, '1 path: agents.defaults.heartbeat.every');
+    assert.equal(by(r3, 'config').detail, '1 path: agents.defaults.thinkingDefault');
     const after = JSON.parse(await readFile(L.config, 'utf8'));
-    assert.equal(after.agents.defaults.heartbeat.every, '5m');
+    assert.equal(after.agents.defaults.thinkingDefault, 'max');
     assert.deepEqual([after.meta.migrations, after.wizard, after.agents.entries], [{ x: true }, { lastRunCommand: 'doctor' }, { main: {} }]);
     assert.equal(by(r3, 'AGENTS.md').action, 'updated');
     assert.ok(readdirSync(L.workspace).some((f) => f.startsWith('AGENTS.md.bak-')), 'the hand edit is kept as a backup');
@@ -720,7 +719,8 @@ describe('setup in a sandbox', () => {
     assert.deepEqual([env.OPENCLAW_GATEWAY_TOKEN, env.OPENCLAW_HOOKS_TOKEN, env.EXA_API_KEY], [before.OPENCLAW_GATEWAY_TOKEN, before.OPENCLAW_HOOKS_TOKEN, before.EXA_API_KEY], 'generated tokens and unchanged secrets stay');
     assert.match(by(r, 'service').detail, /secrets changed/);
     assert.ok(!JSON.stringify(r).includes(GOV) && !JSON.stringify(r).includes(BEARER), 'no value in the report');
-    assert.ok(host.calls.slice(from).some((c) => / automations edit job-0 --model amazon-bedrock-mantle\/anthropic\.claude-opus-5-5 --thinking medium$/.test(c)), 'the digest moved to the profile\'s model in place');
+    const digestId = host.jobs.find((j) => j.name === 'fleet-digest').id;
+    assert.ok(host.calls.slice(from).some((c) => c.endsWith(`automations edit ${digestId} --model amazon-bedrock-mantle/anthropic.claude-opus-5-5 --thinking medium`)), 'the digest moved to the profile\'s model in place');
     assert.equal(by(await install.setup({}), 'secrets').action, 'unchanged', 'refreshed once');
     // A source that lacks the line leaves a hand-written value alone.
     await writeFile(path.join(home, '.env_secrets'), `export CLIPROXY_API_KEY=${PROXY}\nexport EXA_API_KEY=${EXA}\n`);
@@ -925,32 +925,46 @@ describe('setup in a sandbox', () => {
     await install.setup({ scope: 'all', exclude: ['laptop'], digest: true, actor: 'manager' });
     const want = install.loadRole('manager').duties.digest.automations[0];
     assert.deepEqual([want.model, want.thinking], ['amazon-bedrock-mantle/openai.gpt-6.2-sol', 'max'], 'the digest runs on Sol Standard at max');
-    Object.assign(host.jobs[0].payload, { model: 'amazon-bedrock-mantle/openai.gpt-6-luna', thinking: 'low' });   // an older definition
+    const digestJob = host.jobs.find((j) => j.name === 'fleet-digest');
+    Object.assign(digestJob.payload, { model: 'amazon-bedrock-mantle/openai.gpt-6-luna', thinking: 'low' });   // an older definition
     const from = host.calls.length;
     const r = await install.setup({});
     assert.deepEqual([r.steps.find((x) => x.step === 'automation fleet-digest').action, r.steps.find((x) => x.step === 'automation fleet-digest').detail], ['updated', 'model, thinking']);
-    assert.ok(host.calls.slice(from).some((c) => / automations edit job-0 --model amazon-bedrock-mantle\/openai\.gpt-6\.2-sol --thinking max$/.test(c)), 'edited in place');
-    assert.equal(host.jobs.length, 1, 'no second digest job');
+    assert.ok(host.calls.slice(from).some((c) => c.endsWith(`automations edit ${digestJob.id} --model amazon-bedrock-mantle/openai.gpt-6.2-sol --thinking max`)), 'edited in place');
+    assert.equal(host.jobs.length, 2, 'the sweep, and no second digest job');
     assert.equal((await install.setup({})).steps.find((x) => x.step === 'automation fleet-digest').action, 'unchanged');
     done();
   });
 
-  test('the pinned OpenClaw is patched so a sweep runs at the role\'s heartbeatThinking; a moved anchor fails the install', async () => {
+  test('applyPatches: exactly one site or the install fails; applying twice changes nothing; the real lockfile today pins no patch', async () => {
     await install.setup({ scope: 'all', exclude: ['laptop'], digest: true, actor: 'manager' });
-    const L = lay(); const lock = install.lockInfo(); const dist = path.join(L.installs, lock.dirName, 'node_modules', 'openclaw', 'dist');
-    assert.match(readFileSync(path.join(dist, 'heartbeat-runner-run-A1.mjs'), 'utf8'), /heartbeatModelOverride: heartbeat\?\.model\?\.trim\(\), thinkingLevelOverride: process\.env\.OPENCLAW_HEARTBEAT_THINKING \|\| void 0,/);
-    assert.equal(readFileSync(path.join(dist, 'heartbeat-runner-run-B2.mjs'), 'utf8'), '// another runner chunk\n');
-    assert.deepEqual(JSON.parse(readFileSync(path.join(L.installs, lock.dirName, '.drover-openclaw'), 'utf8')).patches, ['heartbeat-thinking']);
-    assert.match(readFileSync(L.launcher, 'utf8'), /\nexport OPENCLAW_HEARTBEAT_THINKING='high'\n/, 'the launcher hands the role\'s level to the patch');
-    const pkg = path.join(L.installs, lock.dirName, 'node_modules', 'openclaw');
-    await install.applyPatches(pkg, lock.patches, lock.version);
-    assert.equal(readFileSync(path.join(dist, 'heartbeat-runner-run-A1.mjs'), 'utf8').split('thinkingLevelOverride').length - 1, 1, 'applying twice changes nothing');
-    await writeFile(path.join(dist, 'heartbeat-runner-run-C3.mjs'), 'replyOptions({ heartbeatModelOverride: heartbeat?.model?.trim(), })\n');
-    await assert.rejects(install.applyPatches(pkg, lock.patches, lock.version), /its anchor occurs 1 times \(and 1 patched\) in 2 files/, 'a second site beside a patched one is not "already applied"');
-    await rm(path.join(L.installs, lock.dirName), { recursive: true });
-    host.anchorMoved = true;
-    await assert.rejects(install.setup({}), /patch heartbeat-thinking does not apply to openclaw 2026\.10\.1: its anchor occurs 0 times in 0 files matching dist\/heartbeat-runner-run-\*\.mjs/);
-    host.anchorMoved = false;
+    const L = lay(); const lock = install.lockInfo();
+    // OpenClaw 2026.11.6 needs none: the sweep's thinking level is a native automation field (automations
+    // --thinking), not an env var a patch has to inject into a removed heartbeat runner.
+    assert.deepEqual(lock.patches, []);
+    assert.deepEqual(JSON.parse(readFileSync(path.join(L.installs, lock.dirName, '.drover-openclaw'), 'utf8')).patches, []);
+
+    // The patch mechanism itself, exercised with a synthetic patch (independent of what npm/patches.json holds today).
+    const pkg = await mkdtemp(path.join(tmpdir(), 'drover-oc-patch-'));
+    await mkdir(path.join(pkg, 'dist'), { recursive: true });
+    await writeFile(path.join(pkg, 'dist', 'run-A1.mjs'), 'replyOptions({ foo: bar.trim(), abortSignal })\n');
+    await writeFile(path.join(pkg, 'dist', 'run-B2.mjs'), '// another chunk\n');
+    const patches = [{ name: 'example', why: 'test', file: 'dist/run-*.mjs', find: 'foo: bar.trim(),', replace: 'foo: bar.trim(), extra: 1,' }];
+    await install.applyPatches(pkg, patches, '1.2.3');
+    assert.match(readFileSync(path.join(pkg, 'dist', 'run-A1.mjs'), 'utf8'), /foo: bar\.trim\(\), extra: 1,/);
+    assert.equal(readFileSync(path.join(pkg, 'dist', 'run-B2.mjs'), 'utf8'), '// another chunk\n', 'a file without the anchor is untouched');
+    await install.applyPatches(pkg, patches, '1.2.3');
+    assert.equal(readFileSync(path.join(pkg, 'dist', 'run-A1.mjs'), 'utf8').split('extra: 1,').length - 1, 1, 'applying twice changes nothing');
+    await writeFile(path.join(pkg, 'dist', 'run-C3.mjs'), 'replyOptions({ foo: bar.trim(), })\n');
+    await assert.rejects(install.applyPatches(pkg, patches, '1.2.3'), /its anchor occurs 1 times \(and 1 patched\) in 2 files/, 'a second site beside a patched one is not "already applied"');
+    await rm(pkg, { recursive: true, force: true });
+
+    // A moved anchor (an OpenClaw release that renamed the field) fails closed instead of silently skipping the patch.
+    const moved = await mkdtemp(path.join(tmpdir(), 'drover-oc-patch-moved-'));
+    await mkdir(path.join(moved, 'dist'), { recursive: true });
+    await writeFile(path.join(moved, 'dist', 'run-A1.mjs'), 'replyOptions({ foo: renamed.trim(), abortSignal })\n');
+    await assert.rejects(install.applyPatches(moved, patches, '1.2.3'), /patch example does not apply to openclaw 1\.2\.3: its anchor occurs 0 times in 0 files matching dist\/run-\*\.mjs/);
+    await rm(moved, { recursive: true, force: true });
     done();
   });
 

@@ -68,7 +68,6 @@ export default {
           ['gateway', state(st.gateway?.up, st.gateway?.up ? 'answering' : 'not answering', st.gateway?.url ?? '')],
           ['health', hl.error ? muted(hl.error) : state(hl.ok, hl.ok ? 'ok' : 'not ok', [hl.plugins?.length ? `plugins ${hl.plugins.join(', ')}` : '', hl.pluginErrors ? plural(hl.pluginErrors, 'plugin error') : '', hl.configReload && hl.configReload !== 'active' ? `hot reload ${hl.configReload}` : ''].filter(Boolean).join('; '))],
           ['model', h('span', null, h('code', null, m.primary ?? '?'), m.thinking ? `, thinking ${m.thinking}` : '', m.fallbacks?.length ? h('span', { class: 'muted small' }, `  then ${m.fallbacks.join(', ')}`) : null)],
-          ['heartbeat', m.heartbeatEvery ? `every ${m.heartbeatEvery}${m.heartbeatModel ? ` on ${m.heartbeatModel}` : ''}${m.heartbeatThinking ? `, thinking ${m.heartbeatThinking}` : ''}` : null],
           ['last run', a.error ? muted(a.error) : a.lastRunAt ? h('span', null, ago(a.lastRunAt, { short: false }), h('span', { class: 'muted small' }, `  (${fmtTime(a.lastRunAt)})`)) : 'none recorded'],
           ['next run', a.nextRunAt ? fmtTime(a.nextRunAt) : null],
           ['cost today', c.error ? muted(c.error) : h('span', null, c.todayUsd != null ? `$${Number(c.todayUsd).toFixed(2)}` : 'unknown', h('span', { class: 'muted small' }, `  (${c.fresh ? '' : `cost cache ${c.cacheStatus ?? 'unknown'}, `}no spend cap)`))],

@@ -156,7 +156,7 @@
           },
           {
             "id": "openai.gpt-6-luna",
-            "name": "GPT-6 Luna (Bedrock Mantle us-east-1; compaction, memory flush, heartbeat, dreaming)",
+            "name": "GPT-6 Luna (Bedrock Mantle us-east-1; compaction, memory flush, sweep, dreaming)",
             "reasoning": true,
             "input": ["text"],
             "cost": {
@@ -258,20 +258,9 @@
         "maxActiveTranscriptBytes": "2mb",
         "memoryFlush": {
           "enabled": true,
-          "model": "amazon-bedrock-mantle/openai.gpt-6-luna",
           "softThresholdTokens": 20000,
           "forceFlushTranscriptBytes": "1mb"
         }
-      },
-      "heartbeat": {
-        "every": "5m",
-        "target": "none",
-        "directPolicy": "block",
-        "isolatedSession": true,
-        "lightContext": false,
-        "model": "amazon-bedrock-mantle/openai.gpt-6-luna",
-        "timeoutSeconds": 1200,
-        "prompt": "{{HEARTBEAT_PROMPT}}"
       }
     }
   },

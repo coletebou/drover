@@ -5,8 +5,8 @@
 // The code here knows nothing about any one identity or box. What a manager is lives in data:
 //   profiles/<p>.json   what the gateway talks to: its config template, where each secret comes from,
 //                       extra (non-secret) environment, the template values, and the egress allowlist the check enforces
-//   roles/<r>/          what a manager does: role.json (profile, heartbeat prompt, duties such as the
-//                       digest with the tools and automations each brings), AGENTS.md (standing orders),
+//   roles/<r>/          what a manager does: role.json (profile, the sweep automation every install owns,
+//                       duties such as the digest with the automations each brings), AGENTS.md (standing orders),
 //                       MEMORY.md (seed); the orders, prompt and seed are templates filled per install
 //   workspace/          the other seeds (workspace/<profile>/ for one profile's own)
 // The overlay (DROVER_OPENCLAW_OVERLAY, or --overlay) is a directory laid out the same way: a profiles/, roles/ or
@@ -191,11 +191,11 @@ export function loadRole(name, src = SRC, overlay = envOverlay()) {
   const file = (f) => sourceFile(path.join('roles', name, f), { src, overlay });
   const json = file('role.json'); const dir = path.dirname(json);
   const role = JSON.parse(readFileSync(json, 'utf8'));
-  for (const k of ['profile', 'heartbeatPrompt']) if (typeof role[k] !== 'string' || !role[k]) throw new Error(`roles/${name}/role.json has no ${k}`);
+  if (typeof role.profile !== 'string' || !role.profile) throw new Error(`roles/${name}/role.json has no profile`);
   const level = (v, where) => { if (v != null && !THINK_LEVELS.includes(v)) throw new Error(`roles/${name}/role.json ${where} must be one of ${THINK_LEVELS.join(', ')}, not ${JSON.stringify(v)}`); };
-  level(role.heartbeatThinking, 'heartbeatThinking');
+  for (const a of role.automations ?? []) level(a.thinking, `automation ${a.name} thinking`);
   for (const [d, x] of Object.entries(role.duties ?? {})) for (const a of x.automations ?? []) level(a.thinking, `duties.${d} automation ${a.name} thinking`);
-  return { name, dir, duties: {}, ...role, roleFile: json, agentsFile: file('AGENTS.md') ?? path.join(dir, 'AGENTS.md'), memoryFile: file('MEMORY.md') ?? path.join(dir, 'MEMORY.md') };
+  return { name, dir, duties: {}, automations: [], ...role, roleFile: json, agentsFile: file('AGENTS.md') ?? path.join(dir, 'AGENTS.md'), memoryFile: file('MEMORY.md') ?? path.join(dir, 'MEMORY.md') };
 }
 
 /**
@@ -241,9 +241,9 @@ export function droverRepo(lay, src = SRC) {
 }
 
 /**
- * The role applied to one install: its actor, the filled heartbeat prompt and template values, the tool prefixes
- * of duties it does not own, and the automations it owns or must keep off. The owner (DROVER_OWNER, prose name
- * DROVER_OWNER_NAME) is a template value, so the orders name whoever runs this fleet.
+ * The role applied to one install: its actor, the template values, the tool prefixes of duties it does not
+ * own, and the automations it owns or must keep off. The owner (DROVER_OWNER, prose name DROVER_OWNER_NAME)
+ * is a template value, so the orders (and an automation's message) name whoever runs this fleet.
  */
 export function roleView(role, sc, host, { repo = path.resolve(SRC, '..', '..'), flags = {}, automations: over = {} } = {}) {
   const short = sc.hosts === 'local' ? 'this host only' : `every host it reaches${sc.exclude.length ? `, except ${sc.exclude.join(', ')}` : ''}`;
@@ -260,12 +260,13 @@ export function roleView(role, sc, host, { repo = path.resolve(SRC, '..', '..'),
     vars[k] = v;
   }
   for (const [d] of duties) vars[d] = Boolean(sc[d]);
+  // role.automations (the sweep): every install owns these, regardless of scope or duty. duties.<d>.automations
+  // (the digest): owned only by the manager whose scope covers that duty. Either way the profile may move an
+  // automation to a model its own providers have (and a thinking level that model takes).
+  const own = [...(role.automations ?? []), ...duties.filter(([d]) => sc[d]).flatMap(([, x]) => x.automations ?? [])];
   return {
-    // The sweep's effort: OpenClaw's heartbeat config has no thinking level (a /think directive does not reach it
-    // either: a heartbeat turn's message is a fixed poll), so the launcher passes it to the heartbeat-thinking patch.
-    actor: sc.actor, vars, heartbeatPrompt: renderTemplate(role.heartbeatPrompt, vars), heartbeatThinking: role.heartbeatThinking ?? null,
-    // The profile may move an automation to a model its own providers have (and a thinking level that model takes).
-    automations: duties.filter(([d]) => sc[d]).flatMap(([, x]) => x.automations ?? []).map((a) => ({ ...a, ...Object.fromEntries(Object.entries(over[a.name] ?? {}).filter(([, v]) => v != null)) })),
+    actor: sc.actor, vars,
+    automations: own.map((a) => ({ ...a, message: renderTemplate(a.message, vars), ...Object.fromEntries(Object.entries(over[a.name] ?? {}).filter(([, v]) => v != null)) })),
     offAutomations: duties.filter(([d]) => !sc[d]).flatMap(([, x]) => (x.automations ?? []).map((a) => a.name)),
   };
 }
@@ -363,7 +364,7 @@ export function fillTokens(value, vars) {
 
 /** The gateway config for this host and role: the template with its tokens filled and the OpenClaw-owned keys from the live file. Pure. */
 export function renderConfig({ template, role, vars, live = null }) {
-  const c = fillTokens(structuredClone(template), { ACTOR: role.actor, HEARTBEAT_PROMPT: role.heartbeatPrompt, ...vars });
+  const c = fillTokens(structuredClone(template), { ACTOR: role.actor, ...vars });
   if (live) for (const p of OPENCLAW_OWNED) { const v = getPath(live, p); if (v !== undefined && getPath(c, p) === undefined) setPath(c, p, structuredClone(v)); }
   return c;
 }
@@ -431,20 +432,17 @@ function envBlock(lay, node, profile, self, extraEnv = {}) {
   return lines.join('\n');
 }
 
-/** The gateway launcher. heartbeatThinking: the sweep's effort, read by the heartbeat-thinking patch (npm/patches.json). */
-export function renderLauncher(lay, { node, mjs }, profile, { heartbeatThinking = null } = {}) {
+/** The gateway launcher: the pinned node and tree, the secrets, the profile's environment and every egress off-switch. */
+export function renderLauncher(lay, { node, mjs }, profile) {
   return `#!/bin/bash
 # Generated by \`drover manager setup\` (drover web/core/openclaw-install.js); re-run it instead of editing.
 # The manager gateway: the pinned node and OpenClaw tree, the secrets from .env, the isolated state dir,
 # the profile's environment and every egress off-switch. ${lay.service.kind === 'launchd' ? `launchd (${lay.service.name})` : `systemd (${lay.service.name}.service)`} runs this.
 set -euo pipefail
-${envBlock(lay, node, profile, lay.launcher, { OPENCLAW_HEARTBEAT_THINKING: heartbeatThinking })}
+${envBlock(lay, node, profile, lay.launcher)}
 exec ${shq(node)} ${shq(mjs)} gateway --port ${profile.port ?? PORT}
 `;
 }
-
-/** The sweep's effort a rendered launcher passes the patch, or null: the sweep then runs at the chat default. */
-export const launcherHeartbeatThinking = (text) => /^export OPENCLAW_HEARTBEAT_THINKING='([a-z]+)'$/m.exec(text ?? '')?.[1] ?? null;
 
 export function renderOc(lay, { node, mjs }, profile) {
   return `#!/bin/bash
@@ -830,10 +828,10 @@ async function fixApprovals(lay, rt, { src, dryRun, step }) {
 }
 
 /**
- * First install: write the approvals file, let doctor import it (and materialize the heartbeat monitor),
- * then drop the file (a second copy is a legacy file that blocks every agent tool). Never on an install
- * setup made before (fixApprovals keeps its allowlist right), and never because a read failed: a busy
- * gateway can fail `approvals get`, and that is not the same as nothing stored.
+ * First install: write the approvals file, let doctor import it, then drop the file (a second copy is a
+ * legacy file that blocks every agent tool). Never on an install setup made before (fixApprovals keeps its
+ * allowlist right), and never because a read failed: a busy gateway can fail `approvals get`, and that is
+ * not the same as nothing stored.
  */
 async function importApprovals(lay, rt, { src, profile, dryRun, step, prev }) {
   if (prev) return false;
@@ -853,8 +851,8 @@ async function importApprovals(lay, rt, { src, profile, dryRun, step, prev }) {
 }
 
 /**
- * A restart aborts the turn in flight: wait (bounded) until no automation (the heartbeat included) is
- * running. A list that cannot be read is not an idle one: it is waited on like a running heartbeat.
+ * A restart aborts the turn in flight: wait (bounded) until no automation (the sweep included) is running.
+ * A list that cannot be read is not an idle one: it is waited on like a running automation.
  */
 async function waitIdle(lay, rt, { waitIdleSec, step }) {
   const start = _deps.now(); let waitedFor = null; let unread = false;
@@ -941,7 +939,7 @@ async function applyService(lay, { was, now, rewritten, restart, dryRun, step, r
  *              started, or it is not running) | always | never (the restart stays pending for a later run)
  *   dryRun     report what would change, change nothing
  *   waitSec    how long to wait for the gateway after a restart (a loaded Mac can take minutes)
- *   waitIdleSec  how long a restart waits for a running heartbeat or automation to finish first
+ *   waitIdleSec  how long a restart waits for a running automation (the sweep included) to finish first
  */
 export async function setup({ role: name = 'manager', profile: profileName, overlay: overlayArg, scope, exclude, digest, actor, restart = 'auto', dryRun = false, waitSec = 300, waitIdleSec = 900, node: nodeOverride, src = SRC, log = () => {} } = {}) {
   if (!['auto', 'always', 'never'].includes(restart)) throw new Error('restart must be auto, always or never');
@@ -1044,7 +1042,7 @@ export async function setup({ role: name = 'manager', profile: profileName, over
 
   // 5. Executables: the ro shim, the launcher the service runs, and oc.
   step('bin/ro', await put(lay.ro, await readFile(path.join(src, 'bin', 'ro'), 'utf8'), { mode: 0o755, dryRun }));
-  const launcherText = renderLauncher(lay, rt, profile, { heartbeatThinking: view.heartbeatThinking });
+  const launcherText = renderLauncher(lay, rt, profile);
   const launcherR = await put(lay.launcher, launcherText, { mode: 0o700, dryRun });
   step('bin/run-gateway', launcherR);
   step('bin/oc', await put(lay.oc, renderOc(lay, rt, profile), { mode: 0o700, dryRun }));
