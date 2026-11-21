@@ -96,9 +96,10 @@ export const TOOLS = [
       engine: { type: 'string', description: 'Only this engine: claude, codex, hermes, openclaw or grok (comma-separated for several).' },
       live: { type: 'boolean', description: 'true: only live sessions; false: only finished ones.' },
       limit: { type: 'number', description: 'At most this many sessions, the most recently active first.' },
+      subagents: { type: 'boolean', description: 'Each Claude session also lists the subagents it started (id, agentType, description, model, status running/finished/stopped, lastActivity); read one with drover_session_transcript by its id. Default false.' },
     }),
     async run(dispatch, args) {
-      const r = await dispatch('sessions.list', { includeRecent: args.includeRecent ?? false, ...pick(args, ['host', 'compact', 'cwd', 'name', 'engine', 'live', 'limit']) });
+      const r = await dispatch('sessions.list', { includeRecent: args.includeRecent ?? false, ...pick(args, ['host', 'compact', 'cwd', 'name', 'engine', 'live', 'limit', 'subagents']) });
       return filtersGiven(args) && r && Array.isArray(r.sessions) && r.matched === undefined ? filterHere(r, args) : r;
     },
   },
@@ -115,9 +116,10 @@ export const TOOLS = [
       callStyle: { type: 'string', enum: ['input', 'brief'], description: 'calls and full: the whole input (default) or one line per call.' },
       as: { type: 'string', enum: ['text', 'entries'], description: 'messages, calls and full: Markdown text (default here) or structured entries.' },
       thread: { type: 'string', description: 'Manager only: the conversation (default main).' },
+      subagents: { type: 'boolean', description: 'Claude sessions: also list the subagents it started (id, agentType, description, status, lastActivity), each readable here by its id.' },
     }, ['id']),
     run: (dispatch, args) => {
-      const a = pick(args, ['id', 'since', 'limit', 'host', 'thread', 'format', 'callStyle', 'maxBytes', 'as']);
+      const a = pick(args, ['id', 'since', 'limit', 'host', 'thread', 'format', 'callStyle', 'maxBytes', 'as', 'subagents']);
       if (a.format && a.format !== 'turns') { a.maxBytes ??= MCP_TRANSCRIPT_PAGE; if (a.format !== 'raw') a.as ??= 'text'; }
       return dispatch('sessions.transcript', mcpArgs('sessions.transcript', a));
     },

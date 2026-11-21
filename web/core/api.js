@@ -274,6 +274,62 @@ async function exportTranscript({ id, since = 0, limit, thread, format, callStyl
   return { ...base, ...r };
 }
 
+/** sessions.transcript without its subagents list: the turns view here, the other formats through exportTranscript. */
+async function sessionTranscript({ id, since = 0, limit, thread, seenBy, format = 'turns', callStyle, maxBytes, as }) {
+  if (tx.checkFormat(format) !== 'turns') return exportTranscript({ id, since, limit, thread, format, callStyle, maxBytes, as });
+  limit = Number(limit) > 0 ? Number(limit) : 200;
+  const s = await sessionById(str(id, 'id'));
+  if (!s) {
+    // Not a session: maybe a subagent, an openclaw: id or a transcript path, read through its file.
+    const src = await transcriptSource(id, { thread });
+    if (src?.engine === 'claude' && src.path) return { engine: 'claude', kind: src.kind, ...(await claude.readTranscript(src.path, { since, limit })) };
+    if (src?.engine === 'codex' && src.path) return { engine: 'codex', kind: src.kind, ...(await codex.readRollout(src.path, { limit })), offset: 0 };
+    if (src?.engine === 'openclaw') throw new Error('an OpenClaw session reads with format messages, calls, full or raw');
+    throw new Error('session not found');
+  }
+  // A headless Hermes session reads its conversation from the database once it has one: that also has what the gateway
+  // ran after its one-shot left (an approval answered here, then the rest of the turn).
+  if (s.headless && s.engine === hermes.ENGINE && s.sessionId && hermes.configured()) {
+    // A full read each time (offset 0, as a Codex thread's): before its conversation is known this entry answered from
+    // its own events, whose offsets are not row ids, so a cursor from one would be wrong in the other.
+    const h = await hermes.findSession(s.sessionId).catch(() => null);
+    if (h) return { ...hermes.transcript(h, { limit }), offset: 0, headless: true };
+  }
+  if (s.headless) return { engine: s.engine, headless: true, turns: headlessTurns(s.events), offset: s.events.length };
+  if (s.engine === 'openclaw') return openclaw.transcript({ since, limit, thread });
+  // seenBy: the reader is shown this page, so the bot's replies to them up to its last one are read (core/bots/grok.js
+  // receipts); the page is read again only when that changed what it says.
+  if (s.engine === grok.ENGINE) {
+    const page = await grok.transcript(s.id, { since, limit });
+    const last = page.turns.findLast((t) => t.role === 'assistant')?.id;
+    if (seenBy && last && afterSeen(await grok.markSeen(s.id, { by: seenBy, upTo: last, via: 'thread' }).catch(() => 0))) return grok.transcript(s.id, { since, limit });
+    return page;
+  }
+  if (s.engine === hermes.ENGINE) return hermes.transcript(s, { since, limit });
+  if (s.engine === 'claude') { const r = await claude.readTranscript(s.transcript, { since, limit }); return { engine: 'claude', ...r, summary: since ? undefined : await claude.transcriptSummary(s.transcript).catch(() => null) }; }
+  // codex: read the rollout file first. thread/read materializes every turn inside the
+  // app-server, and on a long session it reached 19 GB in 8 minutes (2026-10-15) and
+  // panicked the Mac; the rollout holds the same turns. The app-server is a last resort.
+  const file = s.file ?? (await codex.recentRollouts({ days: 365, limit: 5000 })).find((x) => x.threadId === s.threadId)?.file;
+  if (file) return { engine: 'codex', ...(await codex.readRollout(file, { limit })), offset: 0 };
+  if (s.threadId && s.live !== false) {
+    try { const res = await readCodexThread(s.threadId); return { engine: 'codex', turns: codex.threadToTurns(res).slice(-limit), offset: 0 }; } catch { /* no transcript available */ }
+  }
+  return { engine: 'codex', turns: [], offset: 0 };
+}
+
+/**
+ * Each Claude session in a list with the subagents it started (transcript-export.js subagentsOf); other engines as
+ * they are. Its transcript path is known for a registry or transcript entry, else made from its cwd and id.
+ */
+async function withSubagents(list = []) {
+  return Promise.all(list.map(async (s) => {
+    if (s.engine !== 'claude' || s.kind === 'headless') return s;
+    const file = s.transcript ?? (s.cwd && s.sessionId ? claude.transcriptPath(s.cwd, s.sessionId) : null);
+    return file ? { ...s, subagents: await tx.subagentsOf(file, { parentAlive: s.live !== false && s.status !== 'dead' }) } : s;
+  }));
+}
+
 /** Every transcript on this host, newest first, with what made it (see transcripts.list in ops-meta.js). */
 async function listTranscripts({ engine, kind, days = 4, limit = 50, parent } = {}) {
   const d = Number(days) > 0 ? Number(days) : 4, n = Number(limit) > 0 ? Number(limit) : 50;
@@ -487,57 +543,29 @@ export const local = {
   async 'sessions.list'(args = {}) {
     const r = await listSessionsLocal(args);
     const sessions = args.compact === true || args.compact === 'true' ? await withReplies(slimSessions(r.sessions)) : r.sessions;
-    if (!filtersGiven(args)) return sessions === r.sessions ? r : { ...r, sessions };
-    return { ...r, ...filterSessions(sessions, args) };
+    const out = !filtersGiven(args) ? (sessions === r.sessions ? r : { ...r, sessions }) : { ...r, ...filterSessions(sessions, args) };
+    return args.subagents === true || args.subagents === 'true' ? { ...out, sessions: await withSubagents(out.sessions) } : out;
   },
   async 'sessions.get'({ id }) { return sessionById(str(id, 'id')); },
-  async 'sessions.transcript'({ id, since = 0, limit, thread, seenBy, format = 'turns', callStyle, maxBytes, as }) {
-    if (tx.checkFormat(format) !== 'turns') return exportTranscript({ id, since, limit, thread, format, callStyle, maxBytes, as });
-    limit = Number(limit) > 0 ? Number(limit) : 200;
-    const s = await sessionById(str(id, 'id'));
-    if (!s) {
-      // Not a session: maybe a subagent, an openclaw: id or a transcript path, read through its file.
-      const src = await transcriptSource(id, { thread });
-      if (src?.engine === 'claude' && src.path) return { engine: 'claude', kind: src.kind, ...(await claude.readTranscript(src.path, { since, limit })) };
-      if (src?.engine === 'codex' && src.path) return { engine: 'codex', kind: src.kind, ...(await codex.readRollout(src.path, { limit })), offset: 0 };
-      if (src?.engine === 'openclaw') throw new Error('an OpenClaw session reads with format messages, calls, full or raw');
-      throw new Error('session not found');
-    }
-    // A headless Hermes session reads its conversation from the database once it has one: that also has what the gateway
-    // ran after its one-shot left (an approval answered here, then the rest of the turn).
-    if (s.headless && s.engine === hermes.ENGINE && s.sessionId && hermes.configured()) {
-      // A full read each time (offset 0, as a Codex thread's): before its conversation is known this entry answered from
-      // its own events, whose offsets are not row ids, so a cursor from one would be wrong in the other.
-      const h = await hermes.findSession(s.sessionId).catch(() => null);
-      if (h) return { ...hermes.transcript(h, { limit }), offset: 0, headless: true };
-    }
-    if (s.headless) return { engine: s.engine, headless: true, turns: headlessTurns(s.events), offset: s.events.length };
-    if (s.engine === 'openclaw') return openclaw.transcript({ since, limit, thread });
-    // seenBy: the reader is shown this page, so the bot's replies to them up to its last one are read (core/bots/grok.js
-    // receipts); the page is read again only when that changed what it says.
-    if (s.engine === grok.ENGINE) {
-      const page = await grok.transcript(s.id, { since, limit });
-      const last = page.turns.findLast((t) => t.role === 'assistant')?.id;
-      if (seenBy && last && afterSeen(await grok.markSeen(s.id, { by: seenBy, upTo: last, via: 'thread' }).catch(() => 0))) return grok.transcript(s.id, { since, limit });
-      return page;
-    }
-    if (s.engine === hermes.ENGINE) return hermes.transcript(s, { since, limit });
-    if (s.engine === 'claude') { const r = await claude.readTranscript(s.transcript, { since, limit }); return { engine: 'claude', ...r, summary: since ? undefined : await claude.transcriptSummary(s.transcript).catch(() => null) }; }
-    // codex: read the rollout file first. thread/read materializes every turn inside the
-    // app-server, and on a long session it reached 19 GB in 8 minutes (2026-10-15) and
-    // panicked the Mac; the rollout holds the same turns. The app-server is a last resort.
-    const file = s.file ?? (await codex.recentRollouts({ days: 365, limit: 5000 })).find((x) => x.threadId === s.threadId)?.file;
-    if (file) return { engine: 'codex', ...(await codex.readRollout(file, { limit })), offset: 0 };
-    if (s.threadId && s.live !== false) {
-      try { const res = await readCodexThread(s.threadId); return { engine: 'codex', turns: codex.threadToTurns(res).slice(-limit), offset: 0 }; } catch { /* no transcript available */ }
-    }
-    return { engine: 'codex', turns: [], offset: 0 };
+  async 'sessions.transcript'(args = {}) {
+    const r = await sessionTranscript(args);
+    if (!(args.subagents === true || args.subagents === 'true')) return r;
+    // A Claude session's subagents beside its own transcript: each id reads with sessions.transcript.
+    const file = r?.engine === 'claude' && r.kind !== 'subagent' ? r.path ?? (await transcriptSource(args.id, { thread: args.thread }).catch(() => null))?.path : null;
+    const s = file ? await sessionById(str(args.id, 'id')).catch(() => null) : null;
+    return { ...r, subagents: file ? await tx.subagentsOf(file, { parentAlive: s ? s.alive !== false && s.status !== 'dead' : false }) : [] };
   },
   async 'transcripts.list'(args = {}) { return listTranscripts(args); },
   /** The last thing a session said (final assistant text and its last line), cheap: reads the transcript tail. */
   async 'sessions.lastReply'({ id, seenBy }) {
     const s = await sessionById(str(id, 'id'));
-    if (!s) throw new Error('session not found');
+    if (!s) {
+      // A subagent (agent-<id>, <session>/<agent id> or its bare id) answers from its own transcript.
+      const src = await transcriptSource(id).catch(() => null);
+      if (src?.kind !== 'subagent' || !src.path) throw new Error('session not found');
+      const r = await claude.lastAssistantText(src.path);
+      return { id: src.id, parent: src.parent, name: src.meta?.description ?? null, engine: 'claude', kind: 'subagent', text: r ? r.text.slice(-4000) : null, line: r ? claude.lastLine(r.text) : null, ts: r?.ts ?? null, ask: r?.text ? classifyAsk({ text: r.text }) : null };
+    }
     let r = null;
     const hh = s.headless ? await headlessHermesSession(s) : null;
     if (hh) r = hermes.lastReply(hh);

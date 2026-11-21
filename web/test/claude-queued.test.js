@@ -148,10 +148,31 @@ test('sessions.transcript: a subagent by its id shows what the owner typed in it
   assert.deepEqual(s.turns.filter((t) => t.role === 'user').map((t) => [t.text, t.via ?? null]), [['start the review', null], ['also check the footer', 'queued']]);
 });
 
-test('grep finds a message typed into a subagent panel as a user hit', { skip: !findRg() && 'no ripgrep' }, async () => {
+test('subagents: true lists the subagents a session started, with status; sessions.list does too', async () => {
+  const r = await op('sessions.transcript', { id: SID, subagents: true, limit: 1 });
+  const byId = (a, b) => (a[0] < b[0] ? -1 : 1);
+  assert.deepEqual(r.subagents.map((a) => [a.id, a.agentType, a.description, a.status]).sort(byId), [[AGENT, 'general-purpose', 'review the board', 'running'], [DONE, 'Explore', 'map the files', 'finished']].sort(byId));
+  assert.ok(r.subagents.every((a) => typeof a.lastActivity === 'string' && a.bytes > 0));
+  assert.equal(r.subagents.find((a) => a.id === AGENT).model, 'claude-opus-5-5');
+  assert.equal('subagents' in (await op('sessions.transcript', { id: SID })), false, 'only when asked for');
+  const e = await op('sessions.transcript', { id: SID, format: 'messages', subagents: true });
+  assert.equal(e.subagents.length, 2, 'the export formats take it too');
+  const l = await op('sessions.list', { includeRecent: false, subagents: true });
+  const mine = l.sessions.find((s) => s.id === SID);
+  assert.deepEqual(mine.subagents.map((a) => a.id).sort(), [AGENT, DONE].sort());
+  assert.equal('subagents' in ((await op('sessions.list', { includeRecent: false })).sessions.find((s) => s.id === SID)), false);
+});
+
+test('sessions.lastReply answers for a subagent id', async () => {
+  const r = await op('sessions.lastReply', { id: `agent-${AGENT}` });
+  assert.deepEqual([r.kind, r.id, r.parent, r.text, r.name], ['subagent', AGENT, SID, 'A gauge fits beside the clock.', 'review the board']);
+  await assert.rejects(op('sessions.lastReply', { id: 'agent-ffffffffffffffff' }), /session not found/);
+});
+
+test('grep finds a message typed into a subagent panel as a user hit naming the subagent', { skip: !findRg() && 'no ripgrep' }, async () => {
   const roots = { claude: path.join(tmp, 'claude', 'projects'), codex: path.join(tmp, 'codex', 'sessions') };
   const r = await grepTranscripts({ pattern: 'rate gauge', roles: ['user'] }, { roots, rg: findRg() });
   assert.equal(r.results.length, 1);
-  assert.deepEqual([r.results[0].kind, r.results[0].sessionId, r.results[0].role], ['subagent', SID, 'user']);
+  assert.deepEqual([r.results[0].kind, r.results[0].sessionId, r.results[0].agentId, r.results[0].role], ['subagent', SID, AGENT, 'user']);
   assert.match(r.results[0].snippet, /can the board show a rate gauge/);
 });

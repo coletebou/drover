@@ -399,6 +399,27 @@ export async function listSubagents(projectsDir, { days = 4, parent = null } = {
   return out.sort((a, b) => (a.mtime < b.mtime ? 1 : -1));
 }
 
+/**
+ * The subagents a Claude session started, from the folder beside its transcript (<session>.jsonl's <session>/subagents),
+ * newest activity first: [{ id, agentType, description, model, status, lastActivity, bytes }]. status: finished once
+ * Claude Code marks its meta finished; else running while the parent session runs, stopped when it does not (a subagent
+ * dies with its session). parentAlive undefined (not known) reads as running. lastActivity is its file's mtime.
+ */
+export async function subagentsOf(sessionFile, { parentAlive } = {}) {
+  if (!sessionFile || !sessionFile.endsWith('.jsonl')) return [];
+  const dir = path.join(sessionFile.slice(0, -'.jsonl'.length), 'subagents');
+  const out = [];
+  for (const n of await readdir(dir).catch(() => [])) {
+    if (!/^agent-[0-9a-z]+\.jsonl$/i.test(n)) continue;
+    const f = path.join(dir, n);
+    let s; try { s = await stat(f); } catch { continue; }
+    const m = await subagentMeta(f);
+    const status = m?.finished === true ? 'finished' : parentAlive === false ? 'stopped' : 'running';
+    out.push({ id: n.slice(6, -6), agentType: m?.agentType ?? null, description: m?.description ?? null, model: m?.model ?? null, status, lastActivity: s.mtime.toISOString(), bytes: s.size });
+  }
+  return out.sort((a, b) => (a.lastActivity < b.lastActivity ? 1 : -1));
+}
+
 // ---------------------------------------------------------------- what a transcript is, cheaply
 
 // One-shot helper runs, by what their prompt starts with or where they run: the session reflector (a temp dir per run),

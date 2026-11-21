@@ -699,7 +699,10 @@ A message that reaches a Claude session while a turn runs is not a user record: 
 into a busy session, everything typed into a background subagent's agent panel ("Message @agent"), an inbox
 message sent to a busy session, and the coordinator writing to its subagent. Every reader (`turns`, the other
 formats, the search index, `drover grep`) shows it as a user turn or entry marked `queued: true`
-(`core/claude-queued.js`); Claude Code's own task notifications in the same shape are left out.
+(`core/claude-queued.js`); Claude Code's own task notifications in the same shape are left out. `subagents: true`
+on `sessions.transcript` (a Claude session) or on `sessions.list` adds the subagents each session started
+(`id`, `agentType`, `description`, `model`, `status` running/finished/stopped, `lastActivity`), each readable by
+its id; `sessions.lastReply` takes a subagent id too.
 
 ```
 drover transcripts                                   # newest 50 on this machine (--engine, --kind, --days, --parent, --host)

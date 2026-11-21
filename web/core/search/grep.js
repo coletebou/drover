@@ -226,7 +226,7 @@ export function grepSnippet(text, needle, pos) {
 function placeOf(file, roots) {
   if (roots.claude && file.startsWith(roots.claude + path.sep)) {
     const rel = file.slice(roots.claude.length + 1).split(path.sep);
-    if (rel.length >= 4 && rel[2] === 'subagents') return { kind: 'subagent', sessionId: rel[1], slug: rel[0] };
+    if (rel.length >= 4 && rel[2] === 'subagents') return { kind: 'subagent', sessionId: rel[1], slug: rel[0], agentId: rel[3].match(/^agent-([0-9a-z]+)\.jsonl$/i)?.[1] ?? null };
     return { kind: 'claude', sessionId: path.basename(file, '.jsonl'), slug: rel[0] };
   }
   if (roots.codex && file.startsWith(roots.codex + path.sep)) return { kind: 'codex', sessionId: path.basename(file).match(/([0-9a-f]{8}-[0-9a-f-]{27,})\.jsonl$/)?.[1] ?? null, slug: null };
@@ -341,7 +341,9 @@ export async function grepTranscripts(q, { env = process.env, roots = defaultRoo
       if (String(ts ?? '') <= String(old.ts ?? '')) return;
       kept.splice(kept.indexOf(old), 1); results.splice(results.indexOf(old), 1);
     }
-    const hit = { kind: place.kind, sessionId, project: proj, cwd, role: part.role, ...(part.tool ? { tool: part.tool } : {}), ts, path: file, line: ev.data?.line_number ?? null, snippet };
+    // A subagent's hit names the subagent too: sessions.transcript reads it by that id.
+    const agentId = place.kind === 'subagent' ? place.agentId : null;
+    const hit = { kind: place.kind, sessionId, ...(agentId ? { agentId } : {}), project: proj, cwd, role: part.role, ...(part.tool ? { tool: part.tool } : {}), ts, path: file, line: ev.data?.line_number ?? null, snippet };
     kept.push(hit); perKey.set(key, kept); results.push(hit);
     if (results.length >= limit) { truncated = true; child.kill('SIGTERM'); }
   };
