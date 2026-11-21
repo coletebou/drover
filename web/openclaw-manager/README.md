@@ -1,6 +1,6 @@
 # openclaw-manager: Drover's OpenClaw fleet managers, installed from this directory
 
-An OpenClaw manager is an OpenClaw 2026.10.1 gateway on loopback that runs the agent fleet through
+An OpenClaw manager is an OpenClaw 2026.11.6 gateway on loopback that runs the agent fleet through
 the `drover` MCP tools and records what changed in the Drover truth file. It has full powers: OpenClaw's
 `full` tool profile, exec with `security: full` and no approval prompts, files anywhere, web fetch, and
 every `drover` tool (the MCP server does not limit a manager's writes). Its standing orders keep only
@@ -53,10 +53,10 @@ role's missing automations, edits the existing ones in place to the role's defin
 
 | In this directory (or the overlay) | On the host |
 |---|---|
-| `npm/package.json`, `npm/package-lock.json`: the pinned OpenClaw tree (563 packages, every platform's optional binaries); `npm/patches.json`: the edits setup makes to that tree (`heartbeat-thinking`) | `~/.local/share/drover/openclaw/2026.10.1-<lock sha>-p<patch sha>/` (`npm ci`, then the patches; the last two trees are kept) |
-| `openclaw.json`: the gateway config template; `{{NODE}}`, `{{DROVER_BIN}}`, `{{HOME}}`, `{{ACTOR}}`, `{{HEARTBEAT_PROMPT}}` and the profile's `{{PORT}}`, `{{OTEL_ENDPOINT}}`, `{{CLIPROXY_API_KEY}}` are whole-string tokens (OpenClaw itself owns `${NAME}` env refs). It holds no key: each is a token or an env ref | `~/.openclaw-manager/openclaw.json` (0600) |
+| `npm/package.json`, `npm/package-lock.json`: the pinned OpenClaw tree (597 packages, every platform's optional binaries); `npm/patches.json`: the edits setup makes to that tree (none today — OpenClaw 2026.11.6's automations take a thinking level natively, so there is nothing left to patch) | `~/.local/share/drover/openclaw/2026.11.6-<lock sha>/` (`npm ci`, then any patches; a patch set adds `-p<patch sha>` to the dir name; the last two trees are kept) |
+| `openclaw.json`: the gateway config template; `{{NODE}}`, `{{DROVER_BIN}}`, `{{HOME}}`, `{{ACTOR}}` and the profile's `{{PORT}}`, `{{OTEL_ENDPOINT}}`, `{{CLIPROXY_API_KEY}}` are whole-string tokens (OpenClaw itself owns `${NAME}` env refs). It holds no key: each is a token or an env ref | `~/.openclaw-manager/openclaw.json` (0600) |
 | `profiles/<p>.json`: what the gateway talks to: its config template, where each secret comes from (`from` a file, `key` when the line there has another name: `{"from": "~/.env_secrets", "key": "AWS_BEARER_TOKEN_BEDROCK_GOV"}`), extra environment, the template values, the egress allowlist, and `automations` (`{"fleet-digest": {"model": ..., "thinking": ...}}`: a role automation moved to a model this profile's providers have) | `~/.openclaw-manager/.env` (0600, created once; only the profile's names) |
-| `roles/<r>/role.json`: default profile, heartbeat prompt and `heartbeatThinking` (the sweep's effort: OpenClaw's heartbeat config takes a model but no thinking level, and a `/think` directive in the prompt never reaches the turn, so the launcher exports `OPENCLAW_HEARTBEAT_THINKING` and the `heartbeat-thinking` patch passes it as the run's level), duties with their automations, model and thinking (setup creates, edits in place, enables and disables them) | the rendered config, `bin/run-gateway` and `openclaw automations` |
+| `roles/<r>/role.json`: default profile, the `automations` every install owns (the `sweep`: Program 1's cron, prompt, model and thinking — an ordinary Automation since heartbeat config was retired in OpenClaw 2026.11.5, migrated by `openclaw doctor --fix` on an upgrade and created directly by setup on a fresh install), and duties with their own automations, model and thinking (setup creates, edits in place, enables and disables them) | the rendered config, `bin/run-gateway` and `openclaw automations` |
 | `roles/<r>/AGENTS.md` (standing orders, every run), `roles/<r>/MEMORY.md` and `workspace/{SOUL,USER,IDENTITY}.md` (seeded once; the manager's own memory afterwards) | `~/.openclaw-manager/workspace/` |
 | `workspace/<profile>/<file>`: a profile's own seed, used instead of `workspace/<file>` | `~/.openclaw-manager/workspace/` |
 | `bin/ro`: a read-only helper shell (`ro help`), kept as a quick way to look without side effects | `~/.openclaw-manager/bin/ro` |
@@ -77,7 +77,7 @@ generated wrappers do the same for the gateway and for `oc` run by hand: they re
 
 Drover runs on many kinds of machines, so the code knows no identity, box or provider: a box without
 `~/.openclaw-manager` has no manager and every console op says `configured: false`. Every manager runs
-the same role (`roles/manager/`: one set of standing orders, one heartbeat prompt, tools); what one
+the same role (`roles/manager/`: one set of standing orders, one sweep automation, tools); what one
 install covers is its scope, given to setup and kept in its manifest:
 
 - `--scope local` (this host only) or `--scope all` (every host in `drover_fleet` it reaches), with
@@ -155,17 +155,19 @@ alias stays the UltraFast Sol row). The first fallback is now `amazon-bedrock-ma
 `/model` pick only, once `~/.dotfiles/cliproxyapi/gen-config.sh` carries that alias on this host). The old
 `openai.gpt-6.1-sol` and `openai.gpt-6-astra` rows stay defined (unused by the defaults) so an explicit
 `/model` pick still resolves to them. There is no GPT-6.2 Luna or Terra on Bedrock; Luna stays
-`openai.gpt-6-luna` for compaction/flush/heartbeat/dreaming, untouched by this move.
+`openai.gpt-6-luna` for compaction/flush/sweep/dreaming, untouched by this move.
 
 Context budget (2026-10-30): the Sol Standard row sets `contextWindow: 128000` so OpenClaw's
 auto-compaction (default ~20k reserve) fires near ~108k tokens instead of waiting for the 272k Mantle
 cap. `contextPruning.mode: cache-ttl` (30m, hardClear on) trims old tool results; compaction also has
 `midTurnPrecheck`, `maxActiveTranscriptBytes: 2mb`, and an earlier memory flush (`softThresholdTokens:
-20000`, `forceFlushTranscriptBytes: 1mb`). Compaction / flush / heartbeat / dreaming stay on Luna.
+20000`, `forceFlushTranscriptBytes: 1mb`). Compaction / flush / sweep / dreaming stay on Luna.
 
-Efforts (2026-10-21): chats run at `thinkingDefault: max`, the sweep on Luna at the role's
-`heartbeatThinking` (`high`), the `fleet-digest` on GPT-6.1 Sol (Mantle standard tier) at `max`, and
-compaction at `low`; `drover manager status` shows the sweep's level next to its model. A run lowers a
+Efforts (2026-10-21; the sweep moved from heartbeat config to an ordinary Automation on the move to
+OpenClaw 2026.11.6, same level): chats run at `thinkingDefault: max`, the `sweep` automation on Luna at its own `thinking`
+(`high`, set in `roles/<r>/role.json`), the `fleet-digest` on GPT-6.1 Sol (Mantle standard tier) at
+`max`, and compaction at `low`; `drover manager status` lists the sweep in the automations table next
+to its model, the way it already did for the digest. A run lowers a
 level its model row does not list (`compat.supportedReasoningEfforts`) to the highest listed one below
 it, so the row caps every run on that model: the Sol Standard row lists `max` for the digest, Luna's stops at
 `high`. Mantle itself accepts `max` for both (`/openai/v1/responses`, probed 2026-10-21).
