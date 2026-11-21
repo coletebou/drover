@@ -1389,10 +1389,8 @@ hosts and a fake manager gateway that streams (`test/fake-gateway.js`; a message
 8 s, "fail " fails, "echo " echoes). Tokens are copied from the real state dir, so a paired client works against it.
 A dialog comes back about 12 s after it is answered. Nothing in it can reach a real session, pane or host: its
 codex, docker and ssh are stand-ins (`test/showcase/fake-*.js`), every tmux server it starts or stops is named by
-socket, and it stops unless the daemon sees only its own hosts, only its own plugin and only its own tmux session.
-That plugin (`test/devworld-plugin`) stands in for `tmux.captureMany` (the world's own panes, colors kept) and
-`prompts.*` (synthetic records across its hosts) until the daemon serves them; a plugin can add ops but never replace
-one, so the daemon's own answer wins once it has them. `--bots
+socket, and it stops unless the daemon sees only its own hosts, no plugin and only its own tmux session. Each of its
+hosts starts with synthetic prompts in its prompt spool, so the Prompts workspace has history to page through. `--bots
 <port>` also runs the bot gateway on that loopback port (its own public origin, plain http) and keeps the bots in the
 world's state, so a script can be a Grok bot end to end: sign in, get approved with the world's `drover bots`, call the
 tools, and take Routine webhooks on loopback.

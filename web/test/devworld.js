@@ -2,9 +2,9 @@
 // dialog, stream a manager reply, watch a chat grow) without any risk to the real ones. It sets up, under one
 // directory: a private tmux server (its own TMUX_TMPDIR) whose windows run test/fake-agent.js (a permission
 // dialog, a question, a busy session, an idle one), a Claude config dir whose registry and transcripts are
-// theirs (with synthetic history: text, tool calls, results, an error), an empty truth file, no fleet hosts and one
-// plugin, its own (test/devworld-plugin: stand-ins for tmux.captureMany and prompts.* until the daemon serves them,
-// answering from the world's tmux server and synthetic prompts), stand-in claude, codex, docker and ssh commands (test/showcase/fake-*.js: no Codex thread, no
+// theirs (with synthetic history: text, tool calls, results, an error), an empty truth file, no fleet hosts
+// and no plugins, synthetic prompts in each host's prompt spool (the Prompts workspace reads them through the real
+// prompts.* ops), stand-in claude, codex, docker and ssh commands (test/showcase/fake-*.js: no Codex thread, no
 // container, no host answers), the fake manager gateway (test/fake-gateway.js), and a daemon from this
 // checkout (so its web UI too) on --port. Tokens are copied from the real state dir so clients reuse them.
 // --showcase builds the showcase world instead (test/showcase/world.js): three hosts, every engine, docker stacks and
@@ -19,6 +19,7 @@ import { mkdirSync, rmSync, writeFileSync, copyFileSync, existsSync, chmodSync, 
 import { tmpdir } from 'node:os';
 import { randomUUID, createHash } from 'node:crypto';
 import path from 'node:path';
+import { localShortName } from '../core/hosts.js';
 import { fileURLToPath } from 'node:url';
 import { startFakeGateway } from './fake-gateway.js';
 import { startFakeHermes } from './fake-hermes.js';
@@ -113,15 +114,14 @@ for (const k of ['TMUX', 'TMUX_PANE', 'DROVER_BOTS_URL', 'DROVER_BIND', 'APXW_ST
 // A GIT_DIR, GIT_WORK_TREE or GIT_INDEX_FILE from the caller would point every git call here (the world's checkouts,
 // the daemon's look at a stack's code) at the caller's own repository.
 for (const k of Object.keys(inherited)) if (k.startsWith('GIT_')) delete inherited[k];
-// What every daemon here runs with: only the world's own plugin (a list naming it alone, not the default plugin
-// directory: another plugin's hosts would be real hosts here, and a press or a message on one of them would go to a
+// What every daemon here runs with: no plugins (an empty list, not the default plugin directory: a plugin's hosts
+// would be real hosts here, and a press or a message on one of them would go to a
 // real session; its ops would reach real services), no secrets file, no search index, and the stand-ins first on PATH.
-const OWN_PLUGIN = path.join(HERE, 'devworld-plugin');
 const isolated = {
   ...inherited,
   PATH: `${path.join(DIR, 'bin')}:${process.env.PATH}`,
   DROVER_DOTFILES: path.join(DIR, 'dotfiles'), DROVER_EVENTS: path.join(DIR, 'dotfiles', 'claude', 'drover-events.jsonl'),
-  DROVER_SECRETS_FILE: '/dev/null', DROVER_SEARCH: 'off', DROVER_PLUGINS: OWN_PLUGIN, DEVWORLD_PROMPTS: path.join(DIR, 'prompts.json'),
+  DROVER_SECRETS_FILE: '/dev/null', DROVER_SEARCH: 'off', DROVER_PLUGINS: '',
   DROVER_DOCKER: path.join(DIR, 'bin', 'docker'), DEVWORLD_CONTAINERS: path.join(DIR, 'containers.jsonl'), DEVWORLD_HOSTS: path.join(DIR, 'hosts.json'),
 };
 const show = SHOWCASE ? (await import('./showcase/world.js')).prepare({ dir: DIR, root: ROOT, base: isolated, home: SHOW_HOME }) : null;
@@ -189,7 +189,7 @@ for (const r of remotes) {
   startAgents(r.env, r.agents, r.dir, 'work', show.home, r.socks);
 }
 
-// ------------------------------------------------------------ synthetic prompts (the Prompts workspace, test/devworld-plugin)
+// ------------------------------------------------------------ synthetic prompts (the Prompts workspace)
 // Each agent's first prompt (the one its transcript starts with) on its own host and session, then a few days of
 // invented ones across hosts, engines, labels and where they came from. '@front' is the daemon's own host.
 {
@@ -231,15 +231,19 @@ for (const r of remotes) {
   SAMPLES.forEach(([engine, cwd, text, extra = {}], i) => prompts.push(rec(hostAt(i), engine, null, path.join(home, cwd), 60 + i * 175 + (i % 4) * 23, text, extra)));
   // Older history, so the list pages (Prompts scrolls with `before`): a week of short asks.
   for (let i = 0; i < 260; i++) prompts.push(rec(hostAt(i + 3), ['claude', 'codex', 'claude', 'hermes'][i % 4], null, path.join(home, ['code/demo', 'code/webapp', 'code/api', 'notes'][i % 4]), 3600 + i * 37, `${['Run the tests again', 'Check the build on the last commit', 'Tidy the imports in', 'Summarise the open issues for'][i % 4]} ${['the parser', 'the web app', 'the API', 'the notes'][i % 4]} (${i + 1})`, { label: i % 4 === 3 ? 'personal' : 'work', via: i % 11 === 0 ? 'queued' : 'typed' }));
-  writeFileSync(path.join(DIR, 'prompts.json'), JSON.stringify({
-    hosts: [{ name: '@front' }, ...remotes.map((r) => ({ name: r.name })), ...(show ? [{ name: 'spare', down: 'ssh: connect to host spare port 22: Operation timed out' }] : [])],
-    sinks: [
-      { name: 'personal', type: 'git', lastSync: at(25), lastError: null, pending: 0 },
-      { name: 'work', type: 'git', lastSync: at(130), lastError: null, pending: 4 },
-      { name: 'sealed', type: 'command', lastSync: null, lastError: 'cpt-sync is not on PATH', pending: 12 },
-    ],
-    prompts,
-  }), { mode: 0o600 });
+  // Written where each host's daemon keeps its spool ($DROVER_STATE/prompts/<day>.jsonl, core/prompts.js), so the real
+  // prompts.list fans out, merges and pages them; the front host's records carry the name its daemon gives itself.
+  const me = show?.front?.env?.DROVER_HOST ?? localShortName();
+  const stateOf = (host) => (host === '@front' ? path.join(DIR, 'state') : remotes.find((r) => r.name === host)?.env?.DROVER_STATE ?? null);
+  const files = new Map();
+  for (const p of prompts) {
+    const dir = stateOf(p.host); if (!dir) continue;   // 'spare' never answers: nothing to read it from
+    const rec = { ...p, host: p.host === '@front' ? me : p.host };
+    const f = path.join(dir, 'prompts', `${rec.ts.slice(0, 10)}.jsonl`);
+    if (!files.has(f)) files.set(f, []);
+    files.get(f).push(JSON.stringify(rec));
+  }
+  for (const [f, lines] of files) { mkdirSync(path.dirname(f), { recursive: true, mode: 0o700 }); writeFileSync(f, `${lines.join('\n')}\n`, { mode: 0o600 }); }
 }
 
 // ------------------------------------------------------------ gateway and daemon
@@ -289,7 +293,7 @@ for (let i = 0; i < 100 && daemon.exitCode === null; i++) {
   await new Promise((r) => setTimeout(r, 200));
 }
 if (daemon.exitCode !== null || !ownDaemon()) { console.error(`[devworld] the daemon started here is not the one answering on port ${PORT}, stopping`); await stop(1); }
-// It runs only isolated: its own hosts alone (this one, and the showcase's pretend ones), no plugin but its own, and its
+// It runs only isolated: its own hosts alone (this one, and the showcase's pretend ones), no plugin loaded, and its
 // own tmux server alone (a daemon that reached the owner's would answer and type into their real sessions),
 // whatever the daemon's own defaults become.
 const op = async (name) => {
@@ -300,7 +304,7 @@ const seen = (await op('host.list')).result?.map((h) => h.name) ?? null;
 let loaded = null;
 try { loaded = (await (await fetch(`http://127.0.0.1:${PORT}/api/ops`, { headers: { authorization: `Bearer ${token}` } })).json()).plugins?.map((p) => p.name) ?? null; } catch { /* no answer: not isolated */ }
 const sessions = (await op('tmux.sessions')).result?.map((x) => x.name) ?? null;
-if (JSON.stringify(seen) !== JSON.stringify(show?.expectedHosts ?? ['local']) || JSON.stringify(loaded) !== JSON.stringify(['devworld']) || JSON.stringify(sessions) !== JSON.stringify([show ? 'work' : 'demo'])) {
+if (JSON.stringify(seen) !== JSON.stringify(show?.expectedHosts ?? ['local']) || !Array.isArray(loaded) || loaded.length || JSON.stringify(sessions) !== JSON.stringify([show ? 'work' : 'demo'])) {
   console.error(`[devworld] not isolated, stopping: hosts ${JSON.stringify(seen)}, plugins ${JSON.stringify(loaded)}, tmux sessions ${JSON.stringify(sessions)}`);
   await stop(1);
 }

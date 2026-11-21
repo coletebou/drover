@@ -59,7 +59,7 @@ export default {
     function draw(now) {
       const { W, H, dpr } = size();
       const board = boardOf(ctx);
-      lay = layout(board, { showIdle, now: Date.now(), frontHost: 'local' });
+      lay = layout(board, { showIdle, now: Date.now(), frontHost: 'local', localLabel: ctx.state?.frontHost ?? null });
       if (!cam) { cam = createCamera(lay); if (reduced()) cam.drift = false; }
       const scene = buildScene(lay, { t: reduced() ? 0 : now / 1000, selected: selectedId(), hovered, labels });
       proj = project(scene, cam, W, H);

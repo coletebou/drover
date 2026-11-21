@@ -8,7 +8,7 @@
 // one Lanes, List, Windows and Wall show; no key here ever answers a dialog.
 import { layout, buildScene, project, createCamera, resetCamera, orbit, zoom, pan, focusOn, stepCamera, resolveId, agentOrder, pulsing, PALETTE, hex } from '../../ui/space-scene.js';
 import { clusters, clusterWidth, truncate, oneLine, strWidth } from '../width.js';
-import { hints, ago, block, cut } from '../ui.js';
+import { hints, ago, block } from '../ui.js';
 import { tileRows } from './wall.js';
 import { parseAnsi } from '../../ui/ansi.js';
 import { rowWidth } from '../screen.js';
@@ -111,6 +111,13 @@ export function cellsToRows(r, labels, { mono = false, cols = r.W, rows = Math.c
     }
     return segs.map((s) => [s.t, mono ? null : { ...(s.f ? { fg: s.f } : {}), ...(s.b ? { bg: s.b } : {}) }]);
   });
+}
+
+/** Segments cut to w columns with no ellipsis (the scene is cut under the inset, not text). */
+function clip(segs, w) {
+  const out = []; let used = 0;
+  for (const [t, st] of segs) { if (used >= w) break; const tw = strWidth(t); if (used + tw <= w) { out.push([t, st]); used += tw; } else { out.push([truncate(t, w - used, ''), st]); used = w; } }
+  return out;
 }
 
 export class SpaceView {
@@ -271,10 +278,10 @@ export class SpaceView {
   render(width, height) {
     const board = this.app.board ?? { strips: [] };
     const now = Date.now();
-    this.lay = layout(board, { showIdle: this.showIdle, now, frontHost: this.app.frontHost ?? 'local' });
+    this.lay = layout(board, { showIdle: this.showIdle, now, frontHost: this.app.frontHost ?? 'local', localLabel: this.app.frontHost ?? null });
     if (!this.cam) this.cam = createCamera(this.lay);
     const t = this.app.board?.totals ?? {};
-    const head = [[' Space', 'bold'], [`  ${this.lay.hosts.length} hosts · ${board.strips?.length ?? 0} agents`, 'dim'], ...(t.waiting ? [[`  ${t.waiting} waiting`, 'waitBold']] : []), [this.cam.drift ? '  drifting' : '', 'dim']];
+    const head = [[' Space', 'bold'], [`  ${this.lay.hosts.length} hosts · ${this.lay.agents.length} agents`, 'dim'], ...(t.waiting ? [[`  ${t.waiting} waiting`, 'waitBold']] : []), [this.cam.drift ? '  drifting' : '', 'dim']];
     if (board.loading && !board.strips?.length) return block([head, [[' loading the board…', 'dim']]], height);
     const sceneRows = Math.max(3, height - 3);
     this.sceneTop = 1;
@@ -291,7 +298,7 @@ export class SpaceView {
       const cap = this.inset?.key === (sel.key ?? `${sel.host}|${sel.id}`) ? this.inset : null;
       const tile = tileRows(sel, cap, iw, ih, { selected: true, hostLabel: (x) => this.app.hostLabel?.(x) ?? x });
       for (let i = 0; i < ih; i++) {
-        const left = cut(rows[i] ?? [], width - iw - 1);
+        const left = clip(rows[i] ?? [], width - iw - 1);
         const pad = Math.max(0, width - iw - 1 - rowWidth(left));
         const t = tile[i]; const tsegs = Array.isArray(t) ? t : t?.segs ?? [];
         rows[i] = [...left, ...(pad ? [[' '.repeat(pad), { bg: hex(PALETTE.skyTop) }]] : []), [' ', { bg: hex(PALETTE.skyTop) }], ...tsegs];

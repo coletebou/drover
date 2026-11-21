@@ -43,12 +43,12 @@ const LANE_RANK = { wait: 0, work: 1, idle: 2 };
  * host first, then by name), each sized to its agents, agents on a sunflower spiral on their host's disc, waiting
  * ones in the middle. showIdle false leaves idle agents out. now: ms, for heights (recent work stands taller).
  */
-export function layout(board, { showIdle = true, now = 0, frontHost = 'local' } = {}) {
+export function layout(board, { showIdle = true, now = 0, frontHost = 'local', localLabel = null } = {}) {
   // The manager is the core, never a monolith: its strip (engine openclaw, id manager) stays out of the hosts.
   const strips = (board?.strips ?? []).filter((s) => s && s.engine !== 'openclaw' && s.id !== 'manager' && (showIdle || s.lane !== 'idle'));
   const names = new Map();
   for (const h0 of board?.hosts ?? []) { const h = h0?.ui ? { ...h0, name: h0.ui } : h0; if (h?.name) names.set(h.name, { name: h.name, label: h0.name ?? h.name, up: h.up !== false, stale: Boolean(h.stale), error: h.error ?? null }); }
-  for (const s of strips) if (!names.has(s.host ?? 'local')) names.set(s.host ?? 'local', { name: s.host ?? 'local', up: true });
+  for (const s of strips) if (!names.has(s.host ?? 'local')) names.set(s.host ?? 'local', { name: s.host ?? 'local', label: (s.host ?? 'local') === 'local' && localLabel ? localLabel : s.host ?? 'local', up: true });
   const hostList = [...names.values()].sort((a, b) => Number(b.name === frontHost) - Number(a.name === frontHost) || a.name.localeCompare(b.name));
   const byHost = new Map(hostList.map((h) => [h.name, []]));
   for (const s of strips) byHost.get(s.host ?? 'local').push(s);
