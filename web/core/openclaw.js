@@ -35,11 +35,13 @@ async function token() {
   return install.parseEnvFile(await readFile(file, 'utf8')).OPENCLAW_GATEWAY_TOKEN || null;
 }
 
-/** Is the gateway answering on loopback? Any HTTP response counts; auth is not needed to see that it is up. */
+/** Is the gateway answering on loopback? Any HTTP response counts; auth is not needed to see that it is up. It asks
+ * /healthz, not /: since OpenClaw 2026.11.6 every Control UI document render emits openclaw.diagnostic.phase spans,
+ * and listSessions() calls this on every poll, which flooded Langfuse at about 3,450 traces an hour. */
 export async function alive({ timeoutMs = _deps.aliveTimeoutMs } = {}) {
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), timeoutMs);
-  try { await fetch(`${base()}/`, { signal: ctl.signal }); return true; }
+  try { await fetch(`${base()}/healthz`, { signal: ctl.signal }); return true; }
   catch { return false; }
   finally { clearTimeout(t); }
 }
