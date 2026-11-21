@@ -45,16 +45,19 @@ const rule = () => '─'.repeat(W() - 2);
 let runs = 0;   // each appearance of a dialog after the first carries its run number, so each raises its own alert with its own hash
 const PERMISSION = [' Bash command', '', '   npm test', '   Run the unit tests', '', ' Do you want to proceed?', ' ❯ 1. Yes', "   2. Yes, and don't ask again for npm test commands in this project", '   3. No, and tell Claude what to do differently (esc)', '', ' Esc to cancel'];
 const QUESTION = [' ☐ Fixtures', '', ' Should the review cover the test fixtures too?', '', ' ❯ 1. Yes, all of them (Recommended)', '     Review every fixture file under test/fixtures', '   2. Only the new ones', '   3. No, skip fixtures', '   4. Type something.', '', ' Enter to select · ↑/↓ to navigate · Esc to cancel'];
+// Colors as Claude Code draws them (SGR: a green bullet, a blue selected option, a dim rule and footer, an orange
+// spinner), for the Wall's live tiles. Never inside the input box: Drover reads what was typed there by its faintness.
+const C = { bullet: (t) => `\x1b[38;5;114m${t}\x1b[0m`, sel: (t) => `\x1b[38;5;111m${t}\x1b[0m`, dim: (t) => `\x1b[2m${t}\x1b[22m`, spin: (t) => `\x1b[38;5;209m${t}\x1b[0m`, warn: (t) => `\x1b[38;5;203m${t}\x1b[0m`, bold: (t) => `\x1b[1m${t}\x1b[22m` };
 function draw() {
-  const out = ['\x1b[2J\x1b[H', `⏺ ${NAME}: working in ${CWD.replace(process.env.HOME ?? '\0', '~')}`, ''];
+  const out = ['\x1b[2J\x1b[H', `${C.bullet('⏺')} ${C.bold(NAME)}: working in ${C.dim(CWD.replace(process.env.HOME ?? '\0', '~'))}`, ''];
   if (screen === 'dialog' || screen === 'question') {
     const lines = (screen === 'dialog' ? PERMISSION : QUESTION).map((l) => (runs < 2 ? l : l.replace(/^   npm test$/, `   npm test   # run ${runs}`).replace(/^ Should the review cover the test fixtures too\?$/, ` Should the review cover the test fixtures too (ask ${runs})?`))).map((l) => l.replace(/^ ( *)(❯ |  )(\d)\./, (m, sp, mark, n) => ` ${sp}${Number(n) - 1 === selected ? '❯ ' : '  '}${n}.`));
     // As Claude Code draws a dialog: a rule above, the lines flush left, no side borders.
-    out.push(rule(), ...lines);
+    out.push(C.dim(rule()), ...lines.map((l) => (/^ +❯ /.test(l) ? C.sel(l) : /^ (Do you want|Should the review)/.test(l) ? C.bold(l) : l)));
   } else if (screen === 'busy') {
-    out.push('⏺ Bash(npm run build)', '  ⎿  compiling 14 modules', '', `${'✻✳✢·'[spin % 4]} ${TASK}… (${Math.round((Date.now() - startedAt) / 1000)}s · esc to interrupt)`);
+    out.push(`${C.bullet('⏺')} ${C.bold('Bash')}(npm run build)`, C.dim('  ⎿  compiling 14 modules'), '', `${C.spin(`${'✻✳✢·'[spin % 4]} ${TASK}…`)} ${C.dim(`(${Math.round((Date.now() - startedAt) / 1000)}s · esc to interrupt)`)}`);
   } else {
-    out.push(DONE, '', `╭${rule()}╮`, `│ > ${' '.repeat(W() - 6)}│`, `╰${rule()}╯`, '  ? for shortcuts                                             bypass permissions on');
+    out.push(DONE, '', `╭${rule()}╮`, `│ > ${' '.repeat(W() - 6)}│`, `╰${rule()}╯`, `${C.dim('  ? for shortcuts')}                                             ${C.warn('bypass permissions on')}`);
   }
   process.stdout.write(out.join('\r\n'));
 }

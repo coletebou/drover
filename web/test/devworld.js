@@ -3,7 +3,8 @@
 // directory: a private tmux server (its own TMUX_TMPDIR) whose windows run test/fake-agent.js (a permission
 // dialog, a question, a busy session, an idle one), a Claude config dir whose registry and transcripts are
 // theirs (with synthetic history: text, tool calls, results, an error), an empty truth file, no fleet hosts
-// and no plugins, stand-in claude, codex, docker and ssh commands (test/showcase/fake-*.js: no Codex thread, no
+// and no plugins, synthetic prompts in each host's prompt spool (the Prompts workspace reads them through the real
+// prompts.* ops), stand-in claude, codex, docker and ssh commands (test/showcase/fake-*.js: no Codex thread, no
 // container, no host answers), the fake manager gateway (test/fake-gateway.js), and a daemon from this
 // checkout (so its web UI too) on --port. Tokens are copied from the real state dir so clients reuse them.
 // --showcase builds the showcase world instead (test/showcase/world.js): three hosts, every engine, docker stacks and
@@ -16,8 +17,9 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdirSync, rmSync, writeFileSync, copyFileSync, existsSync, chmodSync, readFileSync, realpathSync, lstatSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import path from 'node:path';
+import { localShortName } from '../core/hosts.js';
 import { fileURLToPath } from 'node:url';
 import { startFakeGateway } from './fake-gateway.js';
 import { startFakeHermes } from './fake-hermes.js';
@@ -113,8 +115,8 @@ for (const k of ['TMUX', 'TMUX_PANE', 'DROVER_BOTS_URL', 'DROVER_BIND', 'APXW_ST
 // the daemon's look at a stack's code) at the caller's own repository.
 for (const k of Object.keys(inherited)) if (k.startsWith('GIT_')) delete inherited[k];
 // What every daemon here runs with: no plugins (an empty list, not the default plugin directory: a plugin's hosts
-// would be real hosts here, and a press or a message on one of them would go to a real session; its ops would reach
-// real services), no secrets file, no search index, and the stand-ins first on PATH.
+// would be real hosts here, and a press or a message on one of them would go to a
+// real session; its ops would reach real services), no secrets file, no search index, and the stand-ins first on PATH.
 const isolated = {
   ...inherited,
   PATH: `${path.join(DIR, 'bin')}:${process.env.PATH}`,
@@ -185,6 +187,63 @@ const remotes = (show?.remotes ?? []).map((r) => ({ ...r, agents: r.agents.map((
 for (const r of remotes) {
   for (const a of r.agents) seed(a, r.env.CLAUDE_CONFIG_DIR);
   startAgents(r.env, r.agents, r.dir, 'work', show.home, r.socks);
+}
+
+// ------------------------------------------------------------ synthetic prompts (the Prompts workspace)
+// Each agent's first prompt (the one its transcript starts with) on its own host and session, then a few days of
+// invented ones across hosts, engines, labels and where they came from. '@front' is the daemon's own host.
+{
+  const home = show?.home ?? DIR;
+  const tilde = (p) => (p && p.startsWith(home + path.sep) ? `~/${path.relative(home, p)}` : p);
+  const pid = (host, engine, session, ts, text) => `p_${createHash('sha1').update(`${host}|${engine}|${session}|${ts}|${text}`).digest('hex').slice(0, 16)}`;
+  const at = (minutesAgo) => new Date(Date.now() - minutesAgo * 60_000).toISOString();
+  const rec = (host, engine, session, cwd, minutesAgo, text, extra = {}) => {
+    const ts = at(minutesAgo);
+    return { v: 1, id: pid(host, engine, session, ts, text), ts, host, engine, session, cwd: tilde(cwd), project: cwd ? path.basename(cwd) : null, label: extra.label ?? 'work', via: extra.via ?? 'typed', text };
+  };
+  const prompts = [];
+  for (const a of AGENTS) prompts.push(rec('@front', 'claude', a.sid, a.cwd ?? path.join(DIR, 'work', a.name), 40, `Make the demo parser keep line numbers in its errors, then run the tests. (${a.name})`));
+  for (const r of remotes) for (const a of r.agents) prompts.push(rec(r.name, 'claude', a.sid, a.cwd, 38, `Make the demo parser keep line numbers in its errors, then run the tests. (${a.name})`));
+  const other = show ? remotes.map((r) => r.name) : [];
+  const hostAt = (i) => (other.length && i % 3 === 1 ? other[i % other.length] : i % 7 === 5 && show ? 'spare' : '@front');
+  const SAMPLES = [
+    ['claude', 'code/demo', 'Why does the lexer count lines from 0? Fix it and add a test that fails before the fix.'],
+    ['codex', 'code/webapp', 'Review the login form for accessibility: labels, focus order, error messages read by a screen reader.'],
+    ['claude', 'code/docs', 'Rewrite the setup guide for someone who has never used a terminal.\n\nKeep it to one page, number the steps, and put every command in its own block.'],
+    ['hermes', 'notes', 'Sort the notes into projects, people and reference; leave anything you are unsure about in an inbox folder.', { label: 'personal' }],
+    ['claude', 'src/lint', 'continue', { via: 'drover' }],
+    ['claude', 'code/demo', 'status?', { via: 'drover' }],
+    ['codex', 'code/webapp', 'The checkout page flickers on slow networks. Find out why before changing anything, and tell me what you would change.'],
+    ['claude', 'code/demo', 'Once the tests pass, open a pull request with a short description: the problem, the fix, how you checked it.', { via: 'queued' }],
+    ['claude', 'code/api', 'Launch: add rate limiting to the public API (token bucket per key, 429 with Retry-After), with tests.', { via: 'headless' }],
+    ['claude', 'code/demo', 'The reviewer asks whether the parser change also covers the CLI. Can you check and answer them?', { via: 'peer' }],
+    ['codex', 'code/garden', 'Plan the vegetable beds for spring: what goes where, given the shade from the fence after 3 pm.', { label: 'personal' }],
+    ['claude', 'code/docs', 'go ahead', { via: 'drover' }],
+    ['claude', 'code/api', 'Profile the search endpoint under 50 concurrent requests and report p50, p95 and p99 before and after the index change.'],
+    ['hermes', 'notes', 'What did I decide about the reading list last week? Summarise it in three lines.', { label: 'personal' }],
+    ['claude', 'code/webapp', 'Delete the feature flag for the old dashboard and every code path behind it; the new one has been on for a month.'],
+    ['codex', 'code/demo', 'Explain the tokenizer to a new contributor, with one example input and the tokens it produces.'],
+    ['claude', 'src/lint', 'Fix the lint errors in the API package only; do not touch the generated files.'],
+    ['claude', 'code/demo', 'yes', { via: 'drover' }],
+    ['claude', 'code/webapp', 'Write release notes for 0.4 from the merged pull requests since 0.3: features first, then fixes, one line each.'],
+    ['codex', 'code/api', 'The nightly job timed out twice this week. Look at its last three runs and tell me what is slow.'],
+  ];
+  SAMPLES.forEach(([engine, cwd, text, extra = {}], i) => prompts.push(rec(hostAt(i), engine, null, path.join(home, cwd), 60 + i * 175 + (i % 4) * 23, text, extra)));
+  // Older history, so the list pages (Prompts scrolls with `before`): a week of short asks.
+  for (let i = 0; i < 260; i++) prompts.push(rec(hostAt(i + 3), ['claude', 'codex', 'claude', 'hermes'][i % 4], null, path.join(home, ['code/demo', 'code/webapp', 'code/api', 'notes'][i % 4]), 3600 + i * 37, `${['Run the tests again', 'Check the build on the last commit', 'Tidy the imports in', 'Summarise the open issues for'][i % 4]} ${['the parser', 'the web app', 'the API', 'the notes'][i % 4]} (${i + 1})`, { label: i % 4 === 3 ? 'personal' : 'work', via: i % 11 === 0 ? 'queued' : 'typed' }));
+  // Written where each host's daemon keeps its spool ($DROVER_STATE/prompts/<day>.jsonl, core/prompts.js), so the real
+  // prompts.list fans out, merges and pages them; the front host's records carry the name its daemon gives itself.
+  const me = show?.front?.env?.DROVER_HOST ?? localShortName();
+  const stateOf = (host) => (host === '@front' ? path.join(DIR, 'state') : remotes.find((r) => r.name === host)?.env?.DROVER_STATE ?? null);
+  const files = new Map();
+  for (const p of prompts) {
+    const dir = stateOf(p.host); if (!dir) continue;   // 'spare' never answers: nothing to read it from
+    const rec = { ...p, host: p.host === '@front' ? me : p.host };
+    const f = path.join(dir, 'prompts', `${rec.ts.slice(0, 10)}.jsonl`);
+    if (!files.has(f)) files.set(f, []);
+    files.get(f).push(JSON.stringify(rec));
+  }
+  for (const [f, lines] of files) { mkdirSync(path.dirname(f), { recursive: true, mode: 0o700 }); writeFileSync(f, `${lines.join('\n')}\n`, { mode: 0o600 }); }
 }
 
 // ------------------------------------------------------------ gateway and daemon

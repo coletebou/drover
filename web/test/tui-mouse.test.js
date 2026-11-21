@@ -9,7 +9,7 @@ import { BoardView } from '../tui/views/board.js';
 import { SessionView } from '../tui/views/session.js';
 import { TableView } from '../tui/views/table.js';
 import { Palette, Help, Prompt } from '../tui/views/overlays.js';
-import { App, MAIN } from '../tui/app.js';
+import { App } from '../tui/app.js';
 import { rowText } from '../tui/screen.js';
 import { hintKey } from '../tui/ui.js';
 import { Composer } from '../tui/composer.js';
@@ -204,16 +204,23 @@ function fakeApp({ cols = 160, rows = 45 } = {}) {
   return { app, term, frames, last: () => { app.draw(); return frames.at(-1); }, stop: () => { clearInterval(app.boardTimer); clearTimeout(app.boardSoon); app.stream?.close(); } };
 }
 
-test('app: a click on a tab goes there, on " drover " opens the palette, on a footer hint presses its key', () => {
+test('app: a click on a workspace tab goes there, on a sub-tab to that sub-view, on " drover " opens the palette, on a footer hint presses its key', () => {
   const f = fakeApp();
   try {
     let frame = f.last();
     const bar = rowText(frame[0]);
-    f.app.mouse(click(bar.indexOf('2 Board'), 0));
-    assert.equal(MAIN[f.app.cur], 'board');
+    f.app.mouse(click(bar.indexOf('2 Agents'), 0));
+    assert.equal(f.app.where(), 'agents/lanes');
     frame = f.last();
-    f.app.mouse(click(rowText(frame[0]).indexOf('6 Events') + 2, 0));
-    assert.equal(MAIN[f.app.cur], 'events');
+    f.app.mouse(click(rowText(frame[0]).indexOf('6 Find') + 2, 0));
+    assert.equal(f.app.where(), 'find/search', 'a workspace opens on its first sub-view');
+    frame = f.last();
+    assert.match(rowText(frame[1]), /Search\s+Memory\s+Events/, 'the sub-tab row under the tab bar');
+    f.app.mouse(click(rowText(frame[1]).indexOf('Events') + 1, 1));
+    assert.equal(f.app.where(), 'find/events', 'a click on a sub-tab');
+    f.app.mouse(click(rowText(f.last()[0]).indexOf('2 Agents') + 1, 0));
+    f.app.mouse(click(rowText(f.last()[0]).indexOf('6 Find') + 1, 0));
+    assert.equal(f.app.where(), 'find/events', 'a workspace shows the sub-view it showed last');
     f.app.mouse(click(1, 0));
     assert.ok(f.app.modal instanceof Palette, 'the name opens the palette');
     f.app.mouse(click(0, 44));
@@ -228,9 +235,9 @@ test('app: a click on a tab goes there, on " drover " opens the palette, on a fo
     assert.ok(f.app.modal instanceof Help, 'a hint\'s words are part of its button');
     f.app.closeModal();
     f.app.mouse(click(rowText(f.last().at(-1)).indexOf('j/k'), 44));
-    assert.equal(f.app.modal, null); assert.equal(MAIN[f.app.cur], 'manager', 'j/k names two keys: no button');
+    assert.equal(f.app.modal, null); assert.equal(f.app.where(), 'manager/manager', 'j/k names two keys: no button');
     f.app.mouse(wheel(1, 3, 0));
-    assert.equal(MAIN[f.app.cur], 'manager', 'the wheel on the bar does nothing');
+    assert.equal(f.app.where(), 'manager/manager', 'the wheel on the bar does nothing');
   } finally { f.stop(); }
 });
 
@@ -246,13 +253,16 @@ test('app: the palette turns the mouse off and on', () => {
   } finally { f.stop(); }
 });
 
-test('the terminal asks for clicks and the wheel (SGR) and gives them back on every way out', () => {
+test('the terminal asks for clicks, the wheel and motion (SGR) and gives them back on every way out', () => {
   const out = []; const input = { isTTY: true, setRawMode() {}, on() {}, off() {}, resume() {}, pause() {} };
   const output = { isTTY: true, columns: 80, rows: 24, write: (s) => out.push(s), on() {}, off() {} };
   const t = new Terminal({ input, output });
   t.start();
-  assert.ok(out.join('').includes(MOUSE_ON) && MOUSE_ON === '\x1b[?1000h\x1b[?1006h', 'press, release and wheel in SGR; no motion tracking');
+  // The intended behavior changed with hover: any-motion tracking (1003) is on with the rest, and off with the rest.
+  assert.ok(out.join('').includes(MOUSE_ON) && MOUSE_ON === '\x1b[?1000h\x1b[?1003h\x1b[?1006h', 'press, release, the wheel and motion, in SGR');
+  assert.equal(MOUSE_OFF, '\x1b[?1006l\x1b[?1003l\x1b[?1000l', 'every mode turned on is turned off');
   t.setMouse(false); assert.ok(out.at(-1) === MOUSE_OFF);
+  t.setMouse(true); assert.ok(out.at(-1) === MOUSE_ON, 'back on: motion too');
   t.stop(); assert.ok(out.at(-1).startsWith(MOUSE_OFF));
   out.length = 0;
   new Terminal({ input, output, mouse: false }).start();

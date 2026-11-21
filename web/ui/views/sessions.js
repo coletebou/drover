@@ -1,21 +1,41 @@
-// Sessions on the selected host: live Claude and Codex, headless agents, then
-// recent transcripts. One table, filters, the drawer for details.
+// Agents › List: sessions on the selected host: live Claude and Codex, headless agents, then recent transcripts.
+// One table, filters, the drawer for details. The survey (survey-item rows in the truth file) folds in below as a
+// panel the Survey button shows (#/agents/list/survey, where the old #/survey lands). The selected agent
+// (ctx.selected(), shared with Lanes, Windows, Wall and Space) is marked when it is a session on this host.
 import { h, clear, engine, dot, ago, chip, seg, matchQ, empty, loading, shortPath, toMs, plural } from '../dom.js';
+import survey from './survey.js';
+
+const SURVEY_KEY = 'drover.list.survey';
 
 function nameOf(s) { if (s.name) return s.name; if (s.preview) return String(s.preview).slice(0, 80); if (s.slug) return s.slug.replace(/^-/, '').split('-').filter(Boolean).slice(-2).join('/'); return String(s.id).slice(0, 8); }
 function updatedOf(s) { return s.statusUpdatedAt ?? s.updatedAt ?? s.mtime ?? s.startedAt ?? s.createdAt ?? null; }
 
 export default {
-  id: 'sessions', label: 'Sessions', key: 's', topics: ['snapshot'],
+  id: 'sessions', label: 'List', key: 's', topics: ['snapshot'],
   mount(root, ctx, params) {
-    let sessions = []; let q = ''; let alive = true; let selectedId = params[0] ?? null;
+    const surveyWanted = params[0] === 'survey';
+    let sessions = []; let q = ''; let alive = true; let selectedId = surveyWanted ? null : params[0] ?? null;
+    // The shared selection, when it is a session on this host (and no session was asked for by the address).
+    if (!selectedId) { const st = ctx.board().find((x) => x.key === ctx.selected()); if (st && (st.host ?? 'local') === ctx.host()) selectedId = st.sessionId ?? st.id; }
     const filt = { scope: 'live', engine: '' };
     const meta = h('span', { class: 'muted small' });
-    const head = h('div', { class: 'view-head' }, h('h1', null, 'Sessions'), meta, h('span', { class: 'spacer' }), h('button', { class: 'btn sm', type: 'button', onclick: () => load() }, 'Refresh'));
+    const surveyBtn = h('button', { class: 'btn sm quiet', type: 'button', 'aria-pressed': 'false', title: 'The imported state survey of every agent (survey-item events), below the list', onclick: () => showSurvey(surveyBtn.getAttribute('aria-pressed') !== 'true', true) }, 'Survey');
+    const head = h('div', { class: 'view-head' }, h('h1', null, 'Sessions'), meta, h('span', { class: 'spacer' }), surveyBtn, h('button', { class: 'btn sm', type: 'button', onclick: () => load() }, 'Refresh'));
     const bar = h('div', { class: 'toolbar' });
     const notice = h('div', { class: 'notice', hidden: true });
     const wrap = h('div');
-    root.append(head, bar, notice, wrap);
+    const surveyEl = h('section', { class: 'survey-panel', hidden: true, 'aria-label': 'Survey' });
+    root.append(head, bar, notice, wrap, surveyEl);
+    let surveyCtrl = null;
+    function showSurvey(on, scroll = false) {
+      surveyBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      localStorage.setItem(SURVEY_KEY, on ? '1' : '0');
+      surveyEl.hidden = !on;
+      if (on && !surveyCtrl) { surveyCtrl = survey.mount(surveyEl, ctx, []) ?? {}; if (q) surveyCtrl.search?.(q); }
+      if (!on && surveyCtrl) { surveyCtrl.destroy?.(); surveyCtrl = null; clear(surveyEl); }
+      if (on && scroll) requestAnimationFrame(() => surveyEl.scrollIntoView({ block: 'start' }));
+    }
+    showSurvey(surveyWanted || localStorage.getItem(SURVEY_KEY) === '1', surveyWanted);
 
     function drawBar() {
       clear(bar);
@@ -39,7 +59,9 @@ export default {
       for (const s of vis) {
         const eng = s.kind === 'headless' ? 'headless' : s.engine;
         const open = () => { selectedId = s.id; render(); ctx.open({ kind: 'session', id: s.id, host: ctx.host(), engine: eng, name: s.name, tmux: s.tmux }); };
-        tb.append(h('tr', { tabindex: 0, 'aria-selected': s.id === selectedId ? 'true' : 'false', onclick: open, onkeydown: (e) => { if (e.key === 'Enter') open(); } },
+        const strip = s.live ? ctx.stripFor({ kind: 'session', id: s.id, host: ctx.host() }) : null;
+        const last = strip?.tail?.filter(Boolean).at(-1);
+        tb.append(h('tr', { tabindex: 0, 'aria-selected': s.id === selectedId || (selectedId && s.sessionId === selectedId) ? 'true' : 'false', 'data-peek': [nameOf(s), last ?? (s.cwd ? shortPath(s.cwd, 80) : null)].filter(Boolean).join(': '), onclick: open, onkeydown: (e) => { if (e.key === 'Enter') open(); } },
           h('td', null, engine(eng)),
           h('td', null, h('span', { title: s.id }, nameOf(s)), s.model ? h('span', { class: 'muted small' }, '  ', s.model) : null),
           h('td', null, h('span', { class: 'mark' }, dot(s.live ? s.status : ''), s.live ? s.status : h('span', { class: 'faint' }, s.status === 'transcript' || s.status === 'rollout' ? 'on disk' : s.status))),
@@ -61,13 +83,18 @@ export default {
       } catch (e) { if (!quiet && !sessions.length) { clear(wrap); wrap.append(empty('Could not list sessions', e.message)); } }
     }
     load();
-    if (selectedId) ctx.open({ kind: 'session', id: selectedId, host: ctx.host() });
+    // A session named in the address opens; one carried in as the shared selection is only marked.
+    if (selectedId && params[0] && !surveyWanted) ctx.open({ kind: 'session', id: selectedId, host: ctx.host() });
     const timer = setInterval(() => load(true), 30_000);
     return {
-      destroy() { alive = false; clearInterval(timer); },
-      search(v) { q = v; render(); },
-      params(p) { if (p[0] && p[0] !== selectedId) { selectedId = p[0]; render(); ctx.open({ kind: 'session', id: selectedId, host: ctx.host() }); } },
+      destroy() { alive = false; clearInterval(timer); surveyCtrl?.destroy?.(); },
+      search(v) { q = v; render(); surveyCtrl?.search?.(v); },
+      params(p) {
+        if (p[0] === 'survey') { showSurvey(true, true); return; }
+        if (p[0] && p[0] !== selectedId) { selectedId = p[0]; render(); ctx.open({ kind: 'session', id: selectedId, host: ctx.host() }); }
+      },
       sse(type, data) {
+        try { surveyCtrl?.sse?.(type, data); } catch (e) { console.error('survey sse failed', e); }
         if (type !== 'snapshot' || ctx.host() !== 'local' || !data?.sessions) return;
         const byId = new Map(data.sessions.map((s) => [s.id, s]));
         let changed = false;
@@ -78,6 +105,7 @@ export default {
         const rows = [...root.querySelectorAll('tr[tabindex]')]; if (!rows.length) return;
         const idx = rows.findIndex((r) => r.getAttribute('aria-selected') === 'true');
         if (e.key === 'j' || e.key === 'k') { e.preventDefault(); rows[Math.max(0, Math.min(rows.length - 1, idx + (e.key === 'j' ? 1 : -1)))]?.click(); }
+        if (e.key === 'Enter' && idx >= 0 && e.target.tagName !== 'TR') { e.preventDefault(); rows[idx].click(); }
       },
     };
   },

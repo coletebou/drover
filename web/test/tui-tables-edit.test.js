@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { TABLES, patchFor, parseEdit, editText } from '../tui/views/tables.js';
 import { TableView } from '../tui/views/table.js';
 import { Prompt } from '../tui/views/overlays.js';
-import { MAIN } from '../tui/app.js';
+import { resolveView } from '../tui/app.js';
 
 const settle = () => new Promise((r) => setTimeout(r, 5));
 function app(answers = {}) {
@@ -76,8 +76,8 @@ test('settings: a value the daemon refuses says why and changes nothing here', a
   assert.match(a.toasts.at(-1)[0], /not saved: .*between 0 and 1/);
 });
 
-test('PRs: a view after Tmux; it reads prs.list with its scope and state, which s and t cycle; the detail reads prs.get', async () => {
-  assert.equal(MAIN[MAIN.indexOf('tmux') + 1], 'prs');
+test('PRs: Work › Pulls (the old ids land there); it reads prs.list with its scope and state, which s and t cycle; the detail reads prs.get', async () => {
+  for (const id of ['prs', 'pr', 'pulls', 'work/pulls']) { const r = resolveView(id); assert.deepEqual([r.ws.id, r.sub.id, r.sub.view], ['work', 'pulls', 'prs'], id); }
   const def = TABLES.find((t) => t.id === 'prs');
   const item = { id: 'o/a#3', repo: 'o/a', number: 3, title: 'Fix it', state: 'open', draft: false, roles: ['reviewer'], url: 'https://github.com/o/a/pull/3', updated: '2026-11-10T00:00:00Z', labels: [] };
   const a = app({ 'prs.list': { items: [item] }, 'prs.get': { head: 'fix', base: 'master', mergeable: 'mergeable', reviewDecision: 'review_required', checks: { total: 2, pass: 1, fail: 1, pending: 0, skipped: 0, failing: ['lint'] }, size: { additions: 3, deletions: 1, files: 1 }, reviews: [], recentComments: [] } });

@@ -8,6 +8,31 @@ export const LANES = [['wait', 'Waiting on you'], ['work', 'Working'], ['idle', 
 const ORDER = { wait: 0, work: 1, idle: 2 };
 const ms = (v) => (v == null ? 0 : typeof v === 'number' ? (v < 1e11 ? v * 1000 : v) : Date.parse(v) || 0);
 
+/**
+ * The key a strip is held by wherever an agent can be selected (Lanes, List, Windows, Wall, Space): the daemon's own
+ * strip key (`host|id`), never a position, since lanes re-sort on every board event.
+ */
+export function stripKey(strip) {
+  if (!strip) return null;
+  return strip.key ?? `${strip.host ?? 'local'}|${strip.kind === 'window' ? strip.tmux ?? strip.id : strip.sessionId ?? strip.id}`;
+}
+
+// A tmux target as session:@window (or the target itself), so work:@1.%1 and work:@1 are one window.
+const windowOf = (t) => { const m = String(t ?? '').match(/^(.+?):(@\d+)/); return m ? `${m[1]}:${m[2]}` : (t || null); };
+
+/**
+ * The strip for a session or a window seen elsewhere (a Sessions row, a Tmux row, a prompt): on that host only (two
+ * hosts can both have a work:1; this machine is 'local' or its own name), by the session first, by the window second.
+ */
+export function stripFor(strips, { host = 'local', sessionId = null, tmux = null } = {}, frontHost = null) {
+  const hk = (h) => (!h || h === 'local' || h === frontHost ? 'local' : h);
+  const here = (strips ?? []).filter((s) => hk(s.host) === hk(host));
+  const win = windowOf(tmux);
+  return (sessionId && here.find((s) => s.sessionId === sessionId || s.id === sessionId))
+    || (win && here.find((s) => (s.tmux && (windowOf(s.tmux) === win || s.tmux === tmux)) || (s.kind === 'window' && s.id === tmux)))
+    || null;
+}
+
 /** Strips in board order: wait, work, idle; live before faded; newest first inside a lane. */
 export function boardOrder(strips) {
   return [...strips].sort((a, b) => (ORDER[a.lane] ?? 3) - (ORDER[b.lane] ?? 3) || Number(Boolean(a.faded)) - Number(Boolean(b.faded)) || ms(b.since) - ms(a.since));

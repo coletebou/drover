@@ -453,6 +453,72 @@ drover op files.wait '{"host":"box-a","path":"~/runs/status","glob":"WS-*.md","s
   lists every shortcut. Direct peers (Settings) let the browser call another
   daemon over a forwarded port or the tailnet instead of ssh rpc.
 
+## The browser UI: seven workspaces
+
+The web UI (`ui/`, vanilla ES modules) answers seven questions, one workspace each, with a row of sub-views under
+the workspace tabs (`docs/specs/2026-11-21-cohesion-overhaul.md` is the contract every client follows). The table,
+the aliases and plugin placement are one pure module, `ui/routes.js` (tests: `test/ui-routes.test.js`).
+
+| Key | Workspace | Sub-views |
+|---|---|---|
+| 1 | Manager | the manager console |
+| 2 | Agents | Lanes (the board) · List (sessions; the Survey button shows the survey below) · Windows (tmux; terminals open in a panel there or in the drawer's Terminal tab) · Wall · Space |
+| 3 | Prompts | Mine · All |
+| 4 | Work | Pulls · Features, then plugin views (merge requests) |
+| 5 | Fleet | Hosts · Stacks · Launch |
+| 6 | Find | Search · Memory · Events · Files |
+| 7 | Settings | |
+
+- **Addresses** are `#/<workspace>/<sub-view>[/params]` (`#/agents/windows/work%3A3`). Every old hash still works:
+  `#/tmux`, `#/board`, `#/sessions/<id>`, `#/terminals/<id>`, `#/survey`, `#/launch/<prompt>`, `#/stacks/<host>` and
+  the rest are replaced by their new address with their params kept (`routes.js` `ALIASES`, the spec's alias
+  table). A workspace alone (`#/agents`) opens the sub-view last used there (kept in localStorage).
+- **Keys**: `1`-`7` pick a workspace, `[` `]` (or `<` `>`, or Alt+← →) the previous or next sub-view; `/`, `g`,
+  `,`, `?`, `w`, `m` and ⌘K as before. The palette lists every workspace and sub-view ("Agents › Wall"), finds them
+  by their old names too ("tmux"), and `prompts <words>` opens Prompts searching for them.
+- **Counts** on a sub-tab roll up to its workspace's tab: Agents shows who waits on you wherever you are; a
+  sub-view's informational total (live sessions, dialogs on screen, events) stays on its own tab (`rollup: false`).
+- **Plugin views** (`ui.views`) join the workspace their `workspace` field names (after the sub-view `after`
+  names, when given), else the one their `after` belongs to (an older plugin's `after: 'prs'` puts it in Work),
+  else Work. A sub-view's view module exposes `{ id, label, topics?, mount(root, ctx, params) }`; `mount` returns a
+  controller (`{ destroy, search, params, sse, key, probe }`, all optional) or an unmount function.
+- **One selected agent** across Lanes, List, Windows, Wall and Space, held by its board strip key, so `j`/`k` in
+  Lanes then `]` to Wall keeps it. A view reads it through `ctx`: `ctx.board()` (the normalized strips Lanes renders),
+  `ctx.onBoard(fn)` (after every board change; returns unsubscribe), `ctx.selected()`, `ctx.select(key)`,
+  `ctx.onSelect(fn)`, `ctx.stripKey(strip)`; `ctx.open(target)` opens the drawer (and selects the strip it is). A
+  selection carried in from another view is marked, never acted on: answering a dialog takes a click on the strip's
+  own buttons, or the drawer.
+- **Hover is information, click is action.** Rows, strips, tiles and tabs get a light highlight under the pointer
+  (`--hover`, `--hover-line`, in both schemes) and the same look under keyboard focus; an element with a
+  `data-peek` preview (a strip's last line, a prompt's text, a tile's last pane line) shows it in a quiet panel at
+  the foot of the page while the pointer rests there or it has focus. Hover never selects. Motion (the hover fade,
+  the waiting pulse) is off under `prefers-reduced-motion`.
+
+### Prompts
+
+Every prompt you typed into Claude Code, Codex or Hermes on any machine, verbatim and newest first, over
+`prompts.list` on the front daemon (it fans out to every host). The search box is its `q` (every word must match;
+the daemons search, debounced), the selects its `host`, `engine` and `label`; Mine is the daemon's default set
+(typed, queued, sent through Drover, launch prompts), All adds `peer` messages between agents. Scrolling to the end
+reads older pages with `before`. A click shows the whole prompt beside the list as plain text, with Copy (`y`), Open
+session (when its session is on the board) and Launch with this prompt (`n`: Fleet › Launch with the prompt, its
+folder and host filled in, `#/fleet/launch/<prompt>/<folder>/<host>`). New user turns and writes refresh the top at
+most every 4 s. The status line is `prompts.status` (records, newest, each sink's last sync or error); Sync now runs
+`prompts.sync`. A daemon without the ops says so.
+
+### Wall
+
+A grid of live mini terminals, one per agent on the board, waiting first, then working, then idle. A tile is a
+header (lane dot, name, host, age) over the bottom of its pane in color, bordered in its lane's color (waiting
+tiles pulse). Panes come from `tmux.captureMany`, one call per host per refresh, only for the tiles on screen
+(IntersectionObserver), every 2 s (1 s zoomed), paused while the page is hidden; the escapes are parsed by
+`ui/ansi.js` into spans, text only as textContent and colors only as validated `#rrggbb` inline styles, on a
+terminal's dark ground in both schemes. A host whose daemon has no `tmux.captureMany` is read with `tmux.capture`,
+a few panes at a time, without color; a tile with no pane (a headless session, a Grok bot) shows its board tail.
+Click selects, a second click or `z` zooms the tile to the whole view, Enter or a double click opens the drawer, Esc
+unzooms, arrows or `h j k l` move, `+` `-` (or the slider) set the density, 1x1 up to 6x5. Pure half:
+`ui/wall-model.js` (tests: `test/ui-wall.test.js`).
+
 ## Asks: questions by text
 
 An agent blocked on the owner asks with `drover_ask` (or `drover ask "Ship it?" --options yes,no`) instead of waiting
@@ -510,10 +576,12 @@ hub's signature: the hub signs them with a key that never leaves it, and every o
 `terminals.open` (`core/terminals.js`) starts one ttyd per tmux target on
 `127.0.0.1` and an ephemeral port, and returns `{ id, url }`. A second open of
 the same target, while that ttyd is still running, returns the one already
-open. `readOnly: true` omits ttyd's `-W`, so the session is view-only. The
-Terminals view (`r`) embeds `url` in an iframe and can pop it into its own
-tab; the drawer's Terminal button opens that tab directly. Both load ttyd's
-own page.
+open. `readOnly: true` omits ttyd's `-W`, so the session is view-only. In the
+browser, Agents › Windows has a Terminals panel (where `#/terminals/<id>` lands)
+and a Terminal button on each window row; both embed `url` in an iframe that can
+pop out into its own tab. The drawer's Terminal button opens it in the drawer's
+own Terminal tab when the window is on this machine, in a tab of its own
+otherwise. All of them load ttyd's own page.
 
 ttyd is started with `-O`. Its websocket then accepts only a request whose
 `Origin` is that page. Browsers allow any site to open a websocket to
@@ -647,6 +715,80 @@ added the item and its exported `checkout` (tenant search is authorized on them;
 Native tenants). Hits carry `id`, `status` and `repo`; filter with `kinds: ["reflection"]`, `status`,
 and `role` (the item's kind). The export keeps to the host's identity (`DF_IDENTITY`, from the environment or `~/.df-profile`, when there is one). A missing
 or failing CLI is logged and skipped.
+
+## Prompts
+
+Every prompt typed into Claude Code or Codex on a machine, verbatim with secrets redacted, kept in an append-only
+spool on that machine and, when a prompts config names them, in git (`core/prompts.js`, `core/prompt-sinks.js`; spec
+`docs/specs/2026-11-21-cohesion-overhaul.md`, "Prompts: the spool").
+
+```
+drover prompts                        # the newest 50 of yours, on every reachable machine
+drover prompts flaky test --since 7d  # words (all must match) and a time span
+drover prompts --all --host box-a     # peer and sdk turns too, one machine
+drover prompts status                 # this machine's spool, last scan and sinks
+drover prompts sync                   # scan now, then push every sink
+```
+
+What is collected: the daemon reads what each transcript gained since its last pass (byte offsets per file in
+`$STATE/prompts-offsets.json`, a pass every minute, `DROVER_PROMPTS_EVERY_MS`), from `~/.claude/projects/<slug>/*.jsonl`
+and `~/.codex/sessions/**/rollout-*.jsonl`. The first pass reads all history, a file at a time, yielding often. A user
+turn's words are what search keeps (`search/extract.js` `userText`, `tidy`, `codexLine`): reminders stripped, a peer
+envelope unwrapped, secrets redacted. Each record says where it came from in `via`: `typed`, `queued` (typed while a turn
+ran), `peer` (another session's `<cross-session-message>`, with `from`), `drover` (relayed by Drover, or text a `message`
+event in the truth file sent to that host within 5 minutes: `tmux.send`, a Codex turn), `headless` (a headless launch's
+first prompt; a tmux launch's is `drover`) and `sdk` (`claude -p`, the Agent SDK, `codex exec`, that no launch started).
+The default list ("mine") is `typed`, `queued`, `drover` and `headless`.
+
+What is skipped: subagent transcripts and Codex subagent threads, sessions in a temp working directory and sessions
+whose first prompt is a generator's (`search/indexer.js` `skipReason`, with its `DROVER_SEARCH_SKIP_PROMPTS`), tool
+results, compaction summaries, Claude Code bookkeeping (`<command-name>` and the like), background-task notices,
+scheduled and other turns Claude Code starts itself, and skill text. Hermes sessions are not collected yet.
+
+Where it is stored: `$STATE/prompts/<YYYY-MM-DD>.jsonl` (mode 0600; the day of the prompt's own time, in UTC), one JSON
+line per prompt, only ever appended:
+
+```json
+{"v":1,"id":"p_3f9a1c0d2b7e4a61","ts":"2026-11-21T22:03:11.000Z","host":"box-a","engine":"claude",
+ "session":"5c1e...","cwd":"~/code/app","project":"app","label":"work","via":"typed","text":"verbatim prompt"}
+```
+
+`id` is `p_` and 16 hex of sha1(host, engine, session, the line's uuid or time, text), so a transcript read twice, or
+two copies of one, give one record. `label` is the first rule of the config that matches (a `cwd` glob, then a
+`remote` regular expression over the git remotes of the cwd's repository, read from its config, never by running git),
+else the machine's `DF_IDENTITY`, else `default`.
+
+The config, `~/.config/drover/prompts.json` (`DROVER_PROMPTS_CONFIG` moves it; none means the local spool only), is per
+machine:
+
+```json
+{
+  "rules": [{ "cwd": "~/code/work-*", "label": "work" }, { "remote": "github\\.com[:/]me/", "label": "personal" }],
+  "sinks": [
+    { "name": "personal", "labels": ["personal", "default"], "type": "git",
+      "remote": "git@forge.example:me/dotfiles.git", "branch": "drover-prompts", "dir": "prompts" },
+    { "name": "sealed", "labels": ["*"], "type": "command", "argv": ["sync-tool", "push", "--append", "prompts", "{file}"] }
+  ],
+  "syncEveryMinutes": 30
+}
+```
+
+A `git` sink keeps its own clone in `$STATE/prompt-sinks/<name>` on its branch (made as an orphan when the remote has
+none) and writes `<dir>/<host>/<day>.jsonl`, appending only records that file does not hold, commits that host's
+directory alone ("prompts: <host> +N"), pulls with rebase and pushes; never a force push. Each host writes only its own
+files, so hosts sharing a remote never conflict. The clone is also a read source: `prompts.list` shows a host that did
+not answer from it, as of its last pull. A `command` sink runs its argv (no shell) once per day that gained records,
+`{file}` replaced by a file of just those records (`{dayfile}`: the sink's whole copy of that day, `{day}`, `{host}`).
+A sink moves past a record only once it reached it; a failing sink retries after 1 minute, then 2, 4, up to 6 hours
+(`prompts.sync` tries at once). Sinks sync every `syncEveryMinutes` (default 30) and on `prompts.sync`.
+
+Ops: `prompts.list` (front-only, the fan-out: `q`, `host`/`hosts`, `engine`, `label`, `via` (a list, or `all`), `since`,
+`until` (ISO, epoch ms or a span such as `7d`), `session` (prefix), `cwd` (or under it), `limit` (200, at most 2000),
+`before` (an id: the next page) -> `{ prompts: [record + route, source?], more, perHost: [{ host, ok, count, error?,
+source? }], coverage, total? }`), `prompts.local` (one host's spool, what the fan-out asks each host; also `id`, and
+`beforeTs`), `prompts.status`, `prompts.sync` (a write). MCP: `drover_prompts_list`, `drover_prompts_local`,
+`drover_prompts_status`, `drover_prompts_sync`. In `~/.local/state/drover/env`: `DROVER_PROMPTS=off` turns collection
+off on a host (it is off under `node --test` unless a test sets `DROVER_PROMPTS=on`).
 
 ## Plugins
 
@@ -1247,7 +1389,8 @@ hosts and a fake manager gateway that streams (`test/fake-gateway.js`; a message
 8 s, "fail " fails, "echo " echoes). Tokens are copied from the real state dir, so a paired client works against it.
 A dialog comes back about 12 s after it is answered. Nothing in it can reach a real session, pane or host: its
 codex, docker and ssh are stand-ins (`test/showcase/fake-*.js`), every tmux server it starts or stops is named by
-socket, and it stops unless the daemon sees only its own hosts, no plugin and only its own tmux session. `--bots
+socket, and it stops unless the daemon sees only its own hosts, no plugin and only its own tmux session. Each of its
+hosts starts with synthetic prompts in its prompt spool, so the Prompts workspace has history to page through. `--bots
 <port>` also runs the bot gateway on that loopback port (its own public origin, plain http) and keeps the bots in the
 world's state, so a script can be a Grok bot end to end: sign in, get approved with the world's `drover bots`, call the
 tools, and take Routine webhooks on loopback.
@@ -1277,10 +1420,11 @@ ops, so no MCP tool and no ssh rpc can approve a pairing.
 ## Layout
 
 ```
-bin/drover      CLI: serve (alias up) | open | status | clients | widget-token | pair | bots | ask | rpc | mcp | op | ops | search | stacks | embed | import-survey | import-legacy
+bin/drover      CLI: serve (alias up) | open | status | clients | widget-token | pair | bots | ask | rpc | mcp | op | ops | search | prompts | stacks | embed | import-survey | import-legacy
 bin/drover-embed-setup  builds llama-server (pinned) and installs EmbeddingGemma 2 for search
 core/           api.js (op table) and adapters: tmux, claude, codex, hosts, events, memory (incl. the reflections CLI), launch, effort, trust (launch trust), remote, terminals, filewait (files.wait), session-filter (sessions.list filters), lineage (handoff successors); plugins (the plugin loader), owner (DROVER_OWNER), env (settings and secrets files)
 core/search/    the search index: extract, chunk, store (node:sqlite), indexer, embed (llama-server), query
+core/prompts.js the prompt spool (collector, labels, prompts.* ops); core/prompt-sinks.js its git and command sinks
 core/ask/       asks (docs/ask.md): model (events, fold, codes, texts), parse (the reply grammar), policy (quiet hours, rate, pause), router (the hub), ops, caller (the asking session), channels/ (telegram, sms, imessage)
 core/bots/      Grok bots: oauth (the gateway's OAuth server), tools (the bot tools), tenant-tools and access (native tenants), policy (what leaves for bots: cleaned, secrets redacted), grok (bots as sessions, Routines)
 core/docker.js  docker stacks and the docker.* verbs (core/docker-format.js: drover stacks text; ui/stacks-text.js: summaries both use)

@@ -63,6 +63,8 @@ export class Screen {
   /** Draw a frame of `rows` rows at `cols` columns; cursor { row, col } shows the text cursor there, else hidden. */
   draw(frame, { rows, cols, cursor = null }) {
     if (cols !== this.cols) { this.prev = null; this.cols = cols; }
+    // Views that draw with many colors (Space's pixels, Wall's panes) would grow the style cache without end.
+    if (this.cache.size > 4096) this.cache.clear();
     const next = [];
     for (let i = 0; i < rows; i++) next.push(renderRow(frame[i] ?? '', cols, this.depth, this.cache));
     const body = frameOutput(this.prev, next);

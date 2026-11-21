@@ -1,7 +1,8 @@
-// Things drawn over a view: the help sheet (?), the command palette (: or Ctrl-P) and a prompt (a reply to a
-// session, a new thread name). Each owns all keys and the mouse while open and draws a box into the frame: the wheel
-// scrolls it, a click on a palette entry runs it, a click outside the help or the palette closes them (never a
-// prompt's: a stray click must not lose a reply being typed).
+// Things drawn over a view: the help sheet (?), the command palette (: or Ctrl-P), a prompt (a reply to a session, a
+// new thread name) and the launch prompt (a new agent from a prompt). Each owns all keys and the mouse while open and
+// draws a box into the frame: the wheel scrolls it, a click on a palette entry runs it (the pointer over one
+// highlights it), a click outside the help or the palette closes them (never a prompt's: a stray click must not lose
+// a reply being typed).
 import { Composer } from '../composer.js';
 import { fit, truncate, strWidth } from '../width.js';
 import { hints } from '../ui.js';
@@ -68,7 +69,7 @@ export function score(q, text) {
 }
 
 export class Palette {
-  constructor(app, items) { this.app = app; this.items = items; this.input = new Composer(); this.sel = 0; }
+  constructor(app, items) { this.app = app; this.items = items; this.input = new Composer(); this.sel = 0; this.hoverIdx = -1; }
   matches() { const q = this.input.value.trim(); return this.items.map((it) => ({ it, s: score(q, `${it.label} ${it.hint ?? ''}`) })).filter((x) => x.s > 0).sort((a, b) => b.s - a.s).map((x) => x.it).slice(0, 200); }
   key(ev) {
     const m = this.matches();
@@ -82,14 +83,20 @@ export class Palette {
     if (this.input.handle(ev) === true) this.sel = 0;
   }
   hints() { return hints([['type', 'to filter'], ['↑↓', 'choose'], ['Enter', 'run'], ['Esc', 'close']]); }
+  /** The entry index at a screen position, or -1. Entries start two rows into the box body (the input, a blank row). */
+  #at(ev, m) {
+    if (!this.box || !inside(this.box, ev)) return -1;
+    const i = (this.top ?? 0) + ev.y - (this.box.y0 + 1) - 2;
+    return i >= (this.top ?? 0) && ev.y < this.box.y0 + this.box.h - 1 && m[i] ? i : -1;
+  }
   mouse(ev) {
     const m = this.matches();
+    if (ev.kind === 'move') { const i = this.#at(ev, m); if (i === this.hoverIdx) return false; this.hoverIdx = i; return true; }
     if (ev.kind === 'wheel') { this.sel = Math.max(0, Math.min(m.length - 1, this.sel + ev.wheel)); return true; }
     if (!clicked(ev)) return false;
     if (!inside(this.box, ev)) { this.app.closeModal(); return true; }
-    // Entries start two rows into the box body (the input, a blank row); the box body starts a row under its top.
-    const i = (this.top ?? 0) + ev.y - (this.box.y0 + 1) - 2;
-    const it = i >= 0 && ev.y < this.box.y0 + this.box.h - 1 ? m[i] : null;
+    const i = this.#at(ev, m);
+    const it = i >= 0 ? m[i] : null;
     if (!it) return false;
     this.app.closeModal(); it.run(this.input.value.trim()); return true;
   }
@@ -101,7 +108,7 @@ export class Palette {
     m.slice(top, top + h).forEach((it, i) => {
       const on = top + i === this.sel;
       const segs = [[on ? '▸ ' : '  ', 'accent'], [it.label, on ? 'bold' : null], ...(it.hint ? [[`  ${it.hint}`, 'dim']] : [])];
-      body.push(on ? { segs, bg: 'sel' } : segs);
+      body.push(on ? { segs, bg: 'sel' } : top + i === this.hoverIdx ? { segs, bg: 'hover' } : segs);
     });
     if (!m.length) body.push([['  nothing matches', 'dim']]);
     const r = boxOver(frame, cols, rows, { title: 'Commands', body, width: 80, top: 2 }); this.box = r;
@@ -130,4 +137,34 @@ export class Prompt {
     this.cur = { row: r.y0 + 1 + (L.cursorRow - (L.rows.length - shown)), col: r.left + 4 + L.cursorCol };
   }
   cursor() { return this.cur ?? null; }
+}
+
+/**
+ * The launch prompt: a new agent started with a prompt's text (launch.start). The text is edited as in a prompt; Tab
+ * and Shift-Tab pick the host, Ctrl-E the engine; Enter launches with { text, host, engine, cwd }, Esc cancels.
+ */
+export class LaunchPrompt extends Prompt {
+  constructor(app, { title = 'Launch an agent with this prompt', initial = '', hosts = ['local'], host = 'local', engine = 'claude', engines = ['claude', 'codex', 'hermes'], cwd = null, onLaunch }) {
+    super(app, { title, initial, placeholder: 'the first prompt', onSubmit: (text) => onLaunch({ text, host: this.host, engine: this.engine, cwd: this.cwd }) });
+    this.hosts = hosts.length ? hosts : ['local']; this.host = this.hosts.includes(host) ? host : this.hosts[0];
+    this.engines = engines; this.engine = engines.includes(engine) ? engine : engines[0]; this.cwd = cwd;
+  }
+  key(ev) {
+    if (ev.id === 'tab' || ev.id === 'S-tab') { const n = this.hosts.length; this.host = this.hosts[(this.hosts.indexOf(this.host) + (ev.id === 'tab' ? 1 : n - 1)) % n]; return; }
+    if (ev.id === 'C-e') { this.engine = this.engines[(this.engines.indexOf(this.engine) + 1) % this.engines.length]; return; }
+    super.key(ev);
+  }
+  hints() { return hints([['Enter', 'launch'], ['Tab', 'host'], ['C-e', 'engine'], ['C-j', 'new line'], ['Esc', 'cancel']]); }
+  overlay(frame, cols, rows) {
+    const w = Math.min(100, cols - 4); this.w = w - 6;
+    const L = this.input.layout(this.w);
+    const body = [...L.rows.slice(-8).map((r, i) => [[i === 0 ? '› ' : '  ', 'accent'], [r, null]])];
+    if (!this.input.value) body[0] = [['› ', 'accent'], [this.placeholder, 'dim']];
+    const label = (h) => (h === 'local' ? this.app.hostLabel?.(h) ?? h : h);
+    body.push([], [['host ', 'dim'], ['‹ ', 'dim'], [label(this.host), 'accent'], [' ›', 'dim'], ['   engine ', 'dim'], [this.engine, 'accent'], ...(this.cwd ? [['   in ', 'dim'], [this.cwd, null]] : [])]);
+    body.push([], [[' Enter launches in a tmux window · Tab host · Ctrl-E engine · Ctrl-J new line · Esc cancels', 'dim']]);
+    const r = boxOver(frame, cols, rows, { title: this.title, body, width: w });
+    const shown = Math.min(8, L.rows.length);
+    this.cur = { row: r.y0 + 1 + (L.cursorRow - (L.rows.length - shown)), col: r.left + 4 + L.cursorCol };
+  }
 }
