@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, writeFile, chmod } from 'node:fs/promises';
 import { realpathSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { classifyScreen, dialogSummary, heldMessage, assertTarget, assertName, keyFitsDialog, tmuxArg, listWindows, listPanes, listSessions, SEP, screenHash } from '../core/tmux.js';
+import { classifyScreen, dialogSummary, heldMessage, assertTarget, assertName, keyFitsDialog, tmuxArg, listWindows, listPanes, listSessions, SEP, screenHash, capture, captureMany, stripAnsi, CAPTURE_MANY_MAX } from '../core/tmux.js';
 import { hasTmux, startPrivateTmux } from './private-tmux.js';
 
 test('assertTarget accepts tmux target forms and rejects shell-ish input', () => {
@@ -202,4 +202,39 @@ describe('real tmux: listWindows, listPanes and listSessions keep every field', 
       if (escaping) assert.match(readFileSync(shimLog, 'utf8'), /list-windows.*list-panes.*list-sessions/, 'the parsers ran through the shim');
     });
   }
+});
+
+// ---------------------------------------------------------------- real tmux: captureMany (the Wall's live tiles)
+describe('real tmux: captureMany captures several panes in one call, a bad target is its own row', { skip: hasTmux ? false : 'tmux is not installed here' }, () => {
+  const SESSION = 'drover-wall';
+  const DIALOG = '\n Bash command\n\n   npm test\n\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n\n Esc to cancel\n';
+  let server;
+  const shows = async (target, text) => { for (let i = 0; i < 100; i++) { if ((await capture(target, { lines: 20 }).catch(() => '')).includes(text)) return true; await new Promise((r) => setTimeout(r, 50)); } return false; };
+  before(async () => {
+    server = await startPrivateTmux({ prefix: 'drover-wall-', session: SESSION, cmd: ['sh', '-c', "printf '\\033[31mred text\\033[0m plain\\n'; exec sleep 3600"], restoreEnv: true });
+    const r = server.tmux(['new-window', '-d', '-t', SESSION, 'sh', '-c', `printf '%s' '${DIALOG.replace(/'/g, "'\\''")}'; exec sleep 3600`]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(await shows(`${SESSION}:0`, 'red text') && await shows(`${SESSION}:1`, 'Do you want to proceed?'), 'both panes drew');
+  });
+  after(async () => { await server?.stop(); });
+
+  test('in order: colours kept by default, screen and hash read from the plain text; a malformed or gone target fails alone', async () => {
+    const rows = await captureMany([`${SESSION}:0`, `${SESSION}:1`, 'x;rm -rf', `${SESSION}:9`, 42], { lines: 20 });
+    assert.deepEqual(rows.map((r) => [r.target, r.ok]), [[`${SESSION}:0`, true], [`${SESSION}:1`, true], ['x;rm -rf', false], [`${SESSION}:9`, false], ['42', false]]);
+    assert.ok(rows[0].text.includes('\x1b[31mred text'), 'SGR escapes kept');
+    assert.equal(stripAnsi(rows[0].text).trim(), 'red text plain');
+    assert.equal(rows[1].screen.state, 'dialog');
+    assert.equal(rows[1].hash, screenHash(await capture(`${SESSION}:1`, { lines: 20 })), 'the hash tmux.answer compares, as from a plain capture');
+    assert.match(rows[2].error, /bad tmux target/);
+    assert.ok(rows[3].error, 'a window that is not there');
+    const plain = await captureMany([`${SESSION}:0`], { escapes: false });
+    assert.ok(!plain[0].text.includes('\x1b['));
+  });
+  test('more than CAPTURE_MANY_MAX targets is refused; an empty list is an empty answer', async () => {
+    await assert.rejects(captureMany(Array.from({ length: CAPTURE_MANY_MAX + 1 }, () => `${SESSION}:0`)), /at most 64 targets/);
+    await assert.rejects(captureMany(`${SESSION}:0`), /must be an array/);
+    assert.deepEqual(await captureMany([]), []);
+    const many = await captureMany(Array.from({ length: CAPTURE_MANY_MAX }, (_, i) => `${SESSION}:${i % 2}`), { lines: 5 });
+    assert.equal(many.length, 64); assert.ok(many.every((r) => r.ok));
+  });
 });

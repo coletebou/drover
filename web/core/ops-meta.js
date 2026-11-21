@@ -6,6 +6,7 @@
 // ops exported by core/credpool.js and core/docker.js; a plugin brings its own entries (addMeta, core/plugins.js).
 import { ALL_EFFORTS, EFFORT_LEVELS } from './effort.js';
 import { OWNER_NAME } from './owner.js';
+import { CAPTURE_MANY_MAX } from './tmux.js';
 
 export const host = { type: 'string', description: 'ssh alias of a fleet machine (see host.list), or a host a plugin provides; omit for this machine' };
 // Every op accepts host (ops run on the named machine; front-only ops ignore it).
@@ -31,6 +32,7 @@ export const META = {
   'tmux.windows': { m: false, d: 'All tmux windows on a host with the agent in each (Claude session name/status) and, when classify is true, the screen state (idle/busy/dialog), the last pane lines, and input: { text } when a Claude Code input box holds typed text that was not submitted (a faint suggestion is not input).', s: S({ host, classify: bool('capture each agent pane to classify it (default true)') }) },
   'tmux.sessions': { m: false, d: 'tmux sessions on a host.', s: S({ host }) },
   'tmux.capture': { m: false, d: 'Capture the last N lines of a tmux window or pane, with a screen classification.', s: S({ host, target: str('tmux target like work:30 or work:@68'), lines: num('lines to capture, default 200') }, ['target']) },
+  'tmux.captureMany': { m: false, d: 'Capture several tmux panes of one host in one call (the Wall view): one capture per target, run in parallel, in the order given. Each row is { target, ok, text, hash, screen } (screen: the classification tmux.capture gives; hash: the screen fingerprint tmux.answer takes as expect) or { target, ok: false, error } for a bad or gone target; one bad target never fails the call. escapes (default true) keeps the SGR colour escapes in text.', s: S({ host, targets: arr(`tmux targets (session:window, session:@id, %pane), at most ${CAPTURE_MANY_MAX}`), lines: num('lines per pane, default 60'), escapes: bool('keep colour escapes (default true)') }, ['targets']) },
   'tmux.send': { m: true, d: 'Paste text into a tmux pane and optionally press Enter. Refuses (refused:true) when a dialog/selector is on screen unless force=true: read the pane first.', s: S({ host, target: str('tmux target'), text: str('text to paste'), enter: bool('press Enter after pasting (default true)'), force: bool('send even if a dialog is on screen'), actor: str('who is sending (default the owner)') }, ['target', 'text']) },
   'tmux.keys': { m: true, d: 'Send raw keys (Enter, Escape, C-c, Up, Down, y, n, 1..9) to a tmux pane.', s: S({ host, target: str('tmux target'), keys: arr('tmux key names') }, ['target', 'keys']) },
   'tmux.new': { m: true, d: 'Open a new tmux window (creating the session if needed) running an optional argv. Returns its target as session:@id (the tmux window id), which stays right when tmux renumbers windows.', s: S({ host, session: str('tmux session name'), name: str('window name'), cwd: str('working directory'), argv: arr('command argv; omit for a shell') }, ['session']) },

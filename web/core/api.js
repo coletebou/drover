@@ -505,6 +505,10 @@ export const local = {
     const answer = screen.state === 'dialog' || held ? native.answerFields({ screen: screen.state, held: Boolean(held), dialog: tmux.dialogSummary(text), hash: tmux.screenHash(text) }) : {};
     return { target, text, screen, ...answer };
   },
+  /** Several panes in one call (the Wall): per-target rows, one bad target never fails the call (tmux.captureMany). */
+  async 'tmux.captureMany'({ targets, lines = 60, escapes = true } = {}) {
+    return { captures: await tmux.captureMany(targets, { lines, escapes: !(escapes === false || escapes === 'false') }) };
+  },
   async 'tmux.send'({ target, text, enter = true, force = false, actor = OWNER }) {
     const r = await tmux.send(target, str(text, 'text', { allowEmpty: true }), { enter, force });
     if (r.ok) await events.append({ type: 'message', to: { kind: 'tmux', host: hosts.localShortName(), id: target }, text, delivery: { ok: true, via: 'tmux paste' } }, { actor });
