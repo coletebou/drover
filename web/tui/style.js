@@ -16,11 +16,14 @@ export function colorDepth(env = process.env) {
 }
 
 // One palette, readable on dark and light terminal backgrounds (foregrounds are mid-tone; the only backgrounds are
-// the selection and the bars, which carry their own foreground).
+// the selection, the hover tint and the bars, which carry their own foreground).
 const C = {
   text: null, faint: '#8a8f98', accent: '#5fa8d3', wait: '#e0a030', work: '#5f9fdf', idle: '#7fb069', err: '#e05d5d',
   you: '#5fa8d3', mgr: '#b48ead', code: '#c7a76c', link: '#5fa8d3', key: '#e0a030', barBg: '#30343c', barFg: '#d8dce3',
   selBg: '#3c4656', selFg: '#ffffff', tabOn: '#ffffff', tabOnBg: '#4a6a8a', okFg: '#7fb069',
+  // Hover: a quieter band than the selection (darker, no blue), with its own light foreground so it reads on a light
+  // terminal too; on the bars a step lighter than the bar.
+  hoverBg: '#262c34', hoverFg: '#e6e9ee', barHoverBg: '#454d5a', subOnBg: '#3a4250',
 };
 
 export const THEME = {
@@ -42,10 +45,14 @@ export const THEME = {
   barOk: { fg: C.okFg, bg: C.barBg }, barWait: { fg: C.wait, bg: C.barBg, bold: true }, barErr: { fg: C.err, bg: C.barBg, bold: true },
   tab: { fg: C.barFg, bg: C.barBg }, tabOn: { fg: C.tabOn, bg: C.tabOnBg, bold: true }, tabNum: { fg: C.faint, bg: C.barBg },
   sel: { fg: C.selFg, bg: C.selBg },
+  hover: { fg: C.hoverFg, bg: C.hoverBg },
+  barHover: { fg: C.selFg, bg: C.barHoverBg }, barKeyHover: { fg: C.key, bg: C.barHoverBg, bold: true }, barDimHover: { fg: C.barFg, bg: C.barHoverBg },
+  tabHover: { fg: C.selFg, bg: C.barHoverBg }, tabOnHover: { fg: C.tabOn, bg: C.tabOnBg, bold: true, underline: true },
+  sub: { fg: C.faint }, subOn: { fg: C.tabOn, bg: C.subOnBg, bold: true }, subHover: { fg: C.hoverFg, bg: C.hoverBg }, subOnHover: { fg: C.tabOn, bg: C.subOnBg, bold: true, underline: true },
   cursor: { reverse: true },
 };
 // What a style becomes with no color: emphasis through attributes alone.
-const MONO = { sel: { reverse: true }, tabOn: { reverse: true, bold: true }, bar: {}, barDim: { dim: true }, barKey: { bold: true }, barOk: {}, barWait: { bold: true }, barErr: { bold: true }, tab: {}, tabNum: { dim: true }, dim: { dim: true }, wait: { bold: true }, waitBold: { bold: true }, err: { bold: true }, errBold: { bold: true }, you: { bold: true }, mgr: { bold: true }, other: { bold: true }, link: { underline: true }, key: { bold: true } };
+const MONO = { hover: { underline: true }, barHover: { underline: true }, barKeyHover: { bold: true, underline: true }, barDimHover: { underline: true }, tabHover: { underline: true }, tabOnHover: { reverse: true, bold: true, underline: true }, sub: { dim: true }, subOn: { reverse: true }, subHover: { underline: true }, subOnHover: { reverse: true, underline: true }, sel: { reverse: true }, tabOn: { reverse: true, bold: true }, bar: {}, barDim: { dim: true }, barKey: { bold: true }, barOk: {}, barWait: { bold: true }, barErr: { bold: true }, tab: {}, tabNum: { dim: true }, dim: { dim: true }, wait: { bold: true }, waitBold: { bold: true }, err: { bold: true }, errBold: { bold: true }, you: { bold: true }, mgr: { bold: true }, other: { bold: true }, link: { underline: true }, key: { bold: true } };
 
 const hex = (c) => { const n = parseInt(c.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; };
 const CUBE = [0, 95, 135, 175, 215, 255];
@@ -72,11 +79,18 @@ function colorCode(c, depth, bg) {
   const i = to16(rgb); return String((i < 8 ? 30 : 90) + (i % 8) + (bg ? 10 : 0));
 }
 
+// With 16 colors the hover band maps to plain black, which a dark terminal does not show: it underlines too.
+const LOW = { hover: { fg: C.hoverFg, bg: C.hoverBg, underline: true }, subHover: { fg: C.hoverFg, bg: C.hoverBg, underline: true } };
+const named = (style, depth) => (depth === 0 && MONO[style]) || (depth === 4 && LOW[style]) || THEME[style] || {};
+
+/** The hover variant of a named style (a bar segment keeps its bar look, a step lighter); 'hover' for the rest. */
+export const hoverOf = (style) => (typeof style === 'string' && THEME[`${style}Hover`] ? `${style}Hover` : 'hover');
+
 /** The style object for a name or object, with the line background merged in (a segment's own bg wins). */
 export function resolve(style, depth, bg) {
-  const base = typeof style === 'string' ? ((depth === 0 && MONO[style]) || THEME[style] || {}) : (style ?? {});
+  const base = typeof style === 'string' ? named(style, depth) : (style ?? {});
   if (!bg) return base;
-  const back = typeof bg === 'string' ? ((depth === 0 && MONO[bg]) || THEME[bg] || {}) : bg;
+  const back = typeof bg === 'string' ? named(bg, depth) : bg;
   return { ...back, ...base, bg: base.bg ?? back.bg, fg: base.fg ?? back.fg, reverse: base.reverse || back.reverse };
 }
 

@@ -7,6 +7,7 @@ import { wrap, oneLine, truncate, sanitize } from '../width.js';
 import { clock } from '../chat.js';
 import { spawn } from 'node:child_process';
 import { Prompt } from './overlays.js';
+import { stripFor, stripKey } from '../board.js';
 
 /** Open a URL in this machine's browser (the TUI's machine, wherever the daemon is). */
 export function openUrl(url, app) {
@@ -52,7 +53,11 @@ function sessionTarget(s, host) { return { kind: 'session', id: s.id, host, engi
 const nameOf = (s) => s.name ?? (s.preview ? String(s.preview).slice(0, 80) : s.slug ? s.slug.replace(/^-/, '').split('-').filter(Boolean).slice(-2).join('/') : String(s.id).slice(0, 8));
 const updatedOf = (s) => s.statusUpdatedAt ?? s.updatedAt ?? s.mtime ?? s.startedAt ?? s.createdAt ?? null;
 
-// A plugin's tables (core/plugins.js tui.tables) join in tui/app.js, each after the table its `after` names.
+// The strip a Sessions or Tmux row is, so the agent selected there is the one selected in Lanes, Wall and Space.
+const agentOfSession = (s, v) => stripKey(stripFor(v.app.board?.strips, { host: v.host, sessionId: s.sessionId ?? s.threadId ?? s.id, tmux: s.tmux }, v.app.frontHost));
+const agentOfWindow = (w, v) => stripKey(stripFor(v.app.board?.strips, { host: v.host, sessionId: w.agent?.sessionId, tmux: w.target }, v.app.frontHost));
+
+// A plugin's tables (core/plugins.js tui.tables) join a workspace in tui/workspaces.js (placePlugin).
 export const TABLES = [
   {
     id: 'sessions', title: 'Sessions', perHost: true, state: { all: false },
@@ -71,6 +76,7 @@ export const TABLES = [
     enter: (s, app, v) => app.openSession(sessionTarget(s, v.host)), enterHint: 'open',
     keys: { a: (_, app, v) => { v.state.all = !v.state.all; v.refresh(); } }, hintKeys: [['a', 'live/all']],
     text: (s) => [nameOf(s), s.engine, s.status, s.cwd, s.tmux, s.id, s.model].join(' '),
+    agentKey: agentOfSession, preview: (s) => `${nameOf(s)}: ${s.preview ?? s.status ?? ''}`,
   },
   {
     id: 'tmux', title: 'Tmux', perHost: true, state: { agents: false },
@@ -89,6 +95,7 @@ export const TABLES = [
     enter: (w, app, v) => app.openSession({ kind: 'window', id: w.target, host: v.host, name: w.agent?.name ?? w.name, engine: w.agent?.engine, sessionId: w.agent?.sessionId, tmux: w.target, tab: w.agent?.sessionId ? 'chat' : 'screen' }), enterHint: 'open',
     keys: { a: (_, app, v) => { v.state.agents = !v.state.agents; v.rederive(); } }, hintKeys: [['a', 'agents only']],
     text: (w) => [w.target, w.name, w.cmd, w.cwd, w.agent?.name, w.agent?.engine, w.screen?.state].join(' '),
+    agentKey: agentOfWindow, preview: (w) => `${w.target}: ${(w.tail ?? []).filter(Boolean).at(-1) ?? w.dialog?.question ?? w.cmd ?? ''}`,
   },
   {
     id: 'prs', title: 'PRs', ttl: 60_000, state: { scope: 'both', state: 'open' },
@@ -130,7 +137,7 @@ export const TABLES = [
       s: (_, app, v) => { v.state.scope = PR_SCOPES[(PR_SCOPES.indexOf(v.state.scope) + 1) % PR_SCOPES.length]; v.refresh(); },
       t: (_, app, v) => { v.state.state = PR_STATES[(PR_STATES.indexOf(v.state.state) + 1) % PR_STATES.length]; v.refresh(); },
     },
-    hintKeys: [['s', 'scope'], ['t', 'state']],
+    hintKeys: [['s', 'scope'], ['t', 'state']], preview: (r) => `${r.repo}#${r.number}: ${r.title}`,
   },
   {
     id: 'events', title: 'Events', ttl: 10_000,
@@ -145,7 +152,7 @@ export const TABLES = [
     ],
     detail: (e, w) => [title(`${e.type} ${e.id ?? ''}`, `${e.actor ?? ''} on ${e.host ?? ''}`), [], ...json(e, w, 80)],
     onEvent: (type, _d, v) => { if (type === 'mutation' && v.data) { clearTimeout(v.reloadTimer); v.reloadTimer = setTimeout(() => v.load(), 1200); } return false; },
-    text: (e) => `${e.type} ${e.actor} ${summarizeEvent(e)}`,
+    text: (e) => `${e.type} ${e.actor} ${summarizeEvent(e)}`, preview: (e) => summarizeEvent(e),
   },
   {
     id: 'features', title: 'Features', ttl: 60_000,
@@ -165,7 +172,7 @@ export const TABLES = [
         ...(f.notes ? [[], ...para(f.notes, w, 20)] : []),
         ...(notes.length ? [[], [[` notes (${notes.length})`, 'dim']], ...notes.slice(-12).reverse().flatMap((n) => [[[`   ${clock(n.ts)} ${n.actor ?? ''}`, 'dim']], ...wrap(oneLine(n.text), w - 6).slice(0, 3).map((l) => [['     ', null], [l, null]])])] : [])];
     },
-    text: (f) => [f.fid, f.title, f.repo, f.state, f.notes, ...(f.links ?? [])].join(' '),
+    text: (f) => [f.fid, f.title, f.repo, f.state, f.notes, ...(f.links ?? [])].join(' '), preview: (f) => `${f.state}: ${f.title || '(untitled)'}`,
   },
   {
     id: 'fleet', title: 'Fleet', ttl: 60_000,
@@ -206,6 +213,7 @@ export const TABLES = [
       { title: 'what', flex: 1, get: (r) => `${r.title ? `${oneLine(r.title)}: ` : ''}${oneLine(r.snippet ?? '')}` },
     ],
     detail: (r, w) => [title(r.title ?? r.kind, `${r.kind} · ${r.role ?? ''} · ${r.host ?? ''}`), [], ...kv([['when', r.ts ? new Date(r.ts).toLocaleString() : null], ['session', r.sessionId], ['project', r.project], ['cwd', tilde(r.cwd)], ['score', r.score != null ? Number(r.score).toFixed(4) : null], ['path', tilde(r.path)]], w), [], ...wrap(oneLine(r.snippet ?? ''), w - 2).map((l) => [[' ', null], [l, null]])],
+    preview: (r) => oneLine(r.snippet ?? r.title ?? ''),
     enter: (r, app) => { if (!r.sessionId) { app.toast('this hit has no session to open'); return; } app.openSession({ kind: 'session', id: r.sessionId, host: r.host && r.host !== app.frontHost ? r.host : 'local', name: r.title ?? r.sessionId.slice(0, 8), engine: r.kind === 'codex' ? 'codex' : 'claude' }); }, enterHint: 'open the session',
   },
   {
@@ -231,7 +239,7 @@ export const TABLES = [
     detail: (r, w) => [title(r.title, `${r.kind} · ${r.status} · ${r.repo ?? ''}`), [[` #${r.id}${r.priority ? `  priority ${r.priority}` : ''}`, 'dim']], [], ...para(r.body, w, 30), [], ...kv([['tags', (r.tags ?? []).join(', ')], ['session', r.session_id], ['host', r.host], ['branch', r.branch], ['origin', r.origin], ['notes', r.notes]], w)],
     keys: { a: (_, app, v) => { v.state.all = !v.state.all; v.refresh(); }, s: (_, app, v) => { const all = ['open', 'stale', 'done', 'all']; v.state.status = all[(all.indexOf(v.state.status) + 1) % all.length]; v.refresh(); } },
     hintKeys: [['a', 'all repos'], ['s', 'status']],
-    text: (r) => [r.id, r.kind, r.status, r.repo, r.title, r.body, ...(r.tags ?? [])].join(' '),
+    text: (r) => [r.id, r.kind, r.status, r.repo, r.title, r.body, ...(r.tags ?? [])].join(' '), preview: (r) => `${r.kind}: ${r.title}`,
   },
   {
     id: 'stacks', title: 'Stacks', ttl: 60_000,

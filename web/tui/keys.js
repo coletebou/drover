@@ -18,8 +18,9 @@ const PASTE_END = '\x1b[201~';
 
 /**
  * An SGR mouse report (CSI < b ; x ; y M, or m for a release) as { name: 'mouse', id: 'mouse', kind, button, x, y,
- * shift, alt, ctrl }: kind 'down', 'up', 'drag' or 'wheel' (then wheel is -1 for up, 1 for down), x and y from 0.
- * Bits of b: 0-1 the button, 4 shift, 8 alt, 16 ctrl, 32 motion, 64 the wheel; null for a malformed report.
+ * shift, alt, ctrl }: kind 'down', 'up', 'drag' (motion with a button held), 'move' (motion with none, mode 1003) or
+ * 'wheel' (then wheel is -1 for up, 1 for down), x and y from 0.
+ * Bits of b: 0-1 the button (3: none), 4 shift, 8 alt, 16 ctrl, 32 motion, 64 the wheel; null for a malformed report.
  */
 export function mouseEvent(params, final) {
   const m = params.match(/^<(\d+);(\d+);(\d+)$/);
@@ -29,7 +30,7 @@ export function mouseEvent(params, final) {
   const base = { name: 'mouse', id: 'mouse', x, y, shift: Boolean(b & 4), alt: Boolean(b & 8), ctrl: Boolean(b & 16) };
   if (b & 64) return (b & 3) < 2 ? { ...base, kind: 'wheel', button: null, wheel: (b & 1) ? 1 : -1 } : null;   // 66, 67: sideways
   const button = b & 3;
-  if (b & 32) return { ...base, kind: 'drag', button: button === 3 ? null : button };
+  if (b & 32) return button === 3 ? { ...base, kind: 'move', button: null } : { ...base, kind: 'drag', button };
   return { ...base, kind: final === 'm' ? 'up' : 'down', button: button === 3 ? null : button };
 }
 

@@ -1,14 +1,28 @@
 // The terminal: raw mode, the alternate screen, bracketed paste, no autowrap (a misjudged width then clips instead
-// of scrolling the screen), mouse clicks and the wheel (SGR reports, modes 1000 and 1006; no motion tracking), resize,
-// Ctrl-Z suspend, and a restore that runs on every way out (quit, signal, crash), so a dead TUI never leaves a shell
-// in raw mode on the alternate screen, or reporting the mouse.
+// of scrolling the screen), the mouse (SGR reports, mode 1006: clicks and the wheel with 1000, and with 1003 every
+// motion, so what is under the pointer can be highlighted), resize, Ctrl-Z suspend, and a restore that runs on every
+// way out (quit, signal, crash), so a dead TUI never leaves a shell in raw mode on the alternate screen, or reporting
+// the mouse.
 import { StringDecoder } from 'node:string_decoder';
 import { createDecoder } from './keys.js';
 
 const ENTER = '\x1b[?1049h\x1b[?25l\x1b[?7l\x1b[?2004h\x1b[H\x1b[2J';
 const LEAVE = '\x1b[?2004l\x1b[?7h\x1b[0m\x1b[?25h\x1b[?1049l';
-export const MOUSE_ON = '\x1b[?1000h\x1b[?1006h';
-export const MOUSE_OFF = '\x1b[?1006l\x1b[?1000l';
+export const MOUSE_ON = '\x1b[?1000h\x1b[?1003h\x1b[?1006h';
+export const MOUSE_OFF = '\x1b[?1006l\x1b[?1003l\x1b[?1000l';
+
+/**
+ * The OSC 52 sequence that puts text on the terminal's clipboard. Inside tmux it is wrapped in tmux's DCS passthrough
+ * (the inner ESCs doubled), which tmux forwards when allow-passthrough is on; tmux with set-clipboard also takes the
+ * bare form, so both are sent there. max caps the base64 (terminals drop longer ones): { seq, truncated }.
+ */
+export function osc52(text, { tmux = false, max = 100_000 } = {}) {
+  let b64 = Buffer.from(String(text ?? ''), 'utf8').toString('base64');
+  const truncated = b64.length > max;
+  if (truncated) { const limit = Math.floor(max / 4) * 3; let cut = '', n = 0; for (const ch of String(text)) { const b = Buffer.byteLength(ch); if (n + b > limit) break; cut += ch; n += b; } b64 = Buffer.from(cut, 'utf8').toString('base64'); }
+  const bare = `\x1b]52;c;${b64}\x07`;
+  return { seq: tmux ? `\x1bPtmux;${bare.replace(/\x1b/g, '\x1b\x1b')}\x1b\\${bare}` : bare, truncated };
+}
 
 /** Whether the TUI asks for the mouse: on unless DROVER_TUI_MOUSE is 0, off, no or false (or --no-mouse). */
 export function mouseWanted(env = process.env) { return !/^(0|off|no|false)$/i.test(String(env.DROVER_TUI_MOUSE ?? '')); }

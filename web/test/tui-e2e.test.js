@@ -76,8 +76,8 @@ describe('drover tui against a current daemon', { skip: hasTmux ? false : 'tmux 
     await c.until((x) => x.includes('pressed 1 on demo-build'), 'the confirmation');
   });
 
-  test('views switch with digits and Tab; a session opens with its chat and tool groups', async () => {
-    c.tmux.keys('t', 'j');   // demo-work: not waiting, so digits switch views again
+  test('workspaces switch with digits and Tab, sub-views with < and >; a session opens with its chat and tool groups', async () => {
+    c.tmux.keys('t', 'j');   // demo-work: not waiting, so digits switch workspaces again
     await c.until((x) => x.includes('▌◐ demo-work') || x.includes('demo-work  claude on'), 'demo-work selected');
     c.tmux.keys('t', 'Enter');
     let s = await c.until((x) => x.includes('Chat') && x.includes('Screen') && x.includes('Read 1 file, ran 1 command'), 'the session chat');
@@ -86,12 +86,17 @@ describe('drover tui against a current daemon', { skip: hasTmux ? false : 'tmux 
     c.tmux.keys('t', 'k'); c.tmux.keys('t', 'Enter');
     s = await c.until((x) => x.includes('1 failing: parser keeps line numbers'), 'the expanded group with results');
     c.tmux.keys('t', 'Escape');
-    c.tmux.keys('t', '3');
-    s = await c.until((x) => / Sessions {2}on fakehost/.test(x) && x.includes('demo-work'), 'Sessions');
+    await c.until((x) => x.includes('Waiting on you') && x.includes(' Lanes '), 'back on Agents › Lanes');
+    c.tmux.keys('t', '>');
+    s = await c.until((x) => / Sessions {2}on fakehost/.test(x) && x.includes('demo-work'), 'Agents › List');
+    assert.match(s.split('\n')[s.split('\n').findIndex((l) => / Sessions {2}on fakehost/.test(l)) + 3] ?? '', /demo-work/, 'the agent selected in Lanes is the row selected in List');
+    c.tmux.keys('t', '>');
+    s = await c.until((x) => / Tmux {2}on fakehost/.test(x), 'Agents › Windows');
     c.tmux.keys('t', 'Tab');
-    s = await c.until((x) => / Tmux {2}on fakehost/.test(x), 'Tmux');
-    c.tmux.keys('t', '6');   // after 5 PRs
-    s = await c.until((x) => x.includes('a synthetic note'), 'Events');
+    s = await c.until((x) => x.includes('Prompts · Mine') && x.includes('Make the demo parser keep line numbers'), 'Prompts, by Tab');
+    c.tmux.keys('t', '6'); c.tmux.keys('t', 'Escape');   // Find opens on Search, which types its query: stop typing
+    c.tmux.keys('t', '>'); c.tmux.keys('t', '>');
+    s = await c.until((x) => x.includes('a synthetic note'), 'Find › Events');
     c.tmux.keys('t', '?');
     s = await c.until((x) => x.includes('Keys') && x.includes('command palette'), 'help');
     c.tmux.keys('t', 'Escape'); c.tmux.keys('t', '1');
@@ -100,8 +105,12 @@ describe('drover tui against a current daemon', { skip: hasTmux ? false : 'tmux 
 
   test('the mouse: tabs, a strip picked then opened, session tabs, the wheel, a footer hint, a dialog answered by a second click', async () => {
     let s = await c.until((x) => x.includes('thread main'), 'the manager');
-    c.tmux.mouse('t', at(s, '2 Board').x + 1, 0);
-    s = await c.until((x) => x.includes('Select an agent'), 'the board, by a click on its tab');
+    c.tmux.mouse('t', at(s, '2 Agents').x + 1, 0);
+    s = await c.until((x) => / Tmux {2}on fakehost/.test(x), 'Agents, by a click on its tab: the sub-view it showed last');
+    c.tmux.mouse('t', at(s, ' Lanes ').x + 1, 1);
+    s = await c.until((x) => x.includes('Waiting on you') && x.includes('Esc clear'), 'Lanes, by a click on its sub-tab (the agent selected before is carried, not armed)');
+    c.tmux.keys('t', 'Escape');
+    s = await c.until((x) => x.includes('Select an agent'), 'nothing selected');
     c.tmux.mouse('t', 20, 6, 65); c.tmux.mouse('t', 20, 6, 64);
     await pause(250);
     assert.ok(c.screen().includes('Select an agent'), 'the wheel selects no strip');
@@ -112,16 +121,16 @@ describe('drover tui against a current daemon', { skip: hasTmux ? false : 'tmux 
     s = await c.until((x) => x.includes('Chat') && x.includes('Read 1 file, ran 1 command'), 'opened by a second click');
     c.tmux.mouse('t', at(s, 'Info', 2).x + 1, at(s, 'Info', 2).y);
     s = await c.until((x) => /session id\s+s-work/.test(x), 'Info, by a click on the session tab');
-    c.tmux.mouse('t', at(s, '6 Events').x + 1, 0);
-    s = await c.until((x) => x.includes('a synthetic note'), 'Events, from inside a session');
+    c.tmux.mouse('t', at(s, '6 Find').x + 1, 0);
+    s = await c.until((x) => x.includes('a synthetic note'), 'Find › Events (shown there last), from inside a session');
     c.tmux.mouse('t', at(s, '/ filter', 44).x, 44);
     s = await c.until((x) => x.includes('filter: ▍'), 'filtering, by a click on the / hint');
     c.tmux.mouse('t', at(s, 'Esc clear', 44).x + 4, 44);
     s = await c.until((x) => !x.includes('filter:'), 'Esc, clicked, ends it');
     c.tmux.mouse('t', 2, 0);
-    s = await c.until((x) => x.includes('Commands') && x.includes('Go to Board'), 'the palette, by a click on the name');
+    s = await c.until((x) => x.includes('Commands') && x.includes('Go to Agents'), 'the palette, by a click on the name');
     c.tmux.mouse('t', 0, 43);
-    s = await c.until((x) => !x.includes('Go to Board'), 'a click outside closes it');
+    s = await c.until((x) => !x.includes('Go to Agents'), 'a click outside closes it');
     c.tmux.mouse('t', at(s, '1 Manager').x + 1, 0);
     s = await c.until((x) => x.includes('thread main') && x.includes('3 No'), 'the manager with the waiting dialog');
     const before = c.daemon.callsOf('sessions.answer').length;
