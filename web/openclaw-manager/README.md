@@ -29,7 +29,10 @@ drover manager uninstall [--purge]         # --purge also deletes state, memory 
 `setup` is idempotent: a second run with nothing changed writes nothing and restarts nothing. It
 restarts the service only when the launcher, the service file, the OpenClaw tree or node changed (or the
 gateway was not running); a config change alone is hot-reloaded by OpenClaw. `--restart never|always`
-overrides that. It never prints a secret, and never deletes the pre-installer install dirs: it reports
+overrides that. A start on a new OpenClaw tree runs `openclaw doctor --fix` first, with the gateway
+stopped (`doctor` step): a new release can refuse to start on state it has not migrated yet (2026.11.6 on
+a 2026.10.1 agent database). A large agent database can take tens of minutes; if Doctor fails, setup
+stops with the gateway still stopped. It never prints a secret, and never deletes the pre-installer install dirs: it reports
 them (`legacy` steps) for removal by hand once the new install is verified.
 
 What it does, in order: picks the newest fnm node inside OpenClaw's own `engines` range; `npm ci`s the

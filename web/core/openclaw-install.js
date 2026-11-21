@@ -881,6 +881,7 @@ export function restartReasons({ was, now, active, since, rewritten, stalePlugin
   if (!was) return ['not started by drover manager setup yet'];
   const out = [];
   if (stalePlugins.length) out.push(`plugin peer links point at another OpenClaw tree (${stalePlugins.join(', ')})`);
+  if (was.tree && now.tree && was.tree !== now.tree) out.push(`OpenClaw tree changed (${path.basename(was.tree)} -> ${path.basename(now.tree)})`);
   if (was.launcher !== now.launcher) out.push('launcher changed');
   if (was.unit !== now.unit) out.push('service file changed');
   if (was.env && now.env && was.env !== now.env) out.push('secrets changed (the gateway reads .env only at start)');
@@ -888,22 +889,40 @@ export function restartReasons({ was, now, active, since, rewritten, stalePlugin
   return out;
 }
 
-async function applyService(lay, { was, now, rewritten, restart, dryRun, step, rt, waitIdleSec }) {
+/** Doctor's migrations of a large agent database are slow: a 3.6 GB one took over 20 minutes on hz-prod (2026.10.1 -> 2026.11.6). */
+const UPGRADE_DOCTOR_TIMEOUT_MS = 4 * 3600_000;
+
+async function applyService(lay, { was, now, rewritten, restart, dryRun, step, rt, waitIdleSec, profile = null }) {
   const svc = lay.service; const st = await serviceState(lay);
   const links = peerLinks(lay, rt.mjs); const stale = links.filter((l) => !l.ok);
   const reasons = restartReasons({ was, now, active: st.active, since: st.since, rewritten, stalePlugins: stale.map((l) => l.plugin) });
   const why = restart === 'always' ? 'asked for' : reasons.join(', ') || null;
   if (!why) { step('service', 'unchanged', `${svc.name} ${st.active}`); return false; }
   if (restart === 'never') { step('service', 'not restarted', `--restart never; due at the next run (${why})`); return false; }
-  if (dryRun) { step('service', 'would restart', why); if (stale.length) step('plugin links', 'would relink', `${stale.map((l) => l.plugin).join(', ')} -> ${path.dirname(rt.mjs)}`); return true; }
+  // A start on a new OpenClaw tree may need its database and config migrations first: 2026.11.6 refuses to start on
+  // a 2026.10.1 agent database until `openclaw doctor --fix` runs. They run with the gateway stopped.
+  const upgraded = Boolean(was?.tree && now.tree && was.tree !== now.tree);
+  if (dryRun) {
+    step('service', 'would restart', why);
+    if (stale.length) step('plugin links', 'would relink', `${stale.map((l) => l.plugin).join(', ')} -> ${path.dirname(rt.mjs)}`);
+    if (upgraded) step('doctor', 'would migrate', `openclaw doctor --fix for ${path.basename(now.tree)}, with the gateway stopped`);
+    return true;
+  }
   if (st.active === 'active' && rt && existsSync(rt.mjs) && await _deps.alive()) await waitIdle(lay, rt, { waitIdleSec, step });
   // A service file this run put back counts too: the supervisor may hold a hand edit it already loaded.
   const unitChanged = !was || was.unit !== now.unit || Boolean(rewritten?.includes('service file'));
   // Stop, relink with nothing holding the old tree, start: a plain restart would come up with those plugins unavailable.
   const swap = async () => { if (stale.length) { await relink(stale, rt.mjs); step('plugin links', 'relinked', `${stale.map((l) => l.plugin).join(', ')} -> ${path.dirname(rt.mjs)}`); } };
+  // A failure leaves the gateway stopped: started, it would only refuse the unmigrated state.
+  const migrate = async () => {
+    if (!upgraded) return;
+    const r = await oc(lay, rt, ['doctor', '--fix', '--yes', '--non-interactive'], { secrets: 'all', profile, timeoutMs: UPGRADE_DOCTOR_TIMEOUT_MS });
+    if (r.code !== 0) throw new Error(`openclaw doctor --fix failed for ${path.basename(now.tree)}; ${svc.name} is left stopped (${cliError(r, ['doctor', '--fix'])})`);
+    step('doctor', 'migrated', `openclaw doctor --fix for ${path.basename(now.tree)}, with the gateway stopped`);
+  };
   if (svc.kind === 'launchd') {
     const target = `gui/${_deps.uid()}`;
-    if (unitChanged || !st.loaded || stale.length) {
+    if (unitChanged || !st.loaded || stale.length || upgraded) {
       await _deps.tryRun('launchctl', ['bootout', `${target}/${svc.name}`], { timeoutMs: 360_000 });
       // bootout returns at once; the job stays listed until the gateway has closed (40 s on a loaded Mac, SIGKILL at
       // ExitTimeOut), and a bootstrap before that fails with "5: Input/output error", leaving the manager unloaded.
@@ -914,7 +933,7 @@ async function applyService(lay, { was, now, rewritten, restart, dryRun, step, r
       let left = await gone();
       while (!left && _deps.now() < deadline) { await _deps.sleep(500); left = await gone(); }
       if (!left) throw new Error(`${svc.name} was still loaded ${waitMs / 1000} s after launchctl bootout; nothing was started (launchctl print ${target}/${svc.name})`);
-      await swap();
+      await swap(); await migrate();
       await _deps.run('launchctl', ['bootstrap', target, svc.file], { timeoutMs: 30_000 });
     } else await _deps.run('launchctl', ['kickstart', '-k', `${target}/${svc.name}`], { timeoutMs: 360_000 });
   } else {
@@ -922,7 +941,7 @@ async function applyService(lay, { was, now, rewritten, restart, dryRun, step, r
     if (unitChanged && !rewritten?.includes('service file')) await _deps.run('systemctl', ['--user', 'daemon-reload'], { timeoutMs: 30_000 });
     const en = await _deps.tryRun('systemctl', ['--user', 'is-enabled', svc.name], { timeoutMs: 5000 });
     if ((en.stdout ?? '').trim() !== 'enabled') await _deps.run('systemctl', ['--user', 'enable', svc.name], { timeoutMs: 30_000 });
-    if (stale.length) { await _deps.run('systemctl', ['--user', 'stop', svc.name], { timeoutMs: 360_000 }); await swap(); await _deps.run('systemctl', ['--user', 'start', svc.name], { timeoutMs: 360_000 }); }
+    if (stale.length || upgraded) { await _deps.run('systemctl', ['--user', 'stop', svc.name], { timeoutMs: 360_000 }); await swap(); await migrate(); await _deps.run('systemctl', ['--user', 'start', svc.name], { timeoutMs: 360_000 }); }
     else await _deps.run('systemctl', ['--user', 'restart', svc.name], { timeoutMs: 360_000 });
   }
   step('service', 'restarted', why);
@@ -1069,7 +1088,7 @@ export async function setup({ role: name = 'manager', profile: profileName, over
   const first = existsSync(rt.mjs) ? await importApprovals(lay, rt, { src, profile, dryRun, step, prev }) : false;
   if (dryRun && !existsSync(rt.mjs)) step('approvals', 'would check', 'after the tree is installed');
   const rewritten = [launcherR !== 'unchanged' && 'launcher', svcR !== 'unchanged' && 'service file'].filter(Boolean);
-  const restarted = await applyService(lay, { was, now: startedWith, rewritten, restart, dryRun, step, rt, waitIdleSec });
+  const restarted = await applyService(lay, { was, now: startedWith, rewritten, restart, dryRun, step, rt, waitIdleSec, profile });
   // Every run, restart or not: a host set up before this step, or one whose linger was turned off since, gets it back.
   if (lay.service.kind === 'systemd') { const l = await ensureLinger({ dryRun }); step('linger', l.action, l.detail); }
 

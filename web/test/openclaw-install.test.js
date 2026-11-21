@@ -383,6 +383,7 @@ function fakeHost(home) {
     if (has('config', 'validate')) return ok('valid');
     if (has('approvals', 'get') && host.approvalsReadFails) return { code: 1, stdout: '{"ok":false,"error":{"message":"Gateway not reachable (ETIMEDOUT)"}}', stderr: '' };
     if (has('approvals', 'get')) return ok(JSON.stringify(host.approvals ? { exists: true, file: host.approvals } : { exists: false }));
+    if (has('doctor', '--fix') && host.doctorFails) return { code: 1, stdout: '', stderr: 'agent database migration failed' };
     if (has('doctor', '--fix')) {
       const f = path.join(home, '.openclaw-manager', 'exec-approvals.json');
       if (existsSync(f)) host.approvals = JSON.parse(readFileSync(f, 'utf8'));
@@ -625,6 +626,34 @@ describe('setup in a sandbox', () => {
     assert.equal(restartCalls().length, 4);
     const r7b = await install.setup({});
     assert.equal(by(r7b, 'service').action, 'unchanged', 'links fixed: nothing pending');
+
+    // 7c. A start on another OpenClaw tree runs doctor --fix first, with the gateway stopped: 2026.11.6 refuses to
+    // start on a 2026.10.1 agent database until it has migrated. A failure leaves the gateway stopped.
+    const doctors = () => host.calls.filter((c) => c.includes(' doctor --fix')).length;
+    const older = install.readManifest(L); older.service.startedWith.tree = '/old/openclaw/2026.10.1-0123456789ab';
+    await writeFile(L.manifest, JSON.stringify(older));
+    const d0 = doctors();
+    const r7d = await install.setup({ dryRun: true });
+    assert.equal(by(r7d, 'doctor').action, 'would migrate');
+    assert.equal(doctors(), d0, 'a dry run migrates nothing');
+    host.doctorFails = true;
+    await assert.rejects(install.setup({}), /doctor --fix failed .* is left stopped/);
+    assert.equal(host.active, false, 'the unmigrated state is never started');
+    assert.equal(doctors(), d0 + 1);
+    host.doctorFails = false;
+    const r7c = await install.setup({});
+    assert.equal(by(r7c, 'doctor').action, 'migrated');
+    assert.equal(doctors(), d0 + 2);
+    if (process.platform !== 'darwin') {
+      const stop = host.calls.findLastIndex((c) => c.startsWith('systemctl --user stop '));
+      const doc = host.calls.findLastIndex((c) => c.includes(' doctor --fix'));
+      const start = host.calls.findLastIndex((c) => c.startsWith('systemctl --user start '));
+      assert.ok(stop >= 0 && stop < doc && doc < start, 'stop, doctor, start');
+    }
+    assert.equal(host.active, true);
+    const r7e = await install.setup({});
+    assert.equal(by(r7e, 'service').action, 'unchanged', 'started on this tree: no migration pending');
+    assert.equal(doctors(), d0 + 2);
 
     // 8. Roles are fixed per host; pre-installer dirs are reported, never removed.
     await assert.rejects(install.setup({ role: 'other' }), /installed as role manager/);
