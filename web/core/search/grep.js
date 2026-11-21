@@ -10,6 +10,7 @@ import { open } from 'node:fs/promises';
 import path from 'node:path';
 import { defaultRoots, skipReason } from './indexer.js';
 import { tidy, projectOf } from './extract.js';
+import { queuedMessage } from '../claude-queued.js';
 import { envvar } from '../envvars.js';
 
 export const GREP_KINDS = ['claude', 'subagent', 'codex'];
@@ -53,8 +54,10 @@ function made(role, src, tool) {
 /**
  * The searchable parts of one transcript line, in order: [{ role, tool?, text, src }]. Claude Code: typed text,
  * assistant text, thinking, tool calls (their input), tool results, compaction summaries; other line types are
- * "meta". Codex: response_item messages, tool calls and their output, reasoning summaries; event_msg lines repeat
- * the response items and give nothing.
+ * "meta". A message typed (or sent by another session) while a turn ran is an attachment line (claude-queued.js): its
+ * words are a "user" part, the rest of the line (the reminder Claude Code rendered around it) stays "meta". Codex:
+ * response_item messages, tool calls and their output, reasoning summaries; event_msg lines repeat the response items
+ * and give nothing.
  */
 export function lineParts(obj, kind) {
   if (!obj || typeof obj !== 'object') return [];
@@ -71,6 +74,7 @@ export function lineParts(obj, kind) {
     return [made('meta', [p])];
   }
   if (obj.type === 'summary') return [made('summary', [String(obj.summary ?? '')])];
+  if (obj.type === 'attachment') { const q = queuedMessage(obj); return q ? [made('user', q.parts), made('meta', [obj])] : [made('meta', [obj])]; }
   const c = obj.message?.content;
   if (obj.type === 'user' || obj.type === 'assistant') {
     const blocks = typeof c === 'string' ? [{ type: 'text', text: c }] : Array.isArray(c) ? c : [];

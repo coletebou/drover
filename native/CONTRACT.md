@@ -88,6 +88,10 @@ Details as built by core (these refine the bullets above; DroverKit models and `
   flight is a last turn with `pending:true`. `openclaw.threads {}` lists conversations.
 - Transcript turns: assistant `tools[{id,name,input,summary,description?}]`, tool_result `results[{toolUseId,isError,
   text,chars}]`, user turns relayed through an inbox `via:"drover"` (with the `actor` who typed it) or `via:"peer"` with `from`.
+  A user turn that reached a Claude session while a turn ran carries `queued:true`: `via:"queued"` when the owner typed it
+  (a busy session's prompt box, or a background subagent's agent panel), `via:"coordinator"` (with `actor`/`from`
+  `coordinator`) when the session that started a subagent wrote to it, else the inbox `via` above. Show it as sent
+  mid-turn; never hide it.
 
 ## Grok bot read receipts (added 2026-10-27)
 - A Grok bot's `sessions.transcript` (`id` `grok:<name>`) turns carry `id` (their event) and `receipt`: a user turn (a

@@ -694,6 +694,13 @@ entries as Markdown. An id can be a session id or name, a subagent id (`a0179…
 `<parent>/<agent>`), a Codex thread, a headless id, `manager` with `thread`, `openclaw:<session id or key>`, or a
 `.jsonl` path under the host's Claude projects or Codex sessions dir (nothing outside them, symlinks resolved).
 
+A message that reaches a Claude session while a turn runs is not a user record: Claude Code (2.1.278 to at least
+2.1.330) queues it and writes a `queued_command` attachment when the model sees it. That is what the owner types
+into a busy session, everything typed into a background subagent's agent panel ("Message @agent"), an inbox
+message sent to a busy session, and the coordinator writing to its subagent. Every reader (`turns`, the other
+formats, the search index, `drover grep`) shows it as a user turn or entry marked `queued: true`
+(`core/claude-queued.js`); Claude Code's own task notifications in the same shape are left out.
+
 ```
 drover transcripts                                   # newest 50 on this machine (--engine, --kind, --days, --parent, --host)
 drover transcript <id> [--format messages|calls|full|raw|turns] [--brief] [--host H] [--json] [--out FILE]
@@ -1135,7 +1142,7 @@ What a tenant connection gets (`core/bots/tenant-tools.js`):
   never backfills it (where an old item was written is not known), and Drover never derives it from `cwd`, `repo`
   or anything else; re-add an item from its checkout if a tenant needs it. Restart the daemon on each host
   (`drover serve`, or its launchd/systemd unit) and watch `drover op search.status` until
-  `indexer.scope.extractVersion` is 4 and `indexer.lastTick` is after the restart with `indexer.busy` false (the
+  `indexer.scope.extractVersion` is 4 or later and `indexer.lastTick` is after the restart with `indexer.busy` false (the
   first pass reads every transcript); `drover op search.reindex` starts a pass at once.
   No `rebuild` is needed. Reflection hosts are the reflections CLI's host key (the machine name it records): approve
   hosts under the names both Drover and the CLI use, or those reflections stay withheld.

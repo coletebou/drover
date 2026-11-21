@@ -16,6 +16,7 @@ import { listWindows } from './tmux.js';
 import { uuidv7 } from './ids.js';
 import { checkEffort } from './effort.js';
 import { toolSummary, toolDescription, resultEntry } from './toolcalls.js';
+import { peerSender, queuedMessage } from './claude-queued.js';
 
 export const CLAUDE_HOME = process.env.CLAUDE_CONFIG_DIR ?? path.join(process.env.HOME, '.claude');
 const SESSIONS_DIR = path.join(CLAUDE_HOME, 'sessions');
@@ -245,12 +246,19 @@ export async function sendToSession(session, text, { timeoutMs = 5000, fromName 
  * turn whose origin names the sender and carries the body. Shown as what was said, not as a harness turn.
  */
 function peerTurn(d) {
-  const o = d.origin;
-  if (o?.kind !== 'peer' || typeof o.body !== 'string') return null;
-  const from = typeof o.name === 'string' ? o.name : null;
-  // "drover (<actor>)" (and "apx-web (<actor>)" before the rename): someone typing through Drover, the owner as OWNER.
-  const relay = from?.match(/^(?:drover|apx-web)\s*\(([^)]+)\)$/i);
-  return { role: 'user', ts: d.timestamp, uuid: d.uuid, text: o.body, meta: false, via: relay ? 'drover' : 'peer', from: relay ? null : from, actor: relay ? relay[1] : null };
+  const who = peerSender(d.origin);
+  return who ? { role: 'user', ts: d.timestamp, uuid: d.uuid, text: d.origin.body, meta: false, ...who } : null;
+}
+
+/**
+ * A message that reached the session while a turn ran (claude-queued.js): the owner's typing (via 'queued', from the
+ * prompt box or a subagent's agent panel), an inbox message or the coordinator's, marked queued.
+ */
+function queuedTurn(d) {
+  const q = queuedMessage(d);
+  if (!q) return null;
+  return { role: 'user', ts: d.timestamp, uuid: d.uuid, text: q.text, meta: false, via: q.via, queued: true,
+    ...(q.kind === 'human' ? {} : { from: q.from, actor: q.actor }), ...(q.images ? { images: q.images } : {}) };
 }
 
 /** Parse transcript JSONL lines into a compact chat-ish list. */
@@ -283,6 +291,7 @@ export function parseTranscriptLine(line) {
     if (!texts.length && !tools.length) return thinking ? { role: 'thinking', ts: d.timestamp, uuid: d.uuid } : null;
     return { role: 'assistant', ts: d.timestamp, uuid: d.uuid, text: texts.join('\n'), tools, model: d.message?.model ?? d.requestedModel };
   }
+  if (t === 'attachment') return queuedTurn(d);
   if (t === 'ai-title') return { role: 'title', ts: d.timestamp, text: d.title ?? d.content ?? '' };
   if (t === 'queue-operation') return { role: 'queue', ts: d.timestamp, text: `${d.operation}: ${String(d.content ?? '').slice(0, 200)}` };
   return null;
@@ -373,6 +382,8 @@ export function askFromLines(lines) {
       // A typed reply after the question also answers it.
       if (typeof content === 'string' || (Array.isArray(content) && content.some((b) => b.type === 'text'))) { if (!d.isMeta) pending.clear(); }
     }
+    // So does one typed while a turn ran (a queued_command attachment, claude-queued.js).
+    else if (d.type === 'attachment' && queuedMessage(d)?.kind === 'human') pending.clear();
   }
   const pendingAsk = [...pending.values()].at(-1) ?? null;
   return { text, ts, pendingAsk };

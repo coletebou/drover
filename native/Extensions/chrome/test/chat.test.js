@@ -132,3 +132,16 @@ test('resultPreview shows the first lines', () => {
   assert.deepEqual(resultPreview(`${' '.repeat(100_000)}x\n\n`, 2), { head: `${' '.repeat(100_000)}x`, more: false }, 'a long blank run before text');
   assert.ok(Date.now() - t0 < 1500, `trimmed in linear time: took ${Date.now() - t0} ms`);
 });
+
+test('a message that reached the session while it worked (queued) stays the owner\'s and is marked; the coordinator is named', () => {
+  // The daemon's turns for queued_command attachments (web/core/claude-queued.js): the owner typing into a busy session
+  // or a subagent's agent panel (via queued), the coordinator writing to its subagent.
+  const turns = normalizeTurns([
+    { role: 'user', ts: '2026-11-21T17:00:03.000Z', uuid: 'u-3', text: 'can the board show a rate gauge', meta: false, via: 'queued', queued: true },
+    { role: 'user', ts: '2026-11-21T17:00:08.000Z', uuid: 'u-8', text: 'stop after the tests pass', meta: false, via: 'coordinator', from: 'coordinator', actor: 'coordinator', queued: true },
+    { role: 'user', ts: '2026-11-21T17:00:09.000Z', uuid: 'u-9', text: 'plain prompt', meta: false },
+  ]);
+  assert.deepEqual(turns.map((t) => [t.via ?? null, t.queued ?? false]), [['queued', true], ['coordinator', true], [null, false]]);
+  const items = chatItems(turns).filter((i) => i.type === 'user');
+  assert.deepEqual(items.map((i) => [i.who, i.queued ?? false]), [['you', true], ['coordinator', true], ['you', false]]);
+});

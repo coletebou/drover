@@ -16,7 +16,7 @@ export function chatNodes(items, state) {
     switch (it.type) {
       case 'user':
         return h('div', { class: `turn user${it.local ? ' local' : ''}` },
-          h('div', { class: 'who' }, it.who === 'you' ? 'You' : it.who, time ? ' · ' : null, time),
+          h('div', { class: 'who' }, it.who === 'you' ? 'You' : it.who, it.queued ? ' · while it worked' : null, time ? ' · ' : null, time),
           h('div', { class: 'body' }, it.text));
       case 'assistant':
         return h('div', { class: `turn assistant${it.pending ? ' streaming' : ''}` }, h('span', { class: 'sr-only' }, 'Agent'), markdown(it.text));

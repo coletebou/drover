@@ -6,6 +6,7 @@
 // URL it fetched), role "command": still never what the tool printed back.
 // Pure functions; test/search-extract.test.js.
 import { redactSecrets } from '../native.js';
+import { queuedMessage } from '../claude-queued.js';
 
 const REMINDER = /<system-reminder>[\s\S]*?<\/system-reminder>/g;
 // Claude Code wraps slash-command echoes, local command output, hook output and
@@ -130,7 +131,9 @@ export function codexToolLines(p) {
  * null when the line is not JSON. Keeps typed user text and assistant text blocks, and
  * one "command" unit per tool call that did something (claudeToolLine); drops tool
  * results, thinking, meta turns (skills, caveats) and wrappers. Compaction summaries
- * are kept as role "summary"; ai-title lines carry the title.
+ * are kept as role "summary"; ai-title lines carry the title. A message typed (or sent
+ * by another session) while a turn ran is an attachment, not a user line
+ * (claude-queued.js): its words are a user unit too.
  */
 export function claudeLine(line) {
   const d = lineOf(line);
@@ -138,6 +141,12 @@ export function claudeLine(line) {
   const out = { units: [], ts: d.timestamp ?? null, uuid: d.uuid ?? null, cwd: d.cwd ?? null, sessionId: d.sessionId ?? null, title: null };
   if (d.type === 'ai-title') { out.title = tidy(String(d.title ?? d.content ?? '')).replace(/\s+/g, ' ').slice(0, 200) || null; return out; }
   if (d.type === 'summary' && typeof d.summary === 'string') { const t = tidy(d.summary); if (t) out.units.push({ role: 'summary', text: t }); return out; }
+  if (d.type === 'attachment') {
+    const q = queuedMessage(d);
+    const t = q ? tidy(userText(q.text)) : '';
+    if (t) out.units.push({ role: 'user', text: t });
+    return out;
+  }
   const content = d.message?.content;
   if (d.type === 'user') {
     if (d.isMeta) return out;

@@ -32,8 +32,10 @@ import { storeFiles } from '../segments.js';
  * replaced (vectors are keyed by text, so turns that did not change keep theirs). 1: what was said. 2: commands too.
  * 3: each chunk keeps the checkout its own turn ran in (a Claude line's cwd, a Codex turn_context's), not the session's first.
  * 4: a Codex prompt no turn_context covers waits for the next one, and an <environment_context> cwd counts (codexAttribute).
+ * 5: a message that reached a Claude session while a turn ran (a queued_command attachment: the owner typing into a busy
+ * session or a subagent's agent panel, an inbox message) is user text (claude-queued.js).
  */
-export const EXTRACT_VERSION = 4;
+export const EXTRACT_VERSION = 5;
 const TRANSCRIPTS = new Set(['claude', 'subagent', 'codex']);
 /** Consecutive tool calls share one command chunk up to about this many characters. */
 const COMMAND_CHUNK = 1200;

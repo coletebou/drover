@@ -9,14 +9,16 @@
 //
 // (turns, the compact view the web, iOS, Mac and Chrome clients poll, stays in claude.js and codex.js.)
 //
-// Entries are engine-agnostic: { role, ts, text?, from?, model?, id?, name?, input?, isError? } with role one of
-// user, assistant, summary (a compaction summary), tool (a call) and result (a call's output). Measured on a 6.3 MB
+// Entries are engine-agnostic: { role, ts, text?, from?, queued?, model?, id?, name?, input?, isError? } with role one of
+// user, assistant, summary (a compaction summary), tool (a call) and result (a call's output); queued marks a user
+// entry that reached a Claude session while a turn ran. Measured on a 6.3 MB
 // Claude transcript (2026-11-03): messages 30 KB, calls 356 KB, full 807 KB.
 import { open, readdir, stat, readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { userText, CODEX_INJECTED } from './search/extract.js';
+import { queuedMessage } from './claude-queued.js';
 import { toolSummary, resultText, codexOutputFailed } from './toolcalls.js';
 import { redactSecrets } from './redact.js';
 
@@ -43,12 +45,21 @@ const textBlocks = (c) => (typeof c === 'string' ? c : Array.isArray(c) ? c.filt
 /**
  * One Claude Code transcript record -> entries. Meta turns (skills, caveats), wrappers and thinking give none. A
  * subagent's own file marks every record isSidechain; in a session's file such records are a subagent run inline (as
- * Claude Code wrote them before subagents got files) and are left out unless sidechain is set.
+ * Claude Code wrote them before subagents got files) and are left out unless sidechain is set. A message that reached
+ * the session while a turn ran (the owner typing into a busy session or a subagent's agent panel, another session's
+ * inbox message, the coordinator writing to its subagent) is an attachment record (claude-queued.js): a user entry
+ * marked queued, from naming any sender other than the owner.
  */
 export function claudeEntries(d, { sidechain = false } = {}) {
   if (!d || typeof d !== 'object' || (d.isSidechain && !sidechain)) return [];
   const ts = d.timestamp ?? null;
   if (d.type === 'summary' && typeof d.summary === 'string') return d.summary.trim() ? [{ role: 'summary', ts, text: d.summary.trim() }] : [];
+  if (d.type === 'attachment') {
+    const q = queuedMessage(d);
+    const t = q ? (q.kind === 'human' ? userText(q.text) : q.text.trim()) : '';
+    const from = q?.kind === 'peer' ? q.from ?? (q.actor ? `drover (${q.actor})` : 'peer') : q?.from ?? null;
+    return t ? [{ role: 'user', ts, text: t, queued: true, ...(from ? { from } : {}) }] : [];
+  }
   const c = d.message?.content;
   if (d.type === 'user') {
     const o = d.origin;
@@ -436,7 +447,7 @@ export function renderText(entries) {
   for (const e of entries) {
     if (e.role === 'user' || e.role === 'assistant' || e.role === 'summary') {
       const who = e.role === 'summary' ? 'summary (compaction)' : e.role;
-      const tail = [when(e.ts), e.from ? `from ${e.from}` : null, e.model && e.role === 'assistant' ? e.model : null].filter(Boolean).join(' · ');
+      const tail = [when(e.ts), e.from ? `from ${e.from}` : null, e.queued ? 'sent while it worked' : null, e.model && e.role === 'assistant' ? e.model : null].filter(Boolean).join(' · ');
       out.push(`## ${who}${tail ? ` · ${tail}` : ''}\n\n${e.text}\n`);
     } else if (e.role === 'tool') {
       if ('summary' in e) out.push(`→ ${e.name}${e.summary ? `: ${e.summary}` : ''}\n`);

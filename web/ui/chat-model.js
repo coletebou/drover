@@ -273,7 +273,7 @@ export function chatItems(turns, { showMeta = false } = {}) {
       continue;
     }
     if (role === 'thinking' || role === 'title') continue;
-    if (role === 'queue' && !showMeta) continue;   // Claude Code's own input queue: the message itself follows as a user turn
+    if (role === 'queue' && !showMeta) continue;   // Claude Code's own input queue: the message itself follows as a user turn (queued: true when it reached a running turn)
     if (role === 'user') {
       if (t.meta && !showMeta) continue;
       const cmd = commandOf(t.text);
@@ -283,7 +283,7 @@ export function chatItems(turns, { showMeta = false } = {}) {
       const text = peer ? peer.body : String(t.text ?? '');
       if (!text.trim() && !t.local) continue;
       group = null;
-      items.push({ kind: 'user', key: turnKey(t), turn: t, label: sp.label, actor: sp.actor, via: sp.via, text, local: Boolean(t.local), failed: t.failed ?? null, meta: Boolean(t.meta), receipt: t.receipt ?? null });
+      items.push({ kind: 'user', key: turnKey(t), turn: t, label: sp.label, actor: sp.actor, via: sp.via, text, local: Boolean(t.local), failed: t.failed ?? null, meta: Boolean(t.meta), receipt: t.receipt ?? null, ...(t.queued === true ? { queued: true } : {}) });
       continue;
     }
     if (role === 'tool') { group = null; items.push({ kind: 'system', key: turnKey(t), turn: t, sub: 'tool', text: String(t.text ?? '') }); continue; }

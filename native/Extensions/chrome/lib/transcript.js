@@ -24,7 +24,7 @@ function result(x) {
 
 /**
  * @param {any[]} rawTurns
- * @returns {{role:string, ts:string|null, text:string, tools:string[], calls:object[], results?:object[], uuid?:string, id?:string, meta?:boolean, via?:string, actor?:string, from?:string, pending?:boolean, inReplyTo?:string, thread?:string}[]}
+ * @returns {{role:string, ts:string|null, text:string, tools:string[], calls:object[], results?:object[], uuid?:string, id?:string, meta?:boolean, queued?:boolean, via?:string, actor?:string, from?:string, pending?:boolean, inReplyTo?:string, thread?:string}[]}
  */
 export function normalizeTurns(rawTurns) {
   if (!Array.isArray(rawTurns)) return [];
@@ -41,6 +41,8 @@ export function normalizeTurns(rawTurns) {
     for (const k of ['uuid', 'id', 'via', 'actor', 'from', 'inReplyTo', 'thread', 'user']) if (str(t[k])) turn[k] = t[k];
     if (t.meta === true) turn.meta = true;
     if (t.pending === true) turn.pending = true;
+    // A message that reached a Claude session while a turn ran (typed into a busy session or a subagent's agent panel).
+    if (t.queued === true) turn.queued = true;
     out.push(turn);
   }
   return out;

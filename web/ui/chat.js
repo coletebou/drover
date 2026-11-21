@@ -75,7 +75,7 @@ export class ChatView {
   #user(it) {
     const long = !this.full.has(it.key) && it.text.split('\n').length > USER_LINES;
     const shown = long ? it.text.split('\n').slice(0, USER_LINES).join('\n') : it.text;
-    const extra = it.failed ? h('span', { class: 'state-brick' }, 'not sent') : it.local ? h('span', null, 'sending') : it.via === 'peer' ? h('span', null, 'another session') : null;
+    const extra = it.failed ? h('span', { class: 'state-brick' }, 'not sent') : it.local ? h('span', null, 'sending') : it.via === 'peer' ? h('span', null, 'another session') : it.queued ? h('span', null, 'while it worked') : null;
     return h('div', { class: `turn user${it.local ? ' local' : ''}${it.failed ? ' failed' : ''}${!isOwner(it.actor) ? ' other' : ''}${it.meta ? ' meta' : ''}` },
       this.#who(it.label, it, extra),
       h('div', { class: 'text' }, shown),

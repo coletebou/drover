@@ -110,7 +110,7 @@ export function chatItems(turns, { showMeta = false, working = false, me = null,
     close();
     if (t.role === 'user') {
       if (t.meta && !showMeta) return;
-      items.push({ type: 'user', key, text: String(t.text ?? ''), who: t.local ? 'you' : who(t, me, owner), ts: t.ts ?? null, local: t.local === true });
+      items.push({ type: 'user', key, text: String(t.text ?? ''), who: t.local ? 'you' : who(t, me, owner), ts: t.ts ?? null, local: t.local === true, ...(t.queued === true ? { queued: true } : {}) });
       return;
     }
     if (t.role === 'result') { items.push({ type: 'system', key, text: String(t.text ?? ''), error: false }); return; }
