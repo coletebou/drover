@@ -1,9 +1,11 @@
 // A navigable table over one op's answer, with a `/` filter, a detail pane for the selected row (beside the table
 // when the terminal is wide, under it otherwise) and per-view keys. tables.js defines one per web UI view. A click
 // selects a row and a second click is Enter; the wheel scrolls without moving the selection (so it loads no row's
-// details on the way).
+// details on the way); the pointer over a row highlights it and previews it in the bottom bar, selecting nothing.
 // A definition: { id, title, load(app, view) -> data, rows(data, view) -> rows, columns: [{ title, w | flex, get,
-// align }], detail(row, width, view) -> rows, enter?(row, app, view), keys?: { id: fn }, perHost?, query?, meta? }.
+// align }], detail(row, width, view) -> rows, enter?(row, app, view), keys?: { id: fn }, perHost?, query?, meta?,
+// preview?(row) -> text (the hover line), agentKey?(row, view) -> strip key or null (rows that are agents: the table
+// then shows and sets the agent selected in every agent view, app.agentSel) }.
 import { rule, hints, block, keepVisible, sideBySide } from '../ui.js';
 import { fit, padStart, truncate, oneLine } from '../width.js';
 
@@ -12,11 +14,19 @@ export class TableView {
     this.app = app; this.def = def; this.id = def.id; this.title = def.title;
     this.data = null; this.rowsAll = []; this.sel = 0; this.top = 0; this.filter = ''; this.filtering = false;
     this.loading = false; this.error = null; this.at = 0; this.state = { ...(def.state ?? {}) }; this.cache = new Map(); this.query = '';
-    this.host = 'local';
+    this.host = 'local'; this.hoverIdx = -1; this.followAgent = false;
   }
   get inputActive() { return this.filtering; }
 
-  show() {
+  /** Shown: reads its op when the data is old. hostChange: the owner just picked the host ([ ], the palette). */
+  show({ back = false, hostChange = false } = {}) {
+    if (this.def.agentKey && !back && !hostChange) {
+      // The agent selected elsewhere is selected here too, once its row is drawn; on a per-host table, on its host.
+      this.followAgent = true;
+      const s = this.app.selectedStrip?.();
+      const host = s && (!s.host || s.host === this.app.frontHost ? 'local' : s.host);
+      if (this.def.perHost && host && host !== this.app.host) this.app.host = host;
+    }
     if (this.def.perHost && this.host !== this.app.host) { this.host = this.app.host; this.data = null; this.sel = 0; this.top = 0; }
     if (this.def.query && !this.query) { this.filtering = true; return; }
     if (!this.data || Date.now() - this.at > (this.def.ttl ?? 30_000)) this.load();
@@ -69,6 +79,19 @@ export class TableView {
       return false;
     }
     this.scrolled = false;   // a key brings the selection back into view
+    const was = this.sel;
+    const done = this.#key(ev);
+    if (this.sel !== was) this.#picked();
+    return done;
+  }
+  /** The owner moved the selection: rows that are agents select that agent everywhere (or none, for a row that is not one). */
+  #picked() {
+    this.followAgent = false;
+    if (!this.def.agentKey || !this.app.selectAgent) return;
+    const r = this.selected();
+    this.app.selectAgent(r ? this.def.agentKey(r, this) ?? null : null);
+  }
+  #key(ev) {
     const n = this.visible().length;
     const page = Math.max(1, (this.listH ?? 10) - 1);
     const own = this.def.keys?.[ev.id];
@@ -82,7 +105,7 @@ export class TableView {
       case 'G': case 'end': this.sel = Math.max(0, n - 1); return true;
       case '/': this.filtering = true; return true;
       case 'R': case 'C-r': this.refresh(); return true;
-      case '[': case ']': if (!this.def.perHost) return false; this.app.cycleHost(ev.id === ']' ? 1 : -1); this.show(); return true;
+      case '[': case ']': if (!this.def.perHost) return false; this.app.cycleHost(ev.id === ']' ? 1 : -1); this.show({ hostChange: true }); return true;
       case 'enter': { const r = this.selected(); if (r && this.def.enter) { this.def.enter(r, this.app, this); return true; } this.detailOpen = !this.detailOpen; return true; }
       case 'escape': if (this.filter) { this.filter = ''; return true; } return false;
       default: return false;
@@ -91,6 +114,11 @@ export class TableView {
 
   mouse(ev) {
     const M = this.mm; if (!M) return false;
+    if (ev.kind === 'move') {
+      const i = !this.filtering && ev.y >= M.y0 && ev.y < M.y0 + M.h && ev.x >= 0 && ev.x < M.w && this.top + ev.y - M.y0 < M.total ? this.top + ev.y - M.y0 : -1;
+      if (i === this.hoverIdx) return false;
+      this.hoverIdx = i; return true;
+    }
     if (ev.kind === 'wheel') { this.top = Math.max(0, Math.min(Math.max(0, M.total - M.h), this.top + 3 * ev.wheel)); this.scrolled = true; return true; }
     if (ev.kind !== 'down' || ev.button !== 0) return false;
     if (ev.y === 0 && this.def.query) { this.filtering = true; return true; }   // the head says "press / to search"
@@ -98,12 +126,14 @@ export class TableView {
     const i = this.top + ev.y - M.y0;
     if (i >= M.total) return false;
     if (i === this.sel) return this.key({ name: 'enter', id: 'enter', ctrl: false, alt: false, shift: false });
-    this.sel = i; return true;
+    this.sel = i; this.#picked(); return true;
   }
+  /** The hovered row in one line, for the bottom bar (the definition's preview, else nothing). */
+  hoverPreview() { const r = this.hoverIdx >= 0 ? this.visible()[this.hoverIdx] : null; return r && this.def.preview ? this.def.preview(r, this) : null; }
 
   hints() {
     if (this.filtering) return hints([['type', this.def.query ? 'the search' : 'to filter'], ['Enter', this.def.query ? 'search' : 'keep'], ['Esc', this.def.query ? 'stop typing' : 'clear']]);
-    return hints([['j/k', 'move'], ['Enter', this.def.enterHint ?? 'details'], ['/', this.def.query ? 'search' : 'filter'], ...(this.def.perHost ? [['[ ]', 'host']] : []), ...(this.def.hintKeys ?? []), ['R', 'refresh'], ['1-9', 'views']]);
+    return hints([['j/k', 'move'], ['Enter', this.def.enterHint ?? 'details'], ['/', this.def.query ? 'search' : 'filter'], ...(this.def.perHost ? [['[ ]', 'host']] : []), ...(this.def.hintKeys ?? []), ['R', 'refresh'], ['< >', 'views']]);
   }
 
   #columns(width) {
@@ -113,7 +143,7 @@ export class TableView {
     const room = Math.max(0, width - fixed);
     return cols.map((c) => ({ ...c, width: c.flex ? Math.max(4, Math.floor((room * c.flex) / flexTotal)) : c.w }));
   }
-  #row(r, cols, on) {
+  #row(r, cols, on, hover) {
     const segs = [[on ? '▌' : ' ', 'accent']];
     for (const c of cols) {
       let v = c.get(r, this);
@@ -122,11 +152,12 @@ export class TableView {
       const s = oneLine(v == null ? '' : String(v));
       segs.push([c.align === 'right' ? padStart(s, c.width) : fit(s, c.width), st ?? c.style ?? null], [' ', null]);
     }
-    return on ? { segs, bg: 'sel' } : segs;
+    return on ? { segs, bg: 'sel' } : hover ? { segs, bg: 'hover' } : segs;
   }
 
   render(width, height) {
     const all = this.rowsAll, vis = this.visible();
+    if (this.followAgent && this.app.agentSel && this.def.agentKey) { const i = vis.findIndex((r) => this.def.agentKey(r, this) === this.app.agentSel); if (i >= 0) { this.sel = i; this.scrolled = false; } }
     if (this.sel >= vis.length) this.sel = Math.max(0, vis.length - 1);
     const meta = this.loading && !this.data ? 'loading…' : this.error ? this.error : this.def.meta?.(this.data, this) ?? `${vis.length}${vis.length !== all.length ? ` of ${all.length}` : ''} rows`;
     const host = this.def.perHost ? [['  on ', 'dim'], [this.app.hostLabel(this.host), 'accent']] : [];
@@ -148,7 +179,7 @@ export class TableView {
     this.listH = listH;
     this.top = this.scrolled ? Math.max(0, Math.min(this.top, vis.length - listH)) : keepVisible(this.sel, this.top, listH, vis.length);
     this.mm = { y0: 3, h: listH, w: listW, total: vis.length };
-    const list = vis.slice(this.top, this.top + listH).map((row, i) => this.#row(row, cols, this.top + i === this.sel));
+    const list = vis.slice(this.top, this.top + listH).map((row, i) => this.#row(row, cols, this.top + i === this.sel, this.top + i === this.hoverIdx));
     if (!vis.length) list.push([[' ', null], [this.loading ? 'loading…' : this.error ? '' : this.def.query && !this.query ? 'Type a search: / then words, Enter.' : all.length ? 'Nothing matches the filter.' : this.def.empty ?? 'Nothing here.', 'dim']]);
     if (wide) return block([head, rule(width), ...sideBySide([header, ...block(list, listH)], showDetail ? detail : [], listW, width, bodyH)], height);
     return block([head, rule(width), header, ...block(list, listH), ...below], height);

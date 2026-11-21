@@ -247,7 +247,7 @@ export class ManagerView {
       return [...(keys.length ? keyHints(keys).map(([t, st]) => [t, st === 'key' ? 'barKey' : 'bar']) : [['r', 'barKey'], [' reply', 'bar']]), ['  ', 'barDim'], ...hints([['←→', 'next'], ['o', 'open'], ['r', 'reply'], ['w', 'back to typing']])];
     }
     if (this.focus === 'input') return hints([['Enter', 'send'], ['C-j', 'new line'], ['↑↓', 'history'], ['PgUp/PgDn', 'scroll'], ['Esc', 'keys'], ['/help', 'commands'], ['Tab', 'next view']]);
-    return hints([['i', 'type'], ['j/k', 'scroll'], ['w', 'answer waiting'], ['1-9', 'views'], [':', 'commands'], ['?', 'help'], ['q', this.app.popup ? 'hide' : 'quit']]);
+    return hints([['i', 'type'], ['j/k', 'scroll'], ['w', 'answer waiting'], ['1-7', 'workspaces'], [':', 'commands'], ['?', 'help'], ['q', this.app.popup ? 'hide' : 'quit']]);
   }
 
   // ------------------------------------------------------------ render

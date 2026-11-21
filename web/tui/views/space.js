@@ -8,7 +8,10 @@
 // one Lanes, List, Windows and Wall show; no key here ever answers a dialog.
 import { layout, buildScene, project, createCamera, resetCamera, orbit, zoom, pan, focusOn, stepCamera, resolveId, agentOrder, pulsing, PALETTE, hex } from '../../ui/space-scene.js';
 import { clusters, clusterWidth, truncate, oneLine, strWidth } from '../width.js';
-import { hints, ago, block } from '../ui.js';
+import { hints, ago, block, cut } from '../ui.js';
+import { tileRows } from './wall.js';
+import { parseAnsi } from '../../ui/ansi.js';
+import { rowWidth } from '../screen.js';
 
 const RAMP = ' .:-=+*#%@';
 const q = (v) => Math.min(255, Math.round(v / 4) * 4);   // fewer distinct colors: longer runs, a smaller style cache
@@ -114,28 +117,48 @@ export class SpaceView {
   constructor(app) {
     this.app = app; this.id = 'space'; this.title = 'Space';
     this.cam = null; this.showIdle = true; this.labels = 'auto'; this.hovered = null; this.localSel = null;
-    this.raster = null; this.sceneTop = 1; this.lastInput = Date.now(); this.lastTick = 0; this.lastPulse = 0; this.timer = null; this.drag = null;
+    this.raster = null; this.sceneTop = 1; this.lastInput = Date.now(); this.lastTick = 0; this.drag = null;
   }
   get inputActive() { return false; }
 
   show() {
     this.lastInput = Date.now(); this.lastTick = Date.now();
     if (this.cam && this.autoPaused) { this.cam.drift = true; this.autoPaused = false; }
-    clearInterval(this.timer);
-    this.timer = setInterval(() => this.#tick(), 50); this.timer.unref?.();
+    this.app.animate?.(this, 20);
+    clearInterval(this.insetTimer); this.insetTimer = setInterval(() => this.#capture(), 2000); this.insetTimer.unref?.();
     this.app.invalidate();
   }
-  hide() { clearInterval(this.timer); this.timer = null; this.drag = null; }
-  #tick() {
-    const now = Date.now(), dt = Math.min(0.25, (now - this.lastTick) / 1000); this.lastTick = now;
+  hide() { this.app.animate?.(this, 0); this.drag = null; clearInterval(this.insetTimer); this.insetTimer = null; }
+
+  /** The selected agent's pane, for the live inset (one tmux.captureMany for one target; tmux.capture on an older daemon). */
+  async #capture() {
+    const s = this.#strip(this.selectedId());
+    if (!s?.tmux || this.capturing || !this.app.client) return;
+    this.capturing = true;
+    const hostArg = s.host && s.host !== 'local' ? { host: s.host } : {};
+    const key = s.key ?? `${s.host}|${s.id}`;
+    try {
+      let c;
+      if (this.many !== false) {
+        try { const r = await this.app.client.call('tmux.captureMany', { targets: [s.tmux], lines: 40, escapes: true, ...hostArg }, { timeoutMs: 15_000 }); this.many = true; c = r?.captures?.[0]; }
+        catch (e) { if (!e.unknownOp) throw e; this.many = false; }
+      }
+      if (this.many === false) c = { ok: true, ...(await this.app.client.call('tmux.capture', { target: s.tmux, lines: 40, ...hostArg }, { timeoutMs: 15_000 })) };
+      if (c?.ok === false || c?.error) this.inset = { ...(this.inset?.key === key ? this.inset : { key }), error: c.error ?? 'capture failed', stale: true };
+      else this.inset = { key, lines: parseAnsi(c?.text ?? '', { maxLines: 200, maxCols: 400 }), at: Date.now(), error: null, stale: false };
+    } catch (e) { this.inset = { ...(this.inset?.key === key ? this.inset : { key }), error: e.message, stale: true }; }
+    finally { this.capturing = false; this.app.invalidate(); }
+  }
+  /** One frame (app.animate): ease the camera, then pick the rate: 20 fps while it moves, 4 for a pulse, 0 when still. */
+  onFrame(now = Date.now()) {
+    const dt = Math.min(0.25, (now - this.lastTick) / 1000); this.lastTick = now;
     if (!this.cam) return;
     // The idle drift stops after a while with no input (it would repaint forever otherwise); any key brings it back.
     if (this.cam.drift && now - this.lastInput > 90_000) { this.cam.drift = false; this.autoPaused = true; }
     const moving = stepCamera(this.cam, dt);
-    if (moving) { this.app.invalidate(); return; }
-    if (this.lay && pulsing(this.lay) && now - this.lastPulse > 250) { this.lastPulse = now; this.app.invalidate(); }
+    this.app.animate?.(this, moving ? 20 : this.lay && pulsing(this.lay) ? 4 : 0);
   }
-  #touch() { this.lastInput = Date.now(); if (this.cam && this.autoPaused) { this.cam.drift = true; this.autoPaused = false; } }
+  #touch() { this.lastInput = Date.now(); this.lastTick = Math.max(this.lastTick, Date.now() - 50); if (this.cam && this.autoPaused) { this.cam.drift = true; this.autoPaused = false; } this.app.animate?.(this, 20); }
 
   /** The shared selection as a scene id, or a host / the core picked here. */
   selectedId() { const k = this.app.agentSel ?? null; return this.localSel ?? (k ? `agent:${k}` : null); }
@@ -143,6 +166,7 @@ export class SpaceView {
     this.localSel = id && !id.startsWith('agent:') ? id : null;
     const key = id?.startsWith('agent:') ? id.slice(6) : null;
     if (key || !id) { if (this.app.selectAgent) this.app.selectAgent(key); else this.app.agentSel = key; }
+    if (key && this.inset?.key !== key) { this.inset = null; this.#capture(); }
   }
   #strip(id) { const r = resolveId(this.lay, id); return r?.kind === 'agent' ? r.agent.strip : null; }
   #activate(id) {
@@ -213,6 +237,8 @@ export class SpaceView {
     if (ev.kind === 'up') { this.drag = null; return false; }
     if (ev.kind !== 'down' || ev.button !== 0) return false;
     this.#touch();
+    const B = this.insetBox;
+    if (B && ev.x >= B.x0 && ev.x < B.x1 && ev.y >= B.y0 && ev.y < B.y1) { const s = this.#strip(this.selectedId()); if (s) this.app.openStrip(s); return true; }
     this.drag = { x: ev.x, y: ev.y, moved: false };
     if (!inScene) return false;
     const id = this.raster.at(px, py) ?? this.raster.at(px, py - 1);
@@ -258,6 +284,20 @@ export class SpaceView {
     this.raster = rasterize(proj, W, H);
     const mono = (this.app.screen?.depth ?? 8) === 0;
     const rows = cellsToRows(this.raster, proj.labels, { mono, cols: W, rows: sceneRows });
+    // The selected agent's live screen in a corner, the Wall's tile, refreshed every 2 s.
+    const sel = this.#strip(this.selectedId());
+    if (sel && width >= 100 && sceneRows >= 14) {
+      const iw = Math.min(64, Math.floor(width * 0.4)), ih = Math.min(16, sceneRows - 1);
+      const cap = this.inset?.key === (sel.key ?? `${sel.host}|${sel.id}`) ? this.inset : null;
+      const tile = tileRows(sel, cap, iw, ih, { selected: true, hostLabel: (x) => this.app.hostLabel?.(x) ?? x });
+      for (let i = 0; i < ih; i++) {
+        const left = cut(rows[i] ?? [], width - iw - 1);
+        const pad = Math.max(0, width - iw - 1 - rowWidth(left));
+        const t = tile[i]; const tsegs = Array.isArray(t) ? t : t?.segs ?? [];
+        rows[i] = [...left, ...(pad ? [[' '.repeat(pad), { bg: hex(PALETTE.skyTop) }]] : []), [' ', { bg: hex(PALETTE.skyTop) }], ...tsegs];
+      }
+      this.insetBox = { x0: width - iw, x1: width, y0: this.sceneTop, y1: this.sceneTop + ih };
+    } else this.insetBox = null;
     return block([head, ...rows, ...this.#info(width)], height);
   }
 }

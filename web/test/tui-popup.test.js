@@ -247,9 +247,9 @@ describe('real tmux: the bindings open, hide and reopen the manager; /look captu
   test('with the mouse on in tmux, a click inside the popup reaches the TUI', async () => {
     inner.run(['set-option', '-g', 'mouse', 'on']);
     outer.keys('o', 'C-b'); outer.keys('o', 'g');
-    let x = await until((y) => y.includes('drover manager · shared') && y.includes('2 Board'), 'the popup');
-    const lines = x.split('\n'); const y = lines.findIndex((l) => l.includes('2 Board'));
-    outer.mouse('o', lines[y].indexOf('2 Board') + 1, y);
+    let x = await until((y) => y.includes('drover manager · shared') && y.includes('2 Agents'), 'the popup');
+    const lines = x.split('\n'); const y = lines.findIndex((l) => l.includes('2 Agents'));
+    outer.mouse('o', lines[y].indexOf('2 Agents') + 1, y);
     x = await until((z) => z.includes('Select an agent'), 'the board, by a click on its tab inside the popup');
     const w = x.split('\n'); const r = w.findIndex((l) => l.includes('demo-work'));
     outer.mouse('o', w[r].indexOf('demo-work'), r);

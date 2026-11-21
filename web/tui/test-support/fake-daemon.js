@@ -17,6 +17,19 @@ export const CAPTURE = 'synthetic pane line one\nsynthetic pane line two\n$ npm 
 // The owner actor a current daemon names in GET /api/ops and records on the owner's own turns (core/owner.js OWNER).
 export const OWNER_ACTOR = 'dana';
 
+// The prompt spool (prompts.list): synthetic prompts on this machine and box-a, newest first, every via.
+const VIAS = ['typed', 'typed', 'queued', 'drover', 'peer', 'headless'];
+const WORDS = ['make the parser keep line numbers', 'run the tests and fix what fails', 'write the release notes', 'why is the build slow', 'rename the config flag', 'add a retry to the uploader'];
+export function promptRecords(n = 230) {
+  return Array.from({ length: n }, (_, i) => {
+    const via = VIAS[i % VIAS.length]; const host = i % 3 === 2 ? 'box-a' : 'fakehost';
+    const text = i === 0 ? 'Make the demo parser keep line numbers in its errors.\n\nKeep the old API:\n  parse(text) still returns the tree.' : `${WORDS[i % WORDS.length]} (#${i})`;
+    return { v: 1, id: `p_${String(i).padStart(16, '0')}`, ts: new Date(Date.now() - (60 + i * 97) * 1000).toISOString(), host, engine: i % 4 === 3 ? 'codex' : 'claude', session: i % 5 === 0 ? 's-build' : `s-${i}`, cwd: '~/code/demo', project: 'demo', label: 'default', via, text };
+  });
+}
+// A pane line with colours, as tmux capture-pane -e gives it (SGR only).
+export const COLOR_PANE = '\x1b[1;32m✓\x1b[0m 3 passing\n\x1b[31m✗ 1 failing\x1b[0m: parser keeps line numbers\n\x1b[38;5;208m$\x1b[0m npm test\n';
+
 function board() {
   return {
     generatedAt: now(),
@@ -59,7 +72,16 @@ export async function startFakeDaemon({ token = 'test-token', mode = 'new', port
   const manager = { main: [] };
   let seq = 0;
   const emit = (type, data) => { for (const c of streams) if (!c.topics || c.topics.has(type)) c.res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`); };
-  const unknown = new Set(old ? ['native.board', 'sessions.answer', 'openclaw.threads'] : []);
+  const unknown = new Set(old ? ['native.board', 'sessions.answer', 'openclaw.threads', 'prompts.list', 'tmux.captureMany'] : []);
+  const prompts = promptRecords();
+  function listPrompts({ q, hosts, via, limit = 200, before }) {
+    const vias = Array.isArray(via) ? via : ['typed', 'queued', 'drover', 'headless'];
+    const words = String(q ?? '').toLowerCase().split(/\s+/).filter(Boolean);
+    let list = prompts.filter((p) => vias.includes(p.via) && (!hosts?.length || hosts.includes(p.host)) && words.every((w) => p.text.toLowerCase().includes(w)));
+    const total = list.length;
+    if (before) { const i = list.findIndex((p) => p.id === before); list = i >= 0 ? list.slice(i + 1) : list; }
+    return { prompts: list.slice(0, Math.min(2000, limit)).map((p) => ({ ...p, route: 'local' })), perHost: [{ host: 'fakehost', ok: true, count: total }, { host: 'box-a', ok: true, count: 0 }], coverage: { covered: ['fakehost', 'box-a'], notCovered: [] }, total };
+  }
 
   function managerMessage({ text, thread = 'main', wait }) {
     const th = old ? 'main' : thread;
@@ -101,6 +123,10 @@ export async function startFakeDaemon({ token = 'test-token', mode = 'new', port
     'tmux.capture': ({ target }) => ({ target, text: CAPTURE, screen: { state: 'idle', reason: 'claude prompt footer visible' } }),
     'tmux.windows': () => fleet().hosts[0].windows.map((w) => ({ ...w, index: Number(w.target.split(':')[1]), cmd: 'claude', cwd: '/home/demo/code/demo', panes: 1, activityTs: Date.now() - 5000 })),
     'tmux.send': () => ({ ok: true }), 'tmux.keys': () => ({ ok: true }),
+    'tmux.captureMany': ({ targets = [], escapes = true }) => ({ captures: targets.slice(0, 64).map((target) => (target === 'gone:9' ? { target, ok: false, error: "can't find window: gone" } : { target, ok: true, text: escapes ? `${COLOR_PANE}\x1b[2m${target}\x1b[0m` : `${CAPTURE}\n${target}`, hash: `h-${target}` })) }),
+    'prompts.list': (a) => listPrompts(a),
+    'prompts.status': () => ({ files: 2, records: prompts.length, oldest: prompts.at(-1).ts, newest: prompts[0].ts, lastScan: now(), scanning: false, sinks: [] }),
+    'launch.start': ({ engine, mode = 'tmux' }) => ({ ok: true, mode, target: 'work:@7', name: `${engine}-launch` }),
     'events.tail': () => [{ id: 'e1', ts: ago(60), host: 'fakehost', actor: 'owner', type: 'note', about: 'demo', text: 'a synthetic note' }],
     'openclaw.status': () => ({ configured: true, host: 'fakehost', actor: 'manager-test', unit: { active: 'active', uptimeSec: 7200 }, gateway: { up: true, url: 'http://127.0.0.1:1' }, health: { ok: true }, model: { primary: 'fake/manager' }, automations: {}, cost: { todayUsd: 0.12 }, wal24h: { notes: 3, pins: 1, chats: 2 } }),
     'openclaw.threads': () => Object.entries(manager).map(([thread, turns]) => ({ thread, turns: turns.length, lastTs: turns.at(-1)?.ts ?? null, lastText: turns.at(-1)?.text ?? '' })),
@@ -144,7 +170,7 @@ export async function startFakeDaemon({ token = 'test-token', mode = 'new', port
   await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve));
   const url = `http://127.0.0.1:${server.address().port}/`;
   return {
-    url, token, calls, emit,
+    url, token, calls, emit, prompts,
     callsOf: (op) => calls.filter((c) => c.op === op),
     /** Write daemon.json and the token into a state dir, as `drover serve` would. */
     writeState(dir) { mkdirSync(dir, { recursive: true, mode: 0o700 }); writeFileSync(path.join(dir, 'daemon.json'), JSON.stringify({ pid: process.pid, url })); writeFileSync(path.join(dir, 'token'), `${token}\n`, { mode: 0o600 }); },

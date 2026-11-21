@@ -1,9 +1,11 @@
 // The board: every live agent on every reachable host in three lanes (Waiting on you, Working, Idle), live from the
 // `board` stream event (fleet.summary on an older daemon), with the selected strip's details beside it. A waiting
 // strip shows its dialog; digits, Enter and Esc answer it (sessions.answer with the hash of the screen shown).
-// Answer keys work only on a strip the owner selected themself: the selection starts empty whenever the board is shown,
-// so a digit pressed to switch views never lands on a dialog. The mouse keeps that: a click selects a strip (a
-// second click opens it), and the wheel scrolls the list without selecting anything.
+// Answer keys work only on a strip the owner selected themself, here: the selection that arms them starts empty
+// whenever the board is shown, so a digit pressed to switch views never lands on a dialog. The agent selected in
+// another view (List, Windows, Wall, Space: app.agentSel) is shown, hollow, but arms nothing until it is picked here
+// (j/k, Enter or a click). The mouse keeps that: a click selects a strip (a second click opens it), the wheel scrolls
+// the list without selecting anything, and hovering only highlights.
 import { LANES, answerKeys, pressDrawn } from '../board.js';
 import { answerCardRows, keyHints } from '../chat.js';
 import { rule, hints, block, keepVisible, sideBySide, ago, tilde } from '../ui.js';
@@ -13,10 +15,16 @@ const DOT = { wait: 'wait', work: 'work', idle: 'idle' };
 const EMPTY = { wait: 'Nothing waits on you.', work: 'No one is working.', idle: 'Nothing idle.' };
 
 export class BoardView {
-  constructor(app) { this.app = app; this.id = 'board'; this.title = 'Board'; this.selKey = null; this.top = 0; this.filter = ''; this.filtering = false; }
+  constructor(app) { this.app = app; this.id = 'board'; this.title = 'Lanes'; this.armed = null; this.hoverKey = null; this.top = 0; this.filter = ''; this.filtering = false; }
   get inputActive() { return this.filtering; }
-  /** Shown fresh, nothing is selected; back from a session it opened, the selection the owner made stays. */
-  show({ back = false } = {}) { if (!back) this.selKey = null; this.scrolled = false; this.app.refreshBoardSoon(0); }
+  /** The selected agent, shared with every agent view (app.agentSel, a strip key). */
+  get selKey() { return this.app.agentSel ?? null; }
+  set selKey(k) { if (this.app.selectAgent) this.app.selectAgent(k); else this.app.agentSel = k; }
+  /** Whether the selection was made here (answer keys act only then). */
+  isArmed() { return Boolean(this.selKey) && this.armed === this.selKey; }
+  pick(key) { this.selKey = key; this.armed = key; this.scrolled = false; }
+  /** Shown fresh, nothing here is selected; back from a session it opened, the selection the owner made stays. */
+  show({ back = false } = {}) { if (!back) this.armed = null; this.scrolled = false; this.app.refreshBoardSoon(0); }
 
   strips() {
     const q = this.filter.toLowerCase();
@@ -27,20 +35,27 @@ export class BoardView {
     const list = this.strips(); if (!list.length) return;
     const cur = this.selKey ? list.findIndex((s) => s.key === this.selKey) : -1;
     const i = cur < 0 ? (n >= 1e6 ? list.length - 1 : 0) : Math.max(0, Math.min(list.length - 1, cur + n));
-    this.selKey = list[i].key; this.scrolled = false;
+    this.pick(list[i].key);
   }
 
-  /** The wheel scrolls the list (the selection stays where it is, even out of view); a click selects, then opens. */
+  /**
+   * The wheel scrolls the list (the selection stays where it is, even out of view); a click selects, then opens; the
+   * pointer moving over a strip highlights it (true when what is highlighted changed) and never selects.
+   */
   mouse(ev) {
     const M = this.mm; if (!M) return false;
+    const inList = ev.y >= M.y0 && ev.y < M.y0 + M.h && ev.x < M.w && ev.x >= 0;
+    if (ev.kind === 'move') { const k = inList ? M.index[this.top + ev.y - M.y0] ?? null : null; if (k === this.hoverKey) return false; this.hoverKey = k; return true; }
     if (ev.kind === 'wheel') { this.top = Math.max(0, Math.min(M.total - 1, this.top + 3 * ev.wheel)); this.scrolled = true; return true; }
     if (ev.kind !== 'down' || ev.button !== 0 || this.filtering) return false;
-    if (ev.y < M.y0 || ev.y >= M.y0 + M.h || ev.x >= M.w) return false;
+    if (!inList) return false;
     const key = M.index[this.top + ev.y - M.y0];
     if (!key) return false;
-    if (key === this.selKey) { const s = this.selected(); if (s) this.app.openStrip(s); return true; }
-    this.selKey = key; return true;
+    if (key === this.selKey && this.isArmed()) { const s = this.selected(); if (s) this.app.openStrip(s); return true; }
+    this.pick(key); return true;
   }
+  /** The hovered strip's last line, for the bottom bar. */
+  hoverPreview() { const s = this.hoverKey ? this.app.board.strips.find((x) => x.key === this.hoverKey) : null; return s ? `${oneLine(s.name)}: ${oneLine(s.dialog?.question ?? s.ask?.text ?? (s.tail ?? []).filter(Boolean).at(-1) ?? s.headline ?? '')}` : null; }
   clearInput() { if (this.filtering || this.filter) { this.filter = ''; this.filtering = false; return true; } if (this.selKey) { this.selKey = null; return true; } return false; }
 
   key(ev) {
@@ -53,8 +68,10 @@ export class BoardView {
       return false;
     }
     const s = this.selected();
-    // A dialog key presses exactly what the last frame drew, or nothing (board.js pressDrawn).
-    if (this.selKey && pressDrawn(this.app, s, this.drawn?.key === this.selKey ? this.drawn : null, ev)) return true;
+    // A dialog key presses exactly what the last frame drew, or nothing (board.js pressDrawn); only on a strip picked here.
+    if (this.isArmed() && pressDrawn(this.app, s, this.drawn?.key === this.selKey ? this.drawn : null, ev)) return true;
+    // A strip carried from another view is picked here by Enter (or a click), never answered by it.
+    if (s && !this.isArmed() && (ev.id === 'enter' || ev.id === 'space')) { this.pick(s.key); return true; }
     switch (ev.id) {
       case 'j': case 'down': this.move(1); return true;
       case 'k': case 'up': this.move(-1); return true;
@@ -75,9 +92,10 @@ export class BoardView {
   hints() {
     if (this.filtering) return hints([['type', 'to filter'], ['Enter', 'keep'], ['Esc', 'clear']]);
     const s = this.selected();
+    if (s && !this.isArmed()) return hints([['Enter', 'pick it here'], ['j/k', 'select'], ['o', 'open'], ['r', 'reply'], ['Esc', 'clear'], ['< >', 'views']]);
     const keys = answerKeys(s);
     if (keys.length) return [...keyHints(keys).map(([t, st]) => [t, st === 'key' ? 'barKey' : 'bar']), ['   ', 'barDim'], ...hints([['o', 'open'], ['r', 'reply'], ['j/k', 'move']])];
-    return hints([['j/k', 'select'], ['Enter', s ? 'open' : 'select'], ['r', 'reply'], ['/', 'filter'], ['R', 'refresh'], ['1-9', 'views'], ['?', 'help']]);
+    return hints([['j/k', 'select'], ['Enter', s ? 'open' : 'select'], ['r', 'reply'], ['/', 'filter'], ['R', 'refresh'], ['< >', 'views'], ['?', 'help']]);
   }
 
   #listRows(width) {
@@ -90,12 +108,13 @@ export class BoardView {
       rows.push([[` ${title}`, lane === 'wait' ? 'waitBold' : 'bold'], [items.length ? ` ${items.length}` : '', 'dim']]); index.push(null);
       if (!items.length) { rows.push([['   ' + EMPTY[lane], 'dim']]); index.push(null); }
       for (const s of items) {
-        const on = s.key === this.selKey;
+        const on = s.key === this.selKey; const armed = on && this.isArmed();
         const host = s.host === 'local' ? this.app.frontHost ?? 'local' : s.host;
         const dot = s.status === 'dead' ? 'err' : s.faded ? 'dim' : DOT[s.lane];
         const head = oneLine(s.dialog?.question ?? s.ask?.text ?? s.headline ?? '');
-        const segs = [[on ? '▌' : ' ', 'accent'], [s.lane === 'work' ? '◐ ' : '● ', dot], [fit(oneLine(s.name), nameW), s.faded ? 'dim' : on ? 'bold' : null], [' ', null], [fit(host, hostW), 'dim'], [' ', null], [fit(s.engine ?? '', 7), 'dim'], [padStart(ago(s.since), 4), 'dim'], ['  ', null], [head, s.lane === 'wait' ? 'wait' : 'dim']];
-        rows.push(on ? { segs, bg: 'sel' } : segs); index.push(s.key);
+        const segs = [[armed ? '▌' : on ? '▹' : ' ', 'accent'], [s.lane === 'work' ? '◐ ' : '● ', dot], [fit(oneLine(s.name), nameW), s.faded ? 'dim' : on ? 'bold' : null], [' ', null], [fit(host, hostW), 'dim'], [' ', null], [fit(s.engine ?? '', 7), 'dim'], [padStart(ago(s.since), 4), 'dim'], ['  ', null], [head, s.lane === 'wait' ? 'wait' : 'dim']];
+        // Selected here: the selection band. Carried from another view: hollow. Under the pointer: the hover tint.
+        rows.push(armed ? { segs, bg: 'sel' } : s.key === this.hoverKey ? { segs, bg: 'hover' } : segs); index.push(s.key);
       }
       rows.push([]); index.push(null);
     }
@@ -113,6 +132,7 @@ export class BoardView {
     const out = [[[` ${oneLine(s.name)}`, 'bold'], [`  ${s.engine ?? ''} on ${host}`, 'dim']]];
     out.push([[` ${s.lane === 'wait' ? (s.ask?.label ?? 'waiting on you') : s.lane === 'work' ? 'working' : s.status === 'dead' ? 'dead' : 'idle'}`, s.lane === 'wait' ? 'waitBold' : s.lane === 'work' ? 'work' : 'idle'], [s.since ? `  since ${ago(s.since)} ago` : '', 'dim']]);
     out.push([]);
+    if (!this.isArmed()) out.push([[' selected in another view: Enter or a click picks it here, then its keys answer', 'dim']], []);
     if (s.lane === 'wait') { out.push(...answerCardRows(s, answerKeys(s), width)); out.push([]); }
     const kv = [['tmux', s.tmux ? `${s.tmux}${s.windowName && s.windowName !== s.name ? `  (${s.windowName})` : ''}` : null], ['cwd', s.cwd ? tilde(s.cwd) : null], ['session', s.sessionId ?? (s.kind === 'session' ? s.id : null)], ['status', s.status ?? null]];
     for (const [k, v] of kv) if (v) out.push([[` ${fit(k, 9)}`, 'dim'], [truncate(String(v), Math.max(4, width - 11)), null]]);
@@ -127,10 +147,10 @@ export class BoardView {
     const b = this.app.board;
     const t = b.totals ?? {};
     const meta = b.loading && !b.strips.length ? 'reading the fleet…' : `${t.waiting ?? 0} waiting · ${t.working ?? 0} working · ${t.idle ?? 0} idle on ${b.hosts?.length ?? t.hosts ?? 0} hosts${b.source === 'fleet.summary' ? ' (fleet.summary: this daemon has no native.board)' : ''}${b.error ? ` · ${b.error}` : ''}`;
-    const head = [[' Board  ', 'bold'], [meta, b.error ? 'err' : 'dim'], ...(this.filtering || this.filter ? [['   filter: ', 'dim'], [this.filter, 'accent'], [this.filtering ? '▍' : '', 'accent']] : [])];
+    const head = [[' Lanes  ', 'bold'], [meta, b.error ? 'err' : 'dim'], ...(this.filtering || this.filter ? [['   filter: ', 'dim'], [this.filter, 'accent'], [this.filtering ? '▍' : '', 'accent']] : [])];
     const { rows, index } = this.#listRows(width >= 110 ? Math.floor(width * 0.56) : width);
     const s = this.selected();
-    this.drawn = s ? { key: s.key, strip: s } : null;
+    this.drawn = s && this.isArmed() ? { key: s.key, strip: s } : null;
     const selRow = s ? index.indexOf(s.key) : -1;
     const bodyH = height - 2;
     if (width >= 110) {
