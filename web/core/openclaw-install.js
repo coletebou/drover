@@ -670,7 +670,7 @@ export const _deps = {
   sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
   alive: async (timeoutMs = 2000, port = gatewayPort()) => {
     const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), timeoutMs);
-    try { await fetch(`http://127.0.0.1:${port}/`, { signal: ctl.signal }); return true; } catch { return false; } finally { clearTimeout(t); }
+    try { await fetch(`http://127.0.0.1:${port}/healthz`, { signal: ctl.signal }); return true; } catch { return false; } finally { clearTimeout(t); }
   },
 };
 
