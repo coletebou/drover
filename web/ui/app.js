@@ -1,8 +1,8 @@
-// Shell: token gate, host strip, tab strip, hash router, SSE fan-out, drawer,
-// command palette, toasts, keyboard, alerts (notifier, badges, service worker),
-// the manager (one conversation store, the popup, the floating window), and the
-// solo windows (a popped-out drawer, the waiting board popup, the manager).
-// Views live in ./views/*.js and expose { id, label, key, topics?, mount(root, ctx, params) -> ctrl }.
+// Shell: token gate, host strip, the workspace and sub-view rows, hash router, SSE fan-out, drawer, command palette,
+// toasts, keyboard, hover previews, alerts (notifier, badges, service worker), the manager (one conversation store, the
+// popup, the floating window), and the solo windows (a popped-out drawer, the waiting board popup, the manager).
+// Views live in ./views/*.js and expose { id, label, key?, topics?, mount(root, ctx, params) -> ctrl | unmount }.
+// Seven workspaces hold them as sub-views (routes.js: the table, the aliases that keep every old hash working).
 import './legacy-storage.js';
 import * as api from './api.js';
 import { h, clear, dot, setHomes } from './dom.js';
@@ -16,28 +16,31 @@ import { normalizeBoard, currentStrips, waitingStrips, stripFor, liveCount } fro
 import { ManagerStore, popHash, parsePopHash } from './manager-model.js';
 import { ManagerUI } from './manager-ui.js';
 import { mountManagerChat } from './manager-chat.js';
+import { workspaces, placeView, resolve, parseHash, navSegs, stepSub, wsCount, navEntries } from './routes.js';
 import board from './views/board.js';
 import sessions from './views/sessions.js';
 import tmux from './views/tmux.js';
+import wall from './views/wall.js';
+import space from './views/space.js';
+import { promptsMine, promptsAll } from './views/prompts.js';
 import launch from './views/launch.js';
 import features from './views/features.js';
 import prs from './views/prs.js';
 import memory from './views/memory.js';
 import events from './views/events.js';
 import fleet from './views/fleet.js';
-import terminals from './views/terminals.js';
-import survey from './views/survey.js';
 import stacks from './views/stacks.js';
 import files from './views/files.js';
 import settings from './views/settings.js';
 import manager from './views/manager.js';
 import search from './views/search.js';
 
-// A plugin's views (core/plugins.js ui.views) join at boot (loadPluginViews), each after the view its `after` names.
-const VIEWS = [board, sessions, tmux, launch, prs, features, memory, files, manager, events, fleet, stacks, terminals, survey, search, settings];
+// Every view a sub-view names (routes.js WORKSPACES); a plugin's views (core/plugins.js ui.views) join at boot
+// (loadPluginViews), each in the workspace its `workspace` names, else the one its `after` belongs to.
+const VIEWS = [manager, board, sessions, tmux, wall, space, promptsMine, promptsAll, prs, features, fleet, stacks, launch, search, memory, events, files, settings];
 const byId = new Map(VIEWS.map((v) => [v.id, v]));
 const $ = (id) => document.getElementById(id);
-const main = $('main'), tabsEl = $('tabs'), hostStrip = $('hoststrip'), hostSelect = $('hostSelect'), qInput = $('q'), liveEl = $('live'), liveText = $('liveText'), toastsEl = $('toasts'), stage = $('stage');
+const main = $('main'), tabsEl = $('tabs'), subtabsEl = $('subtabs'), hostStrip = $('hoststrip'), hostSelect = $('hostSelect'), qInput = $('q'), liveEl = $('live'), liveText = $('liveText'), toastsEl = $('toasts'), stage = $('stage');
 
 // Solo windows: #/pop/manager is the manager filling a window; #/pop/<kind>/<host>/<id>/<engine>/<name> is one
 // drawer filling a popup; #/pip is the waiting board in a popup. Decided before anything renders.
@@ -78,6 +81,25 @@ function toast(msg, kind = 'info', ms, { onClick } = {}) {
   while (toastsEl.children.length > 4) toastsEl.firstChild.remove();
 }
 
+// ---------------------------------------------------------------- hover previews
+// Hover is information, click is action: an element with data-peek (a strip's last line, a prompt's text, a tab's
+// question) shows it in a quiet panel at the foot of the page while the pointer rests on it, or while it has keyboard
+// focus. It never selects anything. Text only (textContent); touch screens get none (a tap is a click there).
+const peekEl = h('div', { class: 'peek', 'aria-hidden': 'true', hidden: true });
+document.body.append(peekEl);
+const canHover = matchMedia('(hover: hover)');
+let peekFor = null; let peekTimer = null;
+function peekAt(el, delay) {
+  if (el === peekFor) return;
+  peekFor = el; clearTimeout(peekTimer);
+  if (!el) { peekEl.hidden = true; return; }
+  peekTimer = setTimeout(() => { const t = el.isConnected ? el.dataset.peek : ''; if (!t) { peekEl.hidden = true; return; } peekEl.textContent = t; peekEl.hidden = false; }, delay);
+}
+document.addEventListener('mouseover', (e) => { if (canHover.matches) peekAt(e.target.closest?.('[data-peek]') ?? null, 300); });
+document.addEventListener('focusin', (e) => { if (e.target.matches?.(':focus-visible')) peekAt(e.target.closest?.('[data-peek]') ?? null, 150); });
+document.addEventListener('focusout', () => peekAt(null, 0));
+for (const ev of ['mousedown', 'scroll', 'keydown']) document.addEventListener(ev, () => peekAt(null, 0), { capture: true, passive: true });
+
 // ---------------------------------------------------------------- device helpers (wake lock, install, service worker)
 const WAKE_KEY = 'drover.wake';
 const wakeLock = {
@@ -99,6 +121,28 @@ const sw = { reg: null, active: false, error: null };
 
 // ---------------------------------------------------------------- context
 const isManagerTarget = (t) => t && (t.id === 'manager' || t.sessionId === 'manager' || t.engine === 'openclaw');
+// One selected agent across Agents › Lanes, List, Windows, Wall and Space: held by its strip key, so it survives a
+// switch of sub-view (and a reload of this tab). Hover never selects; a carried selection never answers anything.
+const SELECT_KEY = 'drover.selected';
+state.selected = sessionStorage.getItem(SELECT_KEY) || null;
+const boardSubs = new Set(); const selectSubs = new Set();
+const fire = (subs, ...a) => { for (const fn of [...subs]) { try { fn(...a); } catch (e) { console.error('board listener failed', e); } } };
+/**
+ * What every view gets (mount(root, ctx, params)). Besides calls, toasts and navigation:
+ *
+ *   ctx.board()          the current board strips, normalized (strips.js normalizeBoard: the front daemon's own host is
+ *                        "local"); the same objects Lanes renders, the manager's strip (engine openclaw) among them
+ *   ctx.onBoard(fn)      fn(strips) after every board change (a `board` or `fleet` event, a refresh); returns unsubscribe
+ *   ctx.selected()       the selected strip's key, or null
+ *   ctx.select(key)      select a strip by key (null clears it); listeners from ctx.onSelect(fn) hear it (returns unsubscribe)
+ *   ctx.stripKey(strip)  a strip's key ("<host>|<id>"), the one ctx.select takes
+ *   ctx.open(target)     the drawer, as before ({ kind: 'session'|'window', id, host, ... }); it also selects the strip
+ *                        the target is. The only way to act on an agent: a selection carried in from another sub-view
+ *                        never arms an answer action until that strip itself is clicked.
+ *   ctx.nav(id, ...p)    go to a view: an old id ('tmux'), a workspace ('agents') or 'agents/wall', with params
+ *   ctx.route()          { ws, sub, view, params, hash } of what is on screen
+ *   ctx.hasOp(op)        whether the front daemon serves an op (true until it has said)
+ */
 const ctx = {
   state, toast, nav, solo: Boolean(SOLO),
   host: () => api.getHost(),
@@ -108,6 +152,8 @@ const ctx = {
   setHost(host, { remount = true } = {}) { if (host === api.getHost()) return; api.setHost(host); drawHosts(); if (remount) remountView(); },
   query: () => qInput.value,
   follow: api.follow,
+  hasOp: api.hasOp,
+  route: () => routeNow,
   callQuiet: (op, args, opts) => api.call(op, args, opts),
   /** Answer a Grok bot's approval request: a main-token route on the daemon that keeps the bots (ui/api.js). */
   answerApproval: (id, n, opts = {}) => api.approvalsAnswer(id, n, { ...opts, via: 'web' }),
@@ -124,15 +170,31 @@ const ctx = {
     }
   },
   /** Open the details drawer for a session or tmux window: {kind:'session'|'window', id, host, ...}. The manager opens as the manager. */
-  open: (target) => (isManagerTarget(target) ? ctx.manager.show({ host: target.host }) : drawer.open(target)),
+  open: (target) => {
+    if (isManagerTarget(target)) return ctx.manager.show({ host: target.host });
+    const s = stripFor(state, target); if (s) ctx.select(s.key);
+    return drawer.open(target);
+  },
   closeDrawer: () => drawer.close(),
   drawerTarget: () => drawer.target,
-  setCount(viewId, n) { state.counts[viewId] = n; const el = tabsEl.querySelector(`[data-view="${viewId}"] .count`); if (el) el.textContent = n == null ? '' : String(n); },
+  setCount(viewId, n) { state.counts[viewId] = n; paintCounts(); },
   showShortcuts: () => showShortcuts(),
   openPip: () => openPip(),
   /** Every strip the board shows (the daemon's compact board, else built from the fleet summary). */
   strips: () => currentStrips(state),
+  board: () => currentStrips(state),
+  onBoard: (fn) => { boardSubs.add(fn); return () => boardSubs.delete(fn); },
+  selected: () => state.selected,
+  select(key) {
+    const k = key ?? null; if (k === state.selected) return;
+    state.selected = k; if (k) sessionStorage.setItem(SELECT_KEY, k); else sessionStorage.removeItem(SELECT_KEY);
+    fire(selectSubs, k);
+  },
+  onSelect: (fn) => { selectSubs.add(fn); return () => selectSubs.delete(fn); },
+  stripKey: (s) => (s ? s.key ?? `${s.host ?? 'local'}|${s.id}` : null),
   stripFor: (t) => stripFor(state, t),
+  /** Palette entries: every workspace and sub-view ("Agents › Wall"). */
+  navEntries: () => navEntries(WS),
   perf: perfMark,
   wakeLock, installState, install: async () => { if (!installEvent) return; installEvent.prompt(); await installEvent.userChoice.catch(() => null); installEvent = null; },
   swState: () => ({ active: sw.active, error: sw.error }),
@@ -149,42 +211,66 @@ notifier.on((kind) => { if (kind === 'settings') { api.configurePeers(notifier.s
 api.configurePeers(notifier.settings.peers);
 
 // ---------------------------------------------------------------- routing
-function parseHash() {
-  const raw = (location.hash || '#/board').replace(/^#\/?/, '');
-  const segs = raw.split('/').filter(Boolean).map((s) => { try { return decodeURIComponent(s); } catch { return s; } });
-  const id = byId.has(segs[0]) ? segs[0] : 'board';
-  return { id, params: segs.slice(1) };
-}
+// #/<workspace>/<sub-view>[/params]; an old hash (#/tmux, #/sessions/<id>) is replaced by its new one (routes.js
+// ALIASES), so bookmarks and scripts keep working. The sub-view last used in each workspace is remembered.
+let WS = workspaces();
+const LAST_KEY = 'drover.ws.last';
+let lastSubs = {}; try { lastSubs = JSON.parse(localStorage.getItem(LAST_KEY) || '{}') || {}; } catch { lastSubs = {}; }
+let routeNow = null;
 function nav(id, ...params) {
   if (SOLO) { window.opener?.focus?.(); return; }
-  const next = '#/' + [id, ...params.filter((p) => p !== undefined && p !== null && p !== '').map((p) => encodeURIComponent(String(p)))].join('/');
+  const next = resolve(navSegs(id, params), WS, lastSubs).hash;
   if (location.hash === next) route(); else location.hash = next;
 }
-function drawTabs(activeId) {
-  clear(tabsEl);
-  VIEWS.forEach((v, i) => tabsEl.append(h('button', {
-    class: 'tab', type: 'button', 'data-view': v.id, 'aria-current': v.id === activeId ? 'page' : null, title: `${v.label}${i < 9 ? ` (${i + 1})` : v.key === ',' ? ' (,)' : ''}`, onclick: () => nav(v.id),
-  }, v.label, h('span', { class: 'count' }, state.counts[v.id] ?? ''), i < 9 ? h('kbd', null, String(i + 1)) : null)));
+function drawTabs() {
+  clear(tabsEl); clear(subtabsEl);
+  const r = routeNow;
+  WS.forEach((w, i) => tabsEl.append(h('button', {
+    class: 'tab', type: 'button', 'data-ws': w.id, 'aria-current': r?.ws === w.id ? 'page' : null, title: `${w.label}: ${w.question}${i < 9 ? ` (${i + 1})` : ''}`, onclick: () => nav(w.id),
+  }, w.label, h('span', { class: 'count' }), i < 9 ? h('kbd', null, String(i + 1)) : null)));
+  const ws = r ? WS.find((w) => w.id === r.ws) : null;
+  const many = Boolean(ws && ws.subs.length > 1);
+  subtabsEl.hidden = !many;
+  document.documentElement.classList.toggle('has-subtabs', many);
+  if (many) {
+    subtabsEl.setAttribute('aria-label', `${ws.label} views`);
+    for (const s of ws.subs) subtabsEl.append(h('button', { class: 'subtab', type: 'button', 'data-sub': s.id, 'data-view': s.view, 'aria-current': s.id === r.sub ? 'page' : null, onclick: () => nav(`${ws.id}/${s.id}`) }, s.label, h('span', { class: 'count' })));
+    subtabsEl.append(h('span', { class: 'subtab-keys muted small', 'aria-hidden': 'true' }, h('kbd', null, '['), ' ', h('kbd', null, ']')));
+  }
+  paintCounts();
+}
+/** Counts: a sub-view's own on its sub-tab, rolled up to its workspace's tab (routes.js wsCount). */
+function paintCounts() {
+  for (const el of tabsEl.querySelectorAll('[data-ws]')) { const w = WS.find((x) => x.id === el.dataset.ws); const n = w ? wsCount(w, state.counts) : null; const c = el.querySelector('.count'); if (c) c.textContent = n == null ? '' : String(n); }
+  for (const el of subtabsEl.querySelectorAll('[data-view]')) { const n = state.counts[el.dataset.view]; const c = el.querySelector('.count'); if (c) c.textContent = n == null ? '' : String(n); }
 }
 function destroyCurrent() { try { current?.ctrl?.destroy?.(); } catch (e) { console.error('view destroy failed', e); } current = null; }
 function route() {
   if (SOLO) return;
   if (!api.getToken()) return showTokenGate();
-  const { id, params } = parseHash();
-  const view = byId.get(id);
-  drawTabs(id);
-  badge.setTitle(`${view.label} · Drover`);
+  const r = resolve(parseHash(location.hash), WS, lastSubs);
+  if (location.hash !== r.hash) history.replaceState(null, '', location.pathname + location.search + r.hash);
+  routeNow = r;
+  if (lastSubs[r.ws] !== r.sub) { lastSubs = { ...lastSubs, [r.ws]: r.sub }; localStorage.setItem(LAST_KEY, JSON.stringify(lastSubs)); }
+  const view = byId.get(r.view) ?? board;
+  const ws = WS.find((w) => w.id === r.ws);
+  drawTabs();
+  badge.setTitle(`${ws && ws.subs.length > 1 ? `${ws.label} › ` : ''}${view.label} · Drover`);
+  const params = r.params;
   if (current && current.view === view && current.ctrl?.params) { current.ctrl.params(params); return; }
   destroyCurrent();
   clear(main); main.scrollTop = 0;
   try {
-    const ctrl = view.mount(main, ctx, params) || {};
+    const out = view.mount(main, ctx, params);
+    const ctrl = typeof out === 'function' ? { destroy: out } : (out || {});
     current = { view, ctrl };
     if (qInput.value) ctrl.search?.(qInput.value);
   } catch (e) { console.error(e); main.append(h('div', { class: 'empty' }, h('b', null, 'This view failed to render'), e.message)); }
   if (stream) connectStream();   // a view can ask for more events (Tmux and Sessions follow the local snapshot)
 }
 function remountView() { destroyCurrent(); route(); }
+/** The next or previous sub-view of the workspace on screen ([ ], Alt+arrows, < >). */
+function stepView(dir) { const r = routeNow; if (!r) return; const next = stepSub(WS, r.ws, r.sub, dir); if (next && next !== r.sub) nav(`${r.ws}/${next}`); }
 
 // ---------------------------------------------------------------- hosts
 function drawHosts() {
@@ -244,7 +330,10 @@ function updateBadge() {
   const n = waitingStrips(state).length;
   badge.setCount(notifier.settings.master === false ? 0 : n, notifier.settings.badge ?? {});
   drawAlertsBtn();
+  // Who waits on you is the Agents workspace's count wherever you are, not only while Lanes is on screen.
+  state.counts.board = n || null; paintCounts();
   window.dispatchEvent(new CustomEvent('drover:fleet'));
+  fire(boardSubs, currentStrips(state));
 }
 
 async function openPip() {
@@ -448,7 +537,7 @@ function connectStream({ force = false } = {}) {
 // ---------------------------------------------------------------- token gate
 function showTokenGate(msg) {
   destroyCurrent(); drawer.close();
-  clear(main); drawTabs(null);
+  clear(main); routeNow = null; drawTabs();
   const input = h('input', { type: 'password', autocomplete: 'off', placeholder: 'token', 'aria-label': 'API token' });
   main.append(h('form', { class: 'gate', onsubmit: async (e) => { e.preventDefault(); const t = input.value.trim(); if (!t) return; api.setToken(t); await boot(); } },
     h('h1', null, 'Drover'),
@@ -460,9 +549,11 @@ function showTokenGate(msg) {
 
 // ---------------------------------------------------------------- shortcuts
 const SHORTCUTS = [
-  ['General', [['/', 'search this view'], ['g', 'search every session on every machine'], ['⌘K', 'command palette (jump, msg, ask, capture, keys, launch, host, search)'], ['1 to 9', 'switch view'], [',', 'settings'], ['?', 'this sheet'], ['w', 'waiting board window (always on top)'], ['Esc', 'close the manager popup, the drawer, the palette or a menu']]],
+  ['General', [['/', 'search this view'], ['g', 'search every session on every machine'], ['⌘K', 'command palette (jump, msg, ask, capture, keys, launch, host, search, prompts)'], ['1 to 7', 'workspace: Manager, Agents, Prompts, Work, Fleet, Find, Settings'], ['[ ]  or  Alt+← →', 'previous / next view in the workspace (also < >)'], [',', 'settings'], ['?', 'this sheet'], ['w', 'waiting board window (always on top)'], ['Esc', 'close the manager popup, the drawer, the palette or a menu']]],
   ['Manager', [['m', 'talk to the manager: the board\'s dock, or a popup anywhere else'], ['Enter / Shift+Enter', 'send / new line'], ['↑ / ↓', 'your earlier questions'], ['Esc', 'close the popup (the draft stays)']]],
-  ['Board', [['j / k', 'next / previous agent'], ['Enter', 'open the drawer']]],
+  ['Agents', [['j / k', 'next / previous agent (Lanes, List, Windows)'], ['Enter', 'open the drawer for the selected agent']]],
+  ['Wall', [['← → ↑ ↓  or  h j k l', 'move the selection'], ['click', 'select; a second click zooms'], ['z', 'zoom the selected tile (Esc to unzoom)'], ['Enter, double-click', 'open the drawer'], ['+ / -', 'denser / larger tiles']]],
+  ['Prompts', [['click', 'the whole prompt, verbatim, beside the list'], ['scroll', 'older prompts load at the end']]],
   ['Drawer', [['r', 'reply (focus the composer)'], ['p', 'pop the drawer out into its own window'], ['Option+Space (hold)', 'dictate while held; release to stop'], ['Enter / Shift+Enter', 'send / new line'], ['↑ / ↓', 'message history'], ['paste, drop', 'attach files (sent to the session as paths)']]],
   ['Files', [['⌘S', 'save'], ['Tab', 'indent']]],
 ];
@@ -491,14 +582,17 @@ document.addEventListener('keydown', (e) => {
     if (ctx.manager.isOpen) { ctx.manager.close(); return; }
     if (!typing && drawer.isOpen) { drawer.close(); return; }
   }
+  // Alt+← → steps through the workspace's views (not while typing: there it moves by word).
+  if (e.altKey && !typing && !e.metaKey && !e.ctrlKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) { e.preventDefault(); stepView(e.key === 'ArrowRight' ? 1 : -1); return; }
   if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key === '?') { e.preventDefault(); showShortcuts(); return; }
   if (e.key === '/') { e.preventDefault(); qInput.focus(); qInput.select(); return; }
   if (e.key === ',') { e.preventDefault(); nav('settings'); return; }
   if (e.key === 'w') { e.preventDefault(); openPip(); return; }
   if (e.key === 'm' && SOLO !== 'manager') { e.preventDefault(); ctx.manager.summon(); return; }
-  if (e.key === 'g') { e.preventDefault(); nav('search'); return; }
-  if (/^[1-9]$/.test(e.key)) { const v = VIEWS[Number(e.key) - 1]; if (v) { e.preventDefault(); nav(v.id); } return; }
+  if (e.key === 'g') { e.preventDefault(); nav('find/search'); return; }
+  if (/^[1-9]$/.test(e.key)) { const w = WS[Number(e.key) - 1]; if (w) { e.preventDefault(); nav(w.id); } return; }
+  if (e.key === '[' || e.key === ']' || e.key === '<' || e.key === '>') { e.preventDefault(); stepView(e.key === ']' || e.key === '>' ? 1 : -1); return; }
   if (e.key === 'r' && drawer.isOpen) { e.preventDefault(); drawer.focusComposer(); return; }
   if (e.key === 'p' && drawer.isOpen && !SOLO) { e.preventDefault(); drawer.popOut(); return; }
   current?.ctrl?.key?.(e);
@@ -574,17 +668,15 @@ async function bootSolo() {
 }
 window.addEventListener('message', (e) => { if (e.origin === location.origin && e.data?.type === 'drover-open' && e.data.target) ctx.open(e.data.target); });
 
-/** The front daemon's plugin views, added to the tabs in place (the palette and the router read the same list). */
+/** The front daemon's plugin views, placed in their workspaces (routes.js placeView; the palette and the router read WS). */
 async function loadPluginViews() {
   await api.loadServerInfo();
   for (const url of api.pluginViewUrls()) {
     try {
       const v = (await import(url)).default;
       if (!v?.id || typeof v.mount !== 'function' || byId.has(v.id)) continue;
-      const after = v.after ? VIEWS.findIndex((x) => x.id === v.after) : -1;
-      const at = after >= 0 ? after + 1 : VIEWS.findIndex((x) => x.id === 'settings');
-      VIEWS.splice(at >= 0 ? at : VIEWS.length, 0, v);
-      byId.set(v.id, v);
+      if (!placeView(WS, v)) continue;
+      VIEWS.push(v); byId.set(v.id, v);
     } catch (e) { console.error('plugin view failed to load', url, e); }
   }
 }

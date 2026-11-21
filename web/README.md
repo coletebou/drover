@@ -453,6 +453,72 @@ drover op files.wait '{"host":"box-a","path":"~/runs/status","glob":"WS-*.md","s
   lists every shortcut. Direct peers (Settings) let the browser call another
   daemon over a forwarded port or the tailnet instead of ssh rpc.
 
+## The browser UI: seven workspaces
+
+The web UI (`ui/`, vanilla ES modules) answers seven questions, one workspace each, with a row of sub-views under
+the workspace tabs (`docs/specs/2026-11-21-cohesion-overhaul.md` is the contract every client follows). The table,
+the aliases and plugin placement are one pure module, `ui/routes.js` (tests: `test/ui-routes.test.js`).
+
+| Key | Workspace | Sub-views |
+|---|---|---|
+| 1 | Manager | the manager console |
+| 2 | Agents | Lanes (the board) · List (sessions; the Survey button shows the survey below) · Windows (tmux; terminals open in a panel there or in the drawer's Terminal tab) · Wall · Space |
+| 3 | Prompts | Mine · All |
+| 4 | Work | Pulls · Features, then plugin views (merge requests) |
+| 5 | Fleet | Hosts · Stacks · Launch |
+| 6 | Find | Search · Memory · Events · Files |
+| 7 | Settings | |
+
+- **Addresses** are `#/<workspace>/<sub-view>[/params]` (`#/agents/windows/work%3A3`). Every old hash still works:
+  `#/tmux`, `#/board`, `#/sessions/<id>`, `#/terminals/<id>`, `#/survey`, `#/launch/<prompt>`, `#/stacks/<host>` and
+  the rest are replaced by their new address with their params kept (`routes.js` `ALIASES`, the spec's alias
+  table). A workspace alone (`#/agents`) opens the sub-view last used there (kept in localStorage).
+- **Keys**: `1`-`7` pick a workspace, `[` `]` (or `<` `>`, or Alt+← →) the previous or next sub-view; `/`, `g`,
+  `,`, `?`, `w`, `m` and ⌘K as before. The palette lists every workspace and sub-view ("Agents › Wall"), finds them
+  by their old names too ("tmux"), and `prompts <words>` opens Prompts searching for them.
+- **Counts** on a sub-tab roll up to its workspace's tab: Agents shows who waits on you wherever you are; a
+  sub-view's informational total (live sessions, dialogs on screen, events) stays on its own tab (`rollup: false`).
+- **Plugin views** (`ui.views`) join the workspace their `workspace` field names (after the sub-view `after`
+  names, when given), else the one their `after` belongs to (an older plugin's `after: 'prs'` puts it in Work),
+  else Work. A sub-view's view module exposes `{ id, label, topics?, mount(root, ctx, params) }`; `mount` returns a
+  controller (`{ destroy, search, params, sse, key, probe }`, all optional) or an unmount function.
+- **One selected agent** across Lanes, List, Windows, Wall and Space, held by its board strip key, so `j`/`k` in
+  Lanes then `]` to Wall keeps it. A view reads it through `ctx`: `ctx.board()` (the normalized strips Lanes renders),
+  `ctx.onBoard(fn)` (after every board change; returns unsubscribe), `ctx.selected()`, `ctx.select(key)`,
+  `ctx.onSelect(fn)`, `ctx.stripKey(strip)`; `ctx.open(target)` opens the drawer (and selects the strip it is). A
+  selection carried in from another view is marked, never acted on: answering a dialog takes a click on the strip's
+  own buttons, or the drawer.
+- **Hover is information, click is action.** Rows, strips, tiles and tabs get a light highlight under the pointer
+  (`--hover`, `--hover-line`, in both schemes) and the same look under keyboard focus; an element with a
+  `data-peek` preview (a strip's last line, a prompt's text, a tile's last pane line) shows it in a quiet panel at
+  the foot of the page while the pointer rests there or it has focus. Hover never selects. Motion (the hover fade,
+  the waiting pulse) is off under `prefers-reduced-motion`.
+
+### Prompts
+
+Every prompt you typed into Claude Code, Codex or Hermes on any machine, verbatim and newest first, over
+`prompts.list` on the front daemon (it fans out to every host). The search box is its `q` (every word must match;
+the daemons search, debounced), the selects its `host`, `engine` and `label`; Mine is the daemon's default set
+(typed, queued, sent through Drover, launch prompts), All adds `peer` messages between agents. Scrolling to the end
+reads older pages with `before`. A click shows the whole prompt beside the list as plain text, with Copy (`y`), Open
+session (when its session is on the board) and Launch with this prompt (`n`: Fleet › Launch with the prompt, its
+folder and host filled in, `#/fleet/launch/<prompt>/<folder>/<host>`). New user turns and writes refresh the top at
+most every 4 s. The status line is `prompts.status` (records, newest, each sink's last sync or error); Sync now runs
+`prompts.sync`. A daemon without the ops says so.
+
+### Wall
+
+A grid of live mini terminals, one per agent on the board, waiting first, then working, then idle. A tile is a
+header (lane dot, name, host, age) over the bottom of its pane in color, bordered in its lane's color (waiting
+tiles pulse). Panes come from `tmux.captureMany`, one call per host per refresh, only for the tiles on screen
+(IntersectionObserver), every 2 s (1 s zoomed), paused while the page is hidden; the escapes are parsed by
+`ui/ansi.js` into spans, text only as textContent and colors only as validated `#rrggbb` inline styles, on a
+terminal's dark ground in both schemes. A host whose daemon has no `tmux.captureMany` is read with `tmux.capture`,
+a few panes at a time, without color; a tile with no pane (a headless session, a Grok bot) shows its board tail.
+Click selects, a second click or `z` zooms the tile to the whole view, Enter or a double click opens the drawer, Esc
+unzooms, arrows or `h j k l` move, `+` `-` (or the slider) set the density, 1x1 up to 6x5. Pure half:
+`ui/wall-model.js` (tests: `test/ui-wall.test.js`).
+
 ## Asks: questions by text
 
 An agent blocked on the owner asks with `drover_ask` (or `drover ask "Ship it?" --options yes,no`) instead of waiting
@@ -510,10 +576,12 @@ hub's signature: the hub signs them with a key that never leaves it, and every o
 `terminals.open` (`core/terminals.js`) starts one ttyd per tmux target on
 `127.0.0.1` and an ephemeral port, and returns `{ id, url }`. A second open of
 the same target, while that ttyd is still running, returns the one already
-open. `readOnly: true` omits ttyd's `-W`, so the session is view-only. The
-Terminals view (`r`) embeds `url` in an iframe and can pop it into its own
-tab; the drawer's Terminal button opens that tab directly. Both load ttyd's
-own page.
+open. `readOnly: true` omits ttyd's `-W`, so the session is view-only. In the
+browser, Agents › Windows has a Terminals panel (where `#/terminals/<id>` lands)
+and a Terminal button on each window row; both embed `url` in an iframe that can
+pop out into its own tab. The drawer's Terminal button opens it in the drawer's
+own Terminal tab when the window is on this machine, in a tab of its own
+otherwise. All of them load ttyd's own page.
 
 ttyd is started with `-O`. Its websocket then accepts only a request whose
 `Origin` is that page. Browsers allow any site to open a websocket to
@@ -1247,7 +1315,10 @@ hosts and a fake manager gateway that streams (`test/fake-gateway.js`; a message
 8 s, "fail " fails, "echo " echoes). Tokens are copied from the real state dir, so a paired client works against it.
 A dialog comes back about 12 s after it is answered. Nothing in it can reach a real session, pane or host: its
 codex, docker and ssh are stand-ins (`test/showcase/fake-*.js`), every tmux server it starts or stops is named by
-socket, and it stops unless the daemon sees only its own hosts, no plugin and only its own tmux session. `--bots
+socket, and it stops unless the daemon sees only its own hosts, only its own plugin and only its own tmux session.
+That plugin (`test/devworld-plugin`) stands in for `tmux.captureMany` (the world's own panes, colors kept) and
+`prompts.*` (synthetic records across its hosts) until the daemon serves them; a plugin can add ops but never replace
+one, so the daemon's own answer wins once it has them. `--bots
 <port>` also runs the bot gateway on that loopback port (its own public origin, plain http) and keeps the bots in the
 world's state, so a script can be a Grok bot end to end: sign in, get approved with the world's `drover bots`, call the
 tools, and take Routine webhooks on loopback.

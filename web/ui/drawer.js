@@ -12,7 +12,9 @@
 // The composer takes pasted or dropped files (uploaded to the session's host,
 // the message names their absolute paths), push-to-talk dictation (on-device
 // recognition when Chrome has it; cloud only when allowed in Settings), and the
-// usual history / nudges / keys. The head has copy, pop-out, mute and share.
+// usual history / nudges / keys. The head has copy, pop-out, mute and share. Terminal opens a ttyd attached to the
+// window (terminals.open) in the drawer's own Terminal tab when the window is on this machine (ttyd binds loopback),
+// else in a tab of its own.
 import { h, clear, btn, engine, dot, ago, kv, fmtTime, shortPath, loading, empty, seg, plural } from './dom.js';
 import { tmuxWindowTarget, isWindow } from './transcript.js';
 import { copyButton, copyText, saveText, canShare, share, fileToBase64 } from './clip.js';
@@ -76,7 +78,7 @@ export class Drawer {
     const same = this.target && this.target.kind === target.kind && this.target.id === target.id && (this.target.host ?? 'local') === (target.host ?? 'local');
     this.#stopTimers();
     if (this.following && !same) { this.ctx.follow(this.following, false).catch(() => {}); this.following = null; }
-    if (!same) { this.dict?.abort(); this.dict = null; this.attachments = []; this.mode = undefined; this.pendingForce = null; this.pushed = false; this.pressedHash = null; }
+    if (!same) { this.dict?.abort(); this.dict = null; this.attachments = []; this.mode = undefined; this.pendingForce = null; this.pushed = false; this.pressedHash = null; this.term = null; }
     this.target = { host: this.ctx.host(), ...target };
     this.alive = true;
     if (!same) {
@@ -151,6 +153,7 @@ export class Drawer {
     const body = this.el.querySelector('.drawer-body'); if (!body) return;
     if (this.tab === 'chat') await this.#loadChat(body);
     else if (this.tab === 'screen') await this.#loadScreen(body);
+    else if (this.tab === 'term') this.#renderTerm(body);
     else this.#renderInfo(body);
   }
   async #poll() {
@@ -557,7 +560,7 @@ export class Drawer {
         btn(this.ctx.solo ? 'Close window' : 'Close', () => this.close(), { cls: 'sm quiet', key: 'esc' })),
       h('div', { class: 'sub' }, sub));
     const tabs = h('div', { class: 'drawer-tabs' },
-      ...[['chat', 'Chat'], ['screen', 'Screen'], ['info', 'Info']].map(([id, label]) => h('button', { class: 'tab', type: 'button', 'aria-current': this.tab === id ? 'page' : null, onclick: () => { if (this.tab === id) return; this.tab = id; this.chat = null; this.#render(); this.#loadTab(); this.#startPoll(); this.#paintCard(); } }, label)));
+      ...[['chat', 'Chat'], ['screen', 'Screen'], this.term ? ['term', 'Terminal'] : null, ['info', 'Info']].filter(Boolean).map(([id, label]) => h('button', { class: 'tab', type: 'button', 'aria-current': this.tab === id ? 'page' : null, onclick: () => { if (this.tab === id) return; this.tab = id; this.chat = null; this.#render(); this.#loadTab(); this.#startPoll(); this.#paintCard(); } }, label)));
     const body = h('div', { class: 'drawer-body' });
     const foot = h('div', { class: 'drawer-foot' });
     this.card.el.remove();
@@ -626,7 +629,21 @@ export class Drawer {
   }
   async #openTerminal() {
     const win = this.windowTarget(); if (!win) return;
-    try { const r = await this.#call('terminals.open', { target: win }); this.ctx.toast(`Terminal on ${r.url}`, 'ok'); window.open(r.url, '_blank', 'noopener'); } catch { /* toasted */ }
+    try {
+      const r = await this.#call('terminals.open', { target: win });
+      // ttyd binds 127.0.0.1 on the window's machine: in the drawer only when that is this one.
+      if ((this.target.host ?? 'local') === 'local' && this.ctx.isLocal()) {
+        this.term = r; this.tab = 'term'; this.chat = null; this.#render(); this.#loadTab(); this.#startPoll(); this.#paintCard();
+      } else { this.ctx.toast(`Terminal on ${r.url}`, 'ok'); window.open(r.url, '_blank', 'noopener'); }
+    } catch { /* toasted */ }
+  }
+  #renderTerm(body) {
+    clear(body);
+    const r = this.term; if (!r) return;
+    body.append(h('div', { class: 'toolbar' }, h('span', { class: 'muted small' }, `ttyd on ${r.url}${r.readOnly ? ', read only' : ''}`), h('span', { class: 'spacer' }),
+      btn('Pop out', () => window.open(r.url, '_blank', 'noopener'), { cls: 'sm quiet', title: 'Open this terminal in its own tab' }),
+      btn('Close terminal', async () => { try { await this.#call('terminals.close', { id: r.id }); } catch { /* toasted */ } this.term = null; this.tab = 'screen'; this.#render(); this.#loadTab(); this.#startPoll(); }, { cls: 'sm quiet danger', title: 'Stop the ttyd (the tmux window stays)' })),
+      h('iframe', { class: 'term drawer-term', src: r.url, title: `terminal ${r.target ?? this.windowTarget()}`, allow: 'clipboard-read; clipboard-write' }));
   }
 
   // ------------------------------------------------------------ live updates

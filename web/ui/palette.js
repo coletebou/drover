@@ -1,5 +1,5 @@
-// Command palette: jump to a session, window, host or view; or run a command
-// like "msg webapp-f8 status?" / "ask who is waiting?" (the manager) / "capture work:30" / "launch".
+// Command palette: jump to a session, window, host, workspace or view ("Agents › Wall"); or run a command
+// like "msg webapp-f8 status?" / "ask who is waiting?" (the manager) / "capture work:30" / "launch" / "prompts parser".
 import { h, clear, engine, dot } from './dom.js';
 
 /**
@@ -27,7 +27,7 @@ export class Palette {
   get isOpen() { return Boolean(this.el); }
   async open(initial = '') {
     if (this.el) { this.input.focus(); return; }
-    this.input = h('input', { type: 'text', placeholder: 'Jump to a session, window or view. Commands: ask <question>, msg <name> <text>, capture <target>, keys <target> <key>, launch, host <name>', autocomplete: 'off', spellcheck: 'false', value: initial });
+    this.input = h('input', { type: 'text', placeholder: 'Jump to a session, window or view. Commands: ask <question>, msg <name> <text>, capture <target>, keys <target> <key>, launch, host <name>, prompts <words>', autocomplete: 'off', spellcheck: 'false', value: initial });
     this.results = h('div', { class: 'results' });
     this.el = h('div', { class: 'palette-bg', onclick: (e) => { if (e.target === this.el) this.close(); } },
       h('div', { class: 'palette', role: 'dialog', 'aria-label': 'Command palette' }, this.input, this.results,
@@ -77,9 +77,11 @@ export class Palette {
     if (/^keys?$/i.test(cmd) && rest.length >= 2) items.push({ kind: 'command', label: `Send ${rest.slice(1).join(' ')} to ${rest[0]}`, run: () => this.ctx.callQuiet('tmux.keys', { target: rest[0], keys: rest.slice(1) }).then(() => this.ctx.toast('Keys sent', 'ok')).catch((e) => this.ctx.toast(e.message, 'error')) });
     if (/^launch$/i.test(cmd)) items.push({ kind: 'command', label: 'Launch an agent' + (rest.length ? `: ${rest.join(' ')}` : ''), run: () => this.ctx.nav('launch', ...(rest.length ? [rest.join(' ')] : [])) });
     if (/^host$/i.test(cmd) && rest[0]) for (const hst of this.ctx.hosts().filter((x) => x.name.includes(rest[0]))) items.push({ kind: 'host', label: `Switch to ${hst.name}`, run: () => this.ctx.setHost(hst.name) });
-    if (/^(search|find|grep)$/i.test(cmd) && rest.length) items.push({ kind: 'command', label: `Search every session for "${rest.join(' ')}"`, run: () => this.ctx.nav('search', rest.join(' ')) });
-    // views
-    for (const v of this.views) { const sc = q ? score(v.label) : 0; if (sc >= 0) items.push({ kind: 'view', label: v.label, sc: sc + 2, run: () => this.ctx.nav(v.id) }); }
+    if (/^(search|find|grep)$/i.test(cmd) && rest.length) items.push({ kind: 'command', label: `Search every session for "${rest.join(' ')}"`, run: () => this.ctx.nav('find/search', rest.join(' ')) });
+    if (/^(prompts?|spool)$/i.test(cmd)) items.push({ kind: 'command', label: rest.length ? `Prompts matching "${rest.join(' ')}"` : 'Every prompt you typed', small: 'Prompts › Mine', run: () => this.ctx.nav('prompts/mine', ...(rest.length ? [rest.join(' ')] : [])) });
+    // workspaces and their views ("Agents › Wall"), found by old names too ("tmux" finds Agents › Windows)
+    const entries = this.ctx.navEntries?.() ?? this.views.map((v) => ({ label: v.label, nav: v.id, hay: v.label }));
+    for (const v of entries) { const sc = q ? score(v.hay ?? v.label) : 0; if (sc >= 0) items.push({ kind: v.sub || !v.ws ? 'view' : 'space', label: v.label, sc: sc + (v.sub ? 2 : 3), run: () => this.ctx.nav(v.nav) }); }
     // sessions
     for (const s of this.index?.sessions ?? []) {
       if (!s.live && !q) continue;

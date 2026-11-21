@@ -15,7 +15,8 @@ const reduced = () => window.matchMedia?.('(prefers-reduced-motion: reduce)')?.m
 function boardOf(ctx) {
   const b = ctx.board?.();
   if (b && !Array.isArray(b)) return b;
-  return { strips: Array.isArray(b) ? b : ctx.strips?.() ?? [], hosts: ctx.state?.board?.hosts ?? [], manager: ctx.state?.board?.manager ?? null, totals: ctx.state?.board?.totals ?? null };
+  return { strips: Array.isArray(b) ? b : ctx.strips?.() ?? [], hosts: ctx.state?.board?.hosts ?? [],   // hosts carry ui: 'local' for the front daemon, as the strips do
+    manager: ctx.state?.board?.manager ?? null, totals: ctx.state?.board?.totals ?? null };
 }
 
 export default {
@@ -95,7 +96,7 @@ export default {
       const r = resolveId(lay, id);
       if (!r) { el.replaceChildren(...(rich ? [] : [h('span', { style: { color: '#8a93a3' } }, 'Hover or click an agent; click it again to open it. The core in the middle is the manager.')])); return; }
       if (r.kind === 'core') { el.replaceChildren(h('b', { style: { color: rgb(PALETTE.core) } }, '◆ manager'), h('div', { style: { color: '#8a93a3' } }, 'Click again (or Enter) to open the manager.')); return; }
-      if (r.kind === 'host') { const x = r.host; el.replaceChildren(h('b', null, `⬢ ${x.name}`), h('span', { style: { color: x.up ? '#8a93a3' : rgb(PALETTE.err) } }, `  ${x.up ? 'up' : 'down'} · ${x.count} agents${x.waiting ? ` · ${x.waiting} waiting` : ''}`)); return; }
+      if (r.kind === 'host') { const x = r.host; el.replaceChildren(h('b', null, `⬢ ${x.label ?? x.name}`), h('span', { style: { color: x.up ? '#8a93a3' : rgb(PALETTE.err) } }, `  ${x.up ? 'up' : 'down'} · ${x.count} agents${x.waiting ? ` · ${x.waiting} waiting` : ''}`)); return; }
       const s = r.agent.strip;
       const lane = s.lane === 'wait' ? 'waiting on you' : s.lane === 'work' ? 'working' : 'idle';
       el.replaceChildren(h('b', null, `■ ${s.name ?? s.key}`), h('span', { style: { color: rgb(PALETTE[s.lane] ?? PALETTE.idle) } }, `  ${lane}`), h('span', { style: { color: '#8a93a3' } }, `  ${s.host} · ${s.engine ?? ''}${s.since ? ` · ${ago(s.since)}` : ''}`),

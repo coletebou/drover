@@ -235,7 +235,7 @@ export class SpaceView {
       return [dimRow(`${this.lay.hosts.length} hosts · ${this.lay.agents.length} agents${t.waiting ? ` · ${t.waiting} waiting on you` : ''}${this.showIdle ? '' : ' (idle hidden)'}`), dimRow('Hover or click an agent; a second click opens it. The manager is the core in the middle.')];
     }
     if (r.kind === 'core') { const m = this.app.board?.manager; return [[[' ◆ manager', 'mgr'], [`  ${oneLine(m?.status ?? m?.state ?? '')}`, 'dim']], dimRow('Enter or a second click opens the manager.')]; }
-    if (r.kind === 'host') { const h = r.host; return [[[` ⬢ ${h.name}`, 'bold'], [`  ${h.up ? 'up' : `down${h.error ? `: ${oneLine(h.error)}` : ''}`} · ${h.count} agents${h.waiting ? ` · ${h.waiting} waiting` : ''}`, h.up ? 'dim' : 'err']], dimRow('Enter or a second click flies to it; j/k walks its agents.')]; }
+    if (r.kind === 'host') { const h = r.host; return [[[` ⬢ ${h.label ?? h.name}`, 'bold'], [`  ${h.up ? 'up' : `down${h.error ? `: ${oneLine(h.error)}` : ''}`} · ${h.count} agents${h.waiting ? ` · ${h.waiting} waiting` : ''}`, h.up ? 'dim' : 'err']], dimRow('Enter or a second click flies to it; j/k walks its agents.')]; }
     const s = r.agent.strip;
     const lane = s.lane === 'wait' ? ['waiting on you', 'wait'] : s.lane === 'work' ? ['working', 'work'] : ['idle', 'idle'];
     const line1 = [[` ■ ${truncate(oneLine(s.name ?? s.key), Math.max(8, Math.floor(width / 2)))}`, 'bold'], [`  ${lane[0]}`, lane[1]], [`  ${this.app.hostLabel?.(s.host) ?? s.host} · ${s.engine ?? ''}${s.since ? ` · ${ago(s.since)}` : ''}`, 'dim']];
@@ -245,7 +245,7 @@ export class SpaceView {
   render(width, height) {
     const board = this.app.board ?? { strips: [] };
     const now = Date.now();
-    this.lay = layout(board, { showIdle: this.showIdle, now, frontHost: 'local' });
+    this.lay = layout(board, { showIdle: this.showIdle, now, frontHost: this.app.frontHost ?? 'local' });
     if (!this.cam) this.cam = createCamera(this.lay);
     const t = this.app.board?.totals ?? {};
     const head = [[' Space', 'bold'], [`  ${this.lay.hosts.length} hosts · ${board.strips?.length ?? 0} agents`, 'dim'], ...(t.waiting ? [[`  ${t.waiting} waiting`, 'waitBold']] : []), [this.cam.drift ? '  drifting' : '', 'dim']];

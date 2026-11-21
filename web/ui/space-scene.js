@@ -44,9 +44,10 @@ const LANE_RANK = { wait: 0, work: 1, idle: 2 };
  * ones in the middle. showIdle false leaves idle agents out. now: ms, for heights (recent work stands taller).
  */
 export function layout(board, { showIdle = true, now = 0, frontHost = 'local' } = {}) {
-  const strips = (board?.strips ?? []).filter((s) => showIdle || s.lane !== 'idle');
+  // The manager is the core, never a monolith: its strip (engine openclaw, id manager) stays out of the hosts.
+  const strips = (board?.strips ?? []).filter((s) => s && s.engine !== 'openclaw' && s.id !== 'manager' && (showIdle || s.lane !== 'idle'));
   const names = new Map();
-  for (const h of board?.hosts ?? []) if (h?.name) names.set(h.name, { name: h.name, up: h.up !== false, stale: Boolean(h.stale), error: h.error ?? null });
+  for (const h0 of board?.hosts ?? []) { const h = h0?.ui ? { ...h0, name: h0.ui } : h0; if (h?.name) names.set(h.name, { name: h.name, label: h0.name ?? h.name, up: h.up !== false, stale: Boolean(h.stale), error: h.error ?? null }); }
   for (const s of strips) if (!names.has(s.host ?? 'local')) names.set(s.host ?? 'local', { name: s.host ?? 'local', up: true });
   const hostList = [...names.values()].sort((a, b) => Number(b.name === frontHost) - Number(a.name === frontHost) || a.name.localeCompare(b.name));
   const byHost = new Map(hostList.map((h) => [h.name, []]));
@@ -67,7 +68,7 @@ export function layout(board, { showIdle = true, now = 0, frontHost = 'local' } 
     const ang = hosts.length === 1 ? Math.PI / 2 : (acc + share / 2) * 2 * Math.PI;
     acc += share;
     const x = Math.cos(ang) * R, z = Math.sin(ang) * R;
-    outHosts.push({ name: h.name, x, z, r: h.r, up: h.up, stale: h.stale, error: h.error, count: h.agents.length, waiting: h.agents.filter((s) => s.lane === 'wait').length, angle: ang });
+    outHosts.push({ name: h.name, label: h.label ?? h.name, x, z, r: h.r, up: h.up, stale: h.stale, error: h.error, count: h.agents.length, waiting: h.agents.filter((s) => s.lane === 'wait').length, angle: ang });
     h.agents.forEach((s, i) => {
       const rr = C * Math.sqrt(i + 0.5), a = i * GOLDEN;
       const ax = x + Math.cos(a) * rr, az = z + Math.sin(a) * rr;
@@ -143,7 +144,7 @@ export function buildScene(lay, { t = 0, selected = null, hovered = null, labels
     const base = h.up ? PALETTE.host : PALETTE.hostDown;
     for (const f of prism(h.x, 0, h.z, h.r, DISC_H)) faces.push({ ...f, color: f.top ? (h.up ? (on ? scale(PALETTE.hostTop, 1.35) : PALETTE.hostTop) : PALETTE.hostDown) : base, id, layer: 0.5 });   // discs under every agent (painter's order)
     lines.push({ a: [h.x, DISC_H, h.z], b: core, color: h.waiting ? mix(PALETTE.link, PALETTE.wait, 0.35 + 0.4 * pulse) : h.up ? PALETTE.link : PALETTE.hostDown, layer: 1, id });
-    marks.push({ p: [h.x, DISC_H + 0.2, h.z + h.r + 0.55], text: h.up ? h.name : `${h.name} (down)`, color: h.up ? PALETTE.label : PALETTE.dim, id, priority: 2 });
+    marks.push({ p: [h.x, DISC_H + 0.2, h.z + h.r + 0.55], text: h.up ? h.label : `${h.label} (down)`, color: h.up ? PALETTE.label : PALETTE.dim, id, priority: 2 });
   }
   for (const a of lay.agents) {
     const id = `agent:${a.key}`, sel = id === selected, hov = id === hovered;

@@ -47,7 +47,13 @@ export default {
       f.host.append(h('option', { value: hst.name, selected: hst.name === ctx.host() ? true : null }, hst.name === 'local' ? `${hst.display} (local)` : `${hst.display}${up === false ? ', unreachable' : ''}`));
     }
     if (!f.host.value) f.host.append(h('option', { value: 'local', selected: true }, 'local'));
-    if (params[0]) f.prompt.value = params[0];
+    // #/fleet/launch/<prompt>[/<folder>[/<host>]]: a prompt to launch again (Prompts' "Launch with this prompt").
+    const prefill = (p) => {
+      if (p[0]) f.prompt.value = p[0];
+      if (p[1]) f.cwd.value = p[1];
+      if (p[2] && [...f.host.options].some((o) => o.value === p[2])) f.host.value = p[2];
+    };
+    prefill(params);
 
     // A button group inside a <label> would be activated by a click on the label text, so these two rows are divs shaped like label.field.
     const segField = (label, control) => h('div', { class: 'field', style: { display: 'grid', gap: '4px', fontSize: 'var(--fs-1)', color: 'var(--ink-2)' } }, h('span', { class: 'em' }, label), control);
@@ -284,7 +290,7 @@ export default {
     load();
     return {
       destroy() { alive = false; },
-      params(p) { if (p[0]) { f.prompt.value = p[0]; preview(); f.prompt.focus(); } },
+      params(p) { if (p[0]) { const host = f.host.value; prefill(p); if (f.host.value !== host) load(); preview(); f.prompt.focus(); } },
     };
   },
 };
