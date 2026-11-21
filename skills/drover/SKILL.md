@@ -32,6 +32,7 @@ and in the MCP server's instructions, and a plugin's own skill, when it has one,
 | Read a whole transcript | `drover_session_transcript` with `format` | `messages` (what was said, smallest), `calls` (plus every tool call, no outputs; `callStyle: brief` for one line each), `full` (plus every output), `raw` (the JSONL as it is). Markdown pages of 80 KB from the start: pass `offset` as `since` while `more`. Works for subagents (agent id; `subagents: true` on a session lists them), headless runs, Codex threads, `manager` (with `thread`) and `openclaw:<id or key>` (heartbeats, cron runs). What was typed into a busy session or a subagent's agent panel is a user turn marked `queued`. On a 6 MB session: messages ~30 KB, calls ~360 KB, full ~800 KB |
 | Find a transcript of any kind | `drover_transcripts_list` (`host`) | sessions, subagents (type, task), headless, reflection and dotsync runs, Codex exec, OpenClaw heartbeats and cron; `kind`, `engine`, `days`, `parent`. Autoreview runs keep no transcript |
 | Find what a session said or ran, on every host | `drover_search_fleet` | words + meaning over conversation, commands (keyword-only), documents (Codex memories, dotfiles specs) and reflections, plus Badland brain entries where a plugin serves them (see "Search and the brain"); read `coverage.notCovered` before trusting an empty answer |
+| What the owner (or anyone) asked an agent, where and when | `drover_prompts_list` | every prompt typed into Claude Code or Codex on every host, verbatim (secrets redacted), newest first; see "Prompts" |
 | Find tool output, or history no index holds | `drover_search_grepFleet` | ripgrep over the raw transcripts on every host; `roles: ["tool_result"]` for what a command printed |
 | Talk to a live session | `drover_send` | lands in its queue like typed input; `queuedBehindTurn` when busy. Say who you are in the text. A Claude session that handed off and is gone still works as a target: the message goes to its handoff chain's newest live generation (`resolvedFrom`, `resolvedTo`, `resolvedWhy` say so); a live target is never redirected, and when the chain has no live successor, or the name is in several chains, the error lists the later generations to pick from. A name that is only a tmux window's name still reaches the one running Claude session in that window; two running sessions in windows of that name match neither |
 | Ask one of the owner's Grok bots | `drover_send` with id `grok:<name>` (`grok:*` for all) | on the host that runs the bot gateway (`drover_bots_status`). Its Routine webhook runs the bot, else the message waits in its inbox; the answer comes later as a `chat` event (read it with `drover_session_transcript`). Bots show in `drover_sessions` with their last reported state |
@@ -59,6 +60,16 @@ add; a host reached over rpc never asks), and fuses the two lists by rank (`scor
 not: nothing is sent when the machine's identity is work or the query, project, host or your session's checkout looks
 like work (`work identity`, `work context`), with `DROVER_SEARCH_BRAIN=off` (`disabled`), and a timeout or an error
 leaves the index's answer as it was.
+
+## Prompts
+
+`drover_prompts_list` reads the prompt spool: every prompt typed into Claude Code or Codex on each reachable host,
+verbatim with secrets redacted, merged newest first (`drover prompts [words]` from a shell). Filter with `q` (all words),
+`host`, `engine`, `label`, `since` (`7d`), `session`, `cwd`; each record's `via` says who sent it (`typed`, `queued`,
+`peer`, `drover`, `headless`, `sdk`), and the default leaves out `peer` and `sdk` (`via: "all"` keeps them). A host that
+is down shows from a git sink's clone (`source: "sink:<name>"`); read `coverage.notCovered` before trusting an empty
+answer, and page with `before` while `more` is true. `drover_prompts_status` shows the spool and its sinks;
+`drover_prompts_sync` scans and pushes now.
 
 ## Waiting on workers
 

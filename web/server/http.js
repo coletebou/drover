@@ -28,6 +28,7 @@ import * as routineSetup from '../core/bots/routine-setup.js';
 import * as subscriptions from '../core/bots/subscriptions.js';
 import * as clients from '../core/clients.js';
 import { markDaemon as markSearchDaemon, startService as startSearch } from '../core/search/service.js';
+import { markDaemon as markPromptsDaemon, startService as startPrompts } from '../core/prompts.js';
 import * as plugins from '../core/plugins.js';
 import { OWNER } from '../core/owner.js';
 import * as openclaw from '../core/openclaw.js';
@@ -200,6 +201,8 @@ export async function startServer({ port = 7337, bind = '127.0.0.1' } = {}) {
   if (!isLoopback(bind) && !existsSync(TOKEN_FILE)) throw new Error(`refusing to bind ${bind}: no token file yet (run drover serve on 127.0.0.1 once to create it)`);
   // This process serves search ops itself (other processes on the host forward them here).
   markSearchDaemon();
+  // And owns the prompt spool's collector and sinks (core/prompts.js): its prompts.status and prompts.sync answer here.
+  markPromptsDaemon();
   // Manager replies outlive their request here (sessions.message wait: false), and stream to SSE as they arrive.
   openclaw.markDaemon();
   openclaw.onProgress(({ event, data }) => broadcast(event, data));
@@ -429,6 +432,8 @@ export function startSnapshots({ everyMs = 15_000 } = {}) {
   stops.push(cache.warm(cache.keyFor('events.state', {}), () => dispatch('events.state', {}), { every: 30_000 }));
   // The search index (core/search): a pass every minute, embeddings backfilled newest first.
   stops.push(startSearch());
+  // The prompt spool (core/prompts.js): every prompt typed here, a pass every minute, sinks every syncEveryMinutes.
+  stops.push(startPrompts());
   // This machine's vitals every minute; a sustained shortage becomes a resource alert in the ring (never the truth
   // file), which front daemons pull with notify.recent. The fleet catalog says whether it runs here (core/vitals.js).
   stops.push(vitals.startMonitor({ emit: (list) => notifier.emit(list, { record: false }), policy: () => placement.monitorPolicy({ shortName: hosts.localShortName() }) }));

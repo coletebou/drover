@@ -76,6 +76,12 @@ const help = `drover: browser control plane for the agent fleet
   drover transcripts [--engine claude|codex|openclaw] [--kind K] [--days N] [--limit N] [--parent ID] [--host H] [--json]
                                                             every transcript on a machine: sessions, subagents, headless, reflection and dotsync
                                                             runs, Codex exec, OpenClaw heartbeats and cron runs
+  drover prompts [words...] [--host H] [--all] [--via typed,peer,...] [--engine E] [--label L] [--since 7d] [--until T]
+                 [--session ID] [--cwd DIR] [--limit N] [--full] [--json]
+                                                            every prompt typed into Claude Code or Codex on every machine, newest first
+                                                            (--all: peer and sdk turns too); words after -- are always search words
+  drover prompts status [--host H] [--json]                   this machine's prompt spool, last scan and sinks
+  drover prompts sync [--sinks a,b] [--host H] [--json]       scan now, then push every sink (prompts.json)
   drover stacks [--here | --host H] [--project P] [--fresh] [--no-git] [--all] [--json]
                                                             docker compose stacks on every machine: health, failing services, the code each runs
                                                             (--all also lists containers outside compose; verbs: drover op docker.restart|start|exec|run)
@@ -111,8 +117,8 @@ async function main() {
   // on stderr, and the command goes on without it.
   const env = await import(path.join(ROOT, 'core', 'env.js'));
   await env.loadSettings();
-  if (['serve', 'up', 'rpc', 'mcp', 'op', 'search', 'grep', 'stacks', 'transcript', 'transcripts', 'ask'].includes(cmd)) await env.loadEnvFile({ file: env.secretsFile() });
-  if (['serve', 'up', 'rpc', 'op', 'search', 'grep', 'stacks', 'transcript', 'transcripts'].includes(cmd)) {
+  if (['serve', 'up', 'rpc', 'mcp', 'op', 'search', 'grep', 'prompts', 'stacks', 'transcript', 'transcripts', 'ask'].includes(cmd)) await env.loadEnvFile({ file: env.secretsFile() });
+  if (['serve', 'up', 'rpc', 'op', 'search', 'grep', 'prompts', 'stacks', 'transcript', 'transcripts'].includes(cmd)) {
     const { loadPlugins } = await import(path.join(ROOT, 'core', 'api.js'));
     await loadPlugins();
     const plugins = await import(path.join(ROOT, 'core', 'plugins.js'));
@@ -344,6 +350,7 @@ async function main() {
       const { stopAll } = await import(path.join(ROOT, 'core', 'remote.js')); stopAll();
       return;
     }
+    case 'prompts': return promptsCli();
     case 'stacks': {
       const { dispatch } = await import(path.join(ROOT, 'core', 'api.js'));
       const args = { ...(flag('project') ? { project: flag('project') } : {}), ...(has('no-git') ? { git: false } : {}), ...(has('fresh') ? { fresh: true } : {}) };
@@ -428,6 +435,64 @@ async function main() {
  * The Grok bot gateway (server/botgate.js), on its own loopback port, when DROVER_BOTS_URL names its public origin.
  * A bad value keeps the gateway off and the daemon up.
  */
+/** drover prompts: the list (a read, in this process, over the fleet), status (the daemon's), sync (a write, through the daemon). */
+async function promptsCli() {
+  const dash = argv.indexOf('--');
+  const head = dash < 0 ? argv.slice(1) : argv.slice(1, dash);
+  const sub = ['status', 'sync'].includes(head[0]) ? head[0] : null;
+  const valued = new Set(['host', 'limit', 'via', 'engine', 'label', 'since', 'until', 'session', 'cwd', 'sinks', 'before']);
+  const words = [];
+  for (let i = sub ? 1 : 0; i < head.length; i++) { if (head[i].startsWith('--')) { if (valued.has(head[i].slice(2))) i++; continue; } words.push(head[i]); }
+  if (dash >= 0) words.push(...argv.slice(dash + 1));
+  const host = flag('host');
+  const stop = async () => { const { stopAll } = await import(path.join(ROOT, 'core', 'remote.js')); stopAll(); };
+  const ago = (iso) => { const s = Math.round((Date.now() - Date.parse(iso)) / 1000); return !iso ? 'never' : s < 90 ? `${s}s ago` : s < 5400 ? `${Math.round(s / 60)}m ago` : s < 172800 ? `${Math.round(s / 3600)}h ago` : `${Math.round(s / 86400)}d ago`; };
+  if (sub === 'status') {
+    const { dispatch } = await import(path.join(ROOT, 'core', 'api.js'));
+    const r = await dispatch('prompts.status', host ? { host } : {});
+    if (has('json')) console.log(JSON.stringify(r, null, 2));
+    else {
+      console.log(`${r.host}: ${r.records} prompts in ${r.files} day files${r.oldest ? `, ${r.oldest.slice(0, 10)} to ${r.newest.slice(0, 10)}` : ''}; last scan ${ago(r.lastScan)}${r.scanning ? ' (scanning now)' : ''}${r.lastError ? `; last error: ${r.lastError}` : ''}${r.enabled ? '' : '; collection is off (DROVER_PROMPTS=off)'}`);
+      console.log(`config ${r.config?.file ?? '?'}${r.config?.found ? '' : ' (none: the local spool only)'}`);
+      for (const e of r.config?.errors ?? []) console.log(`  config error: ${e}`);
+      for (const k of r.sinks ?? []) console.log(`  sink ${k.name} (${k.type}, labels ${k.labels.join(',')}): last sync ${ago(k.lastSync)}, ${k.pending} pending${k.lastError ? `; error: ${k.lastError}${k.nextAttempt ? ` (next try ${k.nextAttempt})` : ''}` : ''}`);
+    }
+    return stop();
+  }
+  if (sub === 'sync') {
+    const { cliOp } = await import(path.join(ROOT, 'core', 'cli-op.js'));
+    const r = await cliOp('prompts.sync', { ...(host ? { host } : {}), ...(flag('sinks') ? { sinks: flag('sinks').split(',') } : {}) });
+    if (has('json')) console.log(JSON.stringify(r, null, 2));
+    else {
+      console.log(`${r.host}: scanned ${r.scanned} transcripts, ${r.added} new prompts`);
+      for (const k of r.sinks ?? []) console.log(`  ${k.name}: ${k.ok ? `${k.added ?? 0} records${k.type === 'git' ? (k.pushed ? ', pushed' : ', nothing to push') : ''}` : `failed: ${k.error}`}`);
+      if ((r.sinks ?? []).some((k) => !k.ok)) process.exitCode = 1;
+    }
+    return stop();
+  }
+  const { dispatch } = await import(path.join(ROOT, 'core', 'api.js'));
+  const args = { limit: Number(flag('limit', 50)), ...(words.length ? { q: words.join(' ') } : {}), ...(host ? { host } : {}) };
+  for (const k of ['engine', 'label', 'since', 'until', 'session', 'cwd', 'before']) if (flag(k)) args[k] = flag(k);
+  if (has('all')) args.via = 'all'; else if (flag('via')) args.via = flag('via').split(',');
+  const r = await dispatch('prompts.list', args);
+  if (has('json')) { console.log(JSON.stringify(r, null, 2)); return stop(); }
+  const width = process.stdout.isTTY ? process.stdout.columns || 120 : 0;
+  for (const p of [...r.prompts].reverse()) {
+    const when = p.ts.replace('T', ' ').slice(0, 16);
+    const head = `${when}  ${p.host}  ${p.engine}  ${p.via}${p.from ? `:${p.from}` : ''}  ${p.project ?? '-'}  `;
+    if (has('full')) { console.log(`${head}${p.id}\n${p.text}\n`); continue; }
+    const lines = p.text.split('\n');
+    let line = `${head}${lines[0]}${lines.length > 1 ? `  (+${lines.length - 1} lines)` : ''}`;
+    if (width && line.length > width) line = `${line.slice(0, width - 1)}…`;
+    console.log(line);
+  }
+  if (!r.prompts.length) console.log('no prompts match');
+  const notes = [...(r.coverage?.notCovered ?? []).map((n) => `not covered: ${n.host} (${n.reason})`), ...(r.coverage?.partial ?? []).map((n) => `${n.host}: ${n.reason}`)];
+  if (r.more) notes.push(`more: --before ${r.prompts.at(-1)?.id} for the page before these, or --limit`);
+  for (const n of notes) console.log(`# ${n}`);
+  return stop();
+}
+
 async function startBots() {
   const botAuth = await import(path.join(ROOT, 'core', 'bots', 'oauth.js'));
   const { isTenantBot } = await import(path.join(ROOT, 'core', 'bots', 'access.js'));

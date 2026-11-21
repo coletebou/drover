@@ -82,6 +82,38 @@ export async function capture(target, { lines = 200, join = true, escapes = fals
   return stdout.trimEnd();
 }
 
+/** captureMany takes at most this many targets in one call (a Wall of 6x5 tiles on two hosts fits). */
+export const CAPTURE_MANY_MAX = 64;
+const CAPTURE_MANY_PARALLEL = 16;
+
+/**
+ * Several panes at once, for the Wall: one capture per target, at most CAPTURE_MANY_PARALLEL tmux calls at a time,
+ * in the order given. Each target is validated on its own, so one bad or gone target is an { ok: false, error } row,
+ * never a failed call. With escapes the text keeps its SGR colours; the screen classification and hash are read from
+ * the text with them stripped, so hash is the one tmux.answer's expect compares (screenHash of a plain capture).
+ * @returns {Promise<Array<{ target, ok, text?, error?, hash?, screen? }>>}
+ */
+export async function captureMany(targets, { lines = 60, escapes = true } = {}) {
+  if (!Array.isArray(targets)) throw new Error('targets must be an array of tmux targets');
+  if (targets.length > CAPTURE_MANY_MAX) throw new Error(`at most ${CAPTURE_MANY_MAX} targets per call (got ${targets.length})`);
+  const n = Math.max(1, Math.min(5000, Number(lines) || 60));
+  const out = new Array(targets.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < targets.length) {
+      const i = next++, target = targets[i];
+      try {
+        assertTarget(target);
+        const text = await capture(target, { lines: n, escapes });
+        const plain = escapes ? stripAnsi(text) : text;
+        out[i] = { target, ok: true, text, hash: screenHash(plain), screen: classifyScreen(plain) };
+      } catch (e) { out[i] = { target: typeof target === 'string' ? target : String(target), ok: false, error: String(e?.message ?? e).slice(0, 300) }; }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(CAPTURE_MANY_PARALLEL, targets.length) }, worker));
+  return out;
+}
+
 /**
  * Dialog/selector/permission-prompt detection (ported from pw status).
  * A dialog needs a structural marker (a numbered/arrowed option list or a y/n

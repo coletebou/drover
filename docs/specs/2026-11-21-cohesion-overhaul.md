@@ -69,17 +69,28 @@ first, searchable, kept forever in git.
 
 - The daemon scans transcripts incrementally (byte offsets per file in `$STATE/prompts-offsets.json`, like the
   search indexer): Claude `~/.claude/projects/**/*.jsonl` (not `subagents/`), Codex `~/.codex/sessions/**`.
-  It reuses `search/extract.js` (`claudeLine`, `codexLine`, `userText`, `tidy`) so "a user turn's own words"
-  has one definition. First run backfills all history; later passes every 60 s and on `drover prompts sync`.
+  It reuses `search/extract.js` (`codexLine`, `userText`, `tidy`) and `claude-queued.js` (`queuedMessage`,
+  `peerSender`) so "a user turn's own words" has one definition. A Claude line is not read through `claudeLine`:
+  that drops meta turns (a peer message to an idle session is one, `turnOrigin: "peer"`) and keeps no origin
+  (`promptSource`, `turnOrigin`, `entrypoint`), which `via` needs; its words still come from `userText` and `tidy`.
+  First run backfills all history; later passes every 60 s and on `drover prompts sync`.
 - Skipped: temp working directories and generated prompts (`indexer.js` `skipReason`), subagent transcripts,
-  Claude Code bookkeeping (`<command-name>` etc., already dropped by `userText`).
+  Claude Code bookkeeping (`<command-name>` etc., already dropped by `userText`), tool results, compaction
+  summaries, turns Claude Code starts itself (task notifications, scheduled and system turns), skill text (meta
+  turns), Codex subagent threads. Hermes is not collected yet.
 - `via` says where a turn came from: `typed` (a person at the agent), `queued` (typed while a turn ran),
   `peer` (a `<cross-session-message>` from another agent), `drover` (sent through `sessions.message` /
-  `tmux.send`; matched against `message` events in the truth file by text and time), `headless` (a launch
-  prompt). The Prompts workspace shows `typed`, `queued`, `drover` and `headless` by default ("Mine").
+  `tmux.send`; matched against `message` events in the truth file by text and time, within 5 minutes, or a Claude
+  inbox message whose sender is `drover (<actor>)`), `headless` (the first prompt of a headless launch: a `launch`
+  event, mode headless; a tmux launch's prompt is `drover`), `sdk` (added in the build: a program's run, `claude -p`,
+  the Agent SDK, `codex exec`, that no Drover launch started; on one machine over a month they were about two thirds of all user turns,
+  and "Mine" would drown in them). The Prompts workspace shows `typed`, `queued`, `drover` and `headless` by default
+  ("Mine"). A peer record also carries `from` (the sending session's name).
 - `label` classifies each prompt for routing (`work`, `personal`, or any string): the first matching rule in the
-  prompts config (by cwd glob, then by the cwd's git remote pattern), else the host's `DF_IDENTITY`, else
-  `default`.
+  prompts config (every cwd glob rule first, then the remote rules: a regular expression over the git remote URLs
+  of the cwd's repository, read from its `.git/config`, a worktree's through its `commondir`, cached per repository
+  root, never by running git), else the host's `DF_IDENTITY`, else `default`. In a glob `~` is the home, `*` stays in
+  one path segment, `**` crosses segments, and a directory under a match matches.
 
 ### Record (one JSON line, append-only)
 
@@ -114,27 +125,34 @@ same turn collected twice (a re-scan, two hosts sharing a synced transcript dir)
   checkout someone edits), writes `<dir>/<host>/<YYYY-MM-DD>.jsonl` (one file per host per day: two hosts never
   write the same file, so pulls never conflict), commits only those paths, `pull --rebase` then push, with
   backoff on failure. Secrets were redacted at collection; nothing else is filtered.
-- A `command` sink runs its argv (no shell) with `{file}` replaced by each day file that changed (cpt-sync's
-  encrypted append is the intended use).
+- A `command` sink runs its argv (no shell) once per day file that changed, with `{file}` replaced by a file
+  holding just that day's new records (an append must not send the same records twice), `{dayfile}` by the sink's
+  whole copy of that day, `{day}` and `{host}` (cpt-sync's encrypted append is the intended use).
+- A sink's read position in each spool day file (`$STATE/prompt-sinks/<name>.state.json`) moves only once the records
+  reached it (a commit, a command that exited 0); a failure waits 1 minute, then 2, 4, ... up to 6 hours before the
+  next scheduled try (`prompts.sync` tries at once).
 - The sink clone is also a read source: hosts that are down still show their prompts from the last pull.
 
 ### Ops
 
 | Op | m | Args | Returns |
 |---|---|---|---|
-| `prompts.list` | no | `q?` (words, all must match), `host?`, `hosts?`, `engine?`, `label?`, `via?` (array; default the "mine" set), `since?`, `until?`, `session?`, `cwd?`, `limit?` (default 200, max 2000), `before?` (an id, for paging) | `{ prompts: [record + {route}], perHost: [{host, ok, count, error?}], coverage, total? }` newest first. Front op: fans out like `search.grepFleet`, merges by id, adds sink-clone records for hosts that did not answer. |
-| `prompts.local` | no | same filters | this host's records only (what the fan-out asks each host) |
-| `prompts.status` | no | | `{ files, records, oldest, newest, lastScan, scanning, sinks: [{name, type, lastSync, lastError, pending}] }` |
-| `prompts.sync` | yes | `sinks?` | scans now, then pushes every sink; `{ scanned, added, sinks: [...] }` |
+| `prompts.list` | no | `q?` (words, all must match), `host?`, `hosts?`, `engine?`, `label?`, `via?` (array, or `all`; default the "mine" set), `since?`, `until?` (ISO, epoch ms, or a span back from now: `30m`, `12h`, `7d`), `session?` (prefix), `cwd?` (or under it), `limit?` (default 200, max 2000), `before?` (an id, for paging) | `{ ms, prompts: [record + {route, source?}], more, perHost: [{host, ok, count, ms?, error?, source?}], coverage, total? }` newest first. Front op: fans out like `search.grepFleet`, merges by id, adds sink-clone records for hosts that did not answer (`source: "sink:<name>"` on the record and its perHost row, a `coverage.partial` entry). `before` is turned into its record's time at the front (its own spool, a sink clone, else one lookup on the hosts) and sent on as `beforeTs`, so every host pages from the same point. `more`: there may be matches past this page. |
+| `prompts.local` | no | same filters, plus `id?` and `beforeTs?` | `{ host, prompts, more, total?, ms }`: this host's records only (what the fan-out asks each host); `total` only when every day file was read |
+| `prompts.status` | no | | `{ host, enabled, files, records, oldest, newest, lastScan, lastMs, lastError, scanning, sources, config: {file, found, errors}, sinks: [{name, type, labels, lastSync, lastAttempt, lastError, nextAttempt, failures, pending}] }` |
+| `prompts.sync` | yes | `sinks?` | scans now, then pushes every sink; `{ host, scanned, added, sinks: [{name, type, ok, added, pushed?, runs?, error?, ms}], ms }` |
 
-CLI: `drover prompts [words] [--host H] [--all] [--json]`, `drover prompts status`, `drover prompts sync`.
-MCP: `drover_prompts_list`, `drover_prompts_status`, `drover_prompts_sync` (generated from ops-meta).
+CLI: `drover prompts [words] [--host H] [--all] [--json]` (also `--limit`, `--via`, `--engine`, `--label`, `--since`,
+`--until`, `--session`, `--cwd`, `--before`, `--full`; words after `--` are always words, so `drover prompts -- status`
+searches), `drover prompts status`, `drover prompts sync [--sinks a,b]`.
+MCP: `drover_prompts_list`, `drover_prompts_status`, `drover_prompts_sync` (generated from ops-meta; `drover_prompts_local`
+too, since every op gets one).
 
 ## Live captures for the Wall
 
 | Op | m | Args | Returns |
 |---|---|---|---|
-| `tmux.captureMany` | no | `targets` (array of tmux targets, max 64), `lines?` (default 60), `escapes?` (default true: keep SGR colors) | `{ captures: [{ target, ok, text?, error?, hash?, screen? }] }`, one tmux call per target run in parallel on that host. Forwarded by `host` like every per-host op. |
+| `tmux.captureMany` | no | `targets` (array of tmux targets, max 64), `lines?` (default 60), `escapes?` (default true: keep SGR colors) | `{ captures: [{ target, ok, text?, error?, hash?, screen? }] }` in the order given, one tmux call per target run in parallel on that host (16 at a time). `screen` and `hash` are read from the text with escapes stripped, so `hash` is what `tmux.answer` takes as `expect`. Forwarded by `host` like every per-host op. |
 
 Clients group tiles by host and ask each host once per refresh. Text with escapes is parsed into styled segments
 by a pure parser (`web/ui/ansi.js`); nothing from a pane reaches a terminal or the DOM unparsed.

@@ -38,6 +38,7 @@ import { ops as fileWaitOps, waitLimits } from './filewait.js';
 import { filterSessions, filtersGiven } from './session-filter.js';
 import * as version from './version.js';
 import { ops as searchOps } from './search/service.js';
+import * as prompts from './prompts.js';
 import * as docker from './docker.js';
 import * as prs from './prs.js';
 import * as vitals from './vitals.js';
@@ -505,6 +506,10 @@ export const local = {
     const answer = screen.state === 'dialog' || held ? native.answerFields({ screen: screen.state, held: Boolean(held), dialog: tmux.dialogSummary(text), hash: tmux.screenHash(text) }) : {};
     return { target, text, screen, ...answer };
   },
+  /** Several panes in one call (the Wall): per-target rows, one bad target never fails the call (tmux.captureMany). */
+  async 'tmux.captureMany'({ targets, lines = 60, escapes = true } = {}) {
+    return { captures: await tmux.captureMany(targets, { lines, escapes: !(escapes === false || escapes === 'false') }) };
+  },
   async 'tmux.send'({ target, text, enter = true, force = false, actor = OWNER }) {
     const r = await tmux.send(target, str(text, 'text', { allowEmpty: true }), { enter, force });
     if (r.ok) await events.append({ type: 'message', to: { kind: 'tmux', host: hosts.localShortName(), id: target }, text, delivery: { ok: true, via: 'tmux paste' } }, { actor });
@@ -786,7 +791,7 @@ function stallMinutes(v) {
 }
 
 /** Ops that must never be forwarded (they are about the front itself). */
-const FRONT_ONLY = new Set(['host.list', 'host.probe', 'fleet.summary', 'fleet.vitals', 'fleet.place', 'fleet.versions', 'native.summary', 'native.board', 'native.notifications', 'search.fleet', 'search.grepFleet', 'docker.fleet']);
+const FRONT_ONLY = new Set(['host.list', 'host.probe', 'fleet.summary', 'fleet.vitals', 'fleet.place', 'fleet.versions', 'native.summary', 'native.board', 'native.notifications', 'search.fleet', 'search.grepFleet', 'docker.fleet', 'prompts.list']);
 
 // Per-host board data goes through the shared cache (stale-while-revalidate,
 // persisted) so the board renders at once and a down host still shows its last
@@ -898,6 +903,45 @@ export const front = {
     const results = perHost.flatMap((p) => p.results).sort((a, b) => String(b.ts ?? '').localeCompare(String(a.ts ?? ''))).slice(0, lim);
     const coverage = fleetCoverage({ known, targets, perHost, probes: lastProbe, chosen: Boolean(names?.length), vectors: false });
     return { pattern, ms: Date.now() - t0, results, perHost: perHost.map(({ results: r, ...h }) => ({ ...h, hits: r.length })), coverage };
+  },
+  /**
+   * prompts.local on several hosts in parallel (the host choice of search.fleet; host or hosts names them), merged by id,
+   * newest first. A host that did not answer (down, or not asked) shows what a git sink's clone on this machine holds
+   * for it as of its last pull (core/prompts.js listClones): its perHost row says source sink:<name>. A before cursor
+   * (an id) is turned into its time here, from this host's spool, a sink clone or the hosts themselves, so every host
+   * pages from the same point.
+   */
+  async 'prompts.list'({ hosts: names, host: named, limit, before, beforeTs, ...rest } = {}) {
+    const chosen = Array.isArray(names) && names.length ? names : named && named !== hosts.LOCAL ? [named] : named === hosts.LOCAL ? [hosts.LOCAL] : null;
+    const { targets, known } = await fleetTargets(chosen);
+    const lim = prompts.clampLimit(limit);
+    const t0 = Date.now();
+    let cursorTs = typeof beforeTs === 'string' && beforeTs ? beforeTs : null;
+    if (before && !cursorTs) cursorTs = await prompts.findTs(before);
+    if (before && !cursorTs) {
+      const found = await askHosts(targets, 'prompts.local', { id: before, limit: 1 }, (r) => ({ results: r.prompts ?? [] }));
+      cursorTs = found.flatMap((p) => p.results)[0]?.ts ?? null;
+      if (!cursorTs) throw new Error(`before: no prompt ${before} on any host that answered`);
+    }
+    const args = { ...rest, limit: lim, ...(before ? { before, beforeTs: cursorTs } : {}) };
+    const perHost = await askHosts(targets, 'prompts.local', args,
+      (r, { route }) => ({ results: (r.prompts ?? []).map((p) => ({ ...p, route })), short: r.host ?? null, more: Boolean(r.more), total: r.total, searchMs: r.ms ?? null }));
+    // A host that answered is covered by its own spool; any other host's records come from the sink clones.
+    const answered = new Set(perHost.filter((p) => p.ok).flatMap((p) => [p.host, p.short].filter(Boolean)));
+    const include = chosen ? new Set(chosen.filter((h) => h !== hosts.LOCAL && !answered.has(h))) : null;
+    const clones = include && !include.size ? [] : await prompts.listClones(args, { include, exclude: answered }).catch(() => []);
+    const route = (h) => (known.some((k) => k.name === h) ? h : null);
+    const byId = new Map();
+    for (const p of perHost) for (const r of p.results) if (!byId.has(r.id)) byId.set(r.id, r);
+    for (const c of clones) for (const r of c.prompts) if (!byId.has(r.id)) byId.set(r.id, { ...r, route: route(r.host), source: `sink:${c.sinks[0]}` });
+    const merged = [...byId.values()].sort(prompts.newestFirst);
+    const coverage = fleetCoverage({ known, targets, perHost, probes: lastProbe, chosen: Boolean(chosen), vectors: false });
+    for (const c of clones) if (c.prompts.length) coverage.partial.push({ host: c.host, reason: `from the ${c.sinks.join(', ')} sink clone (as of its last pull)` });
+    const rows = [...perHost.map(({ results: r, short: _s, ...h }) => ({ ...h, count: r.length })),
+      ...clones.filter((c) => c.prompts.length).map((c) => ({ host: c.host, ok: false, count: c.prompts.length, source: `sink:${c.sinks.join(',')}`, more: c.more }))];
+    const totals = perHost.map((p) => p.total);
+    const total = !before && perHost.every((p) => p.ok) && !clones.some((c) => c.prompts.length) && totals.every((t) => Number.isFinite(t)) ? totals.reduce((a, b) => a + b, 0) : undefined;
+    return { ms: Date.now() - t0, prompts: merged.slice(0, lim), more: merged.length > lim || rows.some((r) => r.more), perHost: rows, coverage, ...(total !== undefined ? { total } : {}) };
   },
   /**
    * docker.stacks on several hosts in parallel (the host choice of search.fleet). Each host's answer is cached under the
@@ -1235,7 +1279,7 @@ export async function dispatchLocal(op, args = {}) {
  * from `drover op` it has a peer of its own, which nothing else can retire; through a daemon (where MCP caps it at
  * 110 s) a longer wait would still end at 150 s if a rollout retired that peer under it.
  */
-const HOST_TIMEOUT_MS = { 'docker.restart': 120_000, 'docker.start': 120_000, 'docker.exec': 120_000, 'docker.run': 120_000 };
+const HOST_TIMEOUT_MS = { 'docker.restart': 120_000, 'docker.start': 120_000, 'docker.exec': 120_000, 'docker.run': 120_000, 'prompts.sync': 140_000 };
 export function hostTimeoutMs(op, args = {}) {
   if (op === 'files.wait') return waitLimits(args).timeoutSec * 1000 + 60_000;
   return HOST_TIMEOUT_MS[op] ?? (op.startsWith('launch') ? 120_000 : 60_000);
@@ -1275,7 +1319,7 @@ export async function dispatch(op, args = {}) {
     if (remoteSearch.frontCall(rest)) return semanticFront(host, rest);
     delete rest.callerCwd;
   }
-  if (op === 'search.fleet' && host !== undefined) rest.host = host;
+  if ((op === 'search.fleet' || op === 'prompts.list') && host !== undefined) rest.host = host;
   // A docker op this table does not have (down, rm, kill, ...) is refused here, never forwarded for another host to refuse.
   if (typeof op === 'string' && op.startsWith('docker.') && !local[op] && !front[op]) return dispatchLocal(op, rest);
   if (FRONT_ONLY.has(op) || !host || host === hosts.LOCAL) return dispatchLocal(op, rest);
@@ -1381,6 +1425,7 @@ const INVALIDATES = {
   'openclaw.sweep': ['openclaw.', 'events.'],
   'uploads.put': ['uploads.', 'events.'], 'uploads.remove': ['uploads.', 'events.'], 'files.write': ['files.', 'events.'],
   'docker.restart': ['docker.'], 'docker.start': ['docker.'], 'docker.exec': ['docker.'], 'docker.run': ['docker.'],
+  'prompts.sync': ['prompts.'],
   'ask.create': ['events.', 'notify.'], 'ask.cancel': ['events.'], 'ask.deliver': ['events.'], 'ask.mark': ['events.'],
 };
 
@@ -1476,7 +1521,7 @@ export async function dispatchCached(op, args = {}) {
   return { result: r.value, cache: r.meta };
 }
 
-Object.assign(local, survey.ops, credentialOps, settingsOps, notifyOps, uploadOps, fileOps, fileWaitOps, openclaw.consoleOps, native.ops, searchOps, docker.ops, askOps, prs.ops);
+Object.assign(local, survey.ops, credentialOps, settingsOps, notifyOps, uploadOps, fileOps, fileWaitOps, openclaw.consoleOps, native.ops, searchOps, docker.ops, askOps, prs.ops, prompts.ops);
 // Asks (core/ask): this host's ops, a peer's over its ssh rpc, and the alerts every client shows.
 askDeps.dispatch = (op, args) => dispatchLocal(op, args);
 askDeps.call = (host, op, args, opts) => (!host || host === hosts.LOCAL ? dispatchLocal(op, args) : callOn(host, op, args, dispatchLocal, opts));
