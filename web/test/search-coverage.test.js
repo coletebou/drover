@@ -14,7 +14,7 @@ const { Store } = await import('../core/search/store.js');
 const { Indexer, EXTRACT_VERSION, docPatterns, homeInIdentity, searchKinds } = await import('../core/search/indexer.js');
 const { search } = await import('../core/search/query.js');
 const { truncateNormalize } = await import('../core/search/vec.js');
-const { fleetCoverage } = await import('../core/api.js');
+const { fleetCoverage, fleetScope } = await import('../core/api.js');
 const plugins = await import('../core/plugins.js');
 
 const j = (o) => JSON.stringify(o) + '\n';
@@ -221,6 +221,28 @@ describe('fleet coverage', () => {
     assert.deepEqual(c.partial, [{ host: 'devbox', reason: 'keyword only (vectors unavailable)' }]);
     const asked = fleetCoverage({ known, targets: ['local', 'pod:ws1', 'scratch-1'], perHost: [{ host: 'pod:ws1', ok: false, error: 'no drover on pod:ws1' }, { host: 'scratch-1', ok: false, error: 'timed out' }], probes });
     assert.deepEqual(asked.notCovered.slice(-2), [{ host: 'pod:ws1', reason: 'no drover on pod:ws1' }, { host: 'scratch-1', reason: 'timed out' }], 'asked for and failed: reported');
+  });
+  test('a fleet search keeps to this identity: another identity\'s machines are neither asked nor reported', () => {
+    const listed = [{ name: 'local' }, { name: 'work-a' }, { name: 'work-b' }, { name: 'home-a' }, { name: 'uncatalogued' }];
+    const cat = { found: true, hosts: [{ name: 'work-a', identity: 'work' }, { name: 'WB', identity: 'work', ssh: 'work-b' }, { name: 'home-a', identity: 'personal', aliases: ['ha'] }] };
+    const work = fleetScope(listed, cat, { identity: 'work' });
+    assert.deepEqual(work.known.map((h) => h.name), ['local', 'work-a', 'work-b'], 'matched by ssh route too; a listed host the catalog leaves out is not asked');
+    assert.deepEqual(fleetScope(listed, cat, { identity: 'personal' }).known.map((h) => h.name), ['local', 'home-a']);
+    assert.deepEqual(fleetScope(listed, cat, { identity: null }).known.map((h) => h.name), ['local'], 'no identity, a catalog that names them: fail closed');
+    const c = fleetCoverage({ known: work.known, targets: ['local', 'work-a'], perHost: [], probes: new Map([['work-b', { up: false, error: 'timed out' }]]) });
+    assert.deepEqual(c.notCovered.map((x) => x.host), ['work-b'], 'home-a is not reported as missed: it was never this fleet\'s');
+  });
+  test('named hosts: one the catalog gives another identity is refused; an uncatalogued name stays the caller\'s', () => {
+    const cat = { found: true, hosts: [{ name: 'work-a', identity: 'work' }, { name: 'home-a', identity: 'personal', aliases: ['ha'] }] };
+    assert.deepEqual(fleetScope([], cat, { identity: 'work' }, ['work-a', 'pod:ws1', 'some-alias']).refused, []);
+    assert.deepEqual(fleetScope([], cat, { identity: 'work' }, ['HA']).refused, [{ host: 'HA', reason: 'HA is not a host of the work fleet' }]);
+  });
+  test('no catalog: every listed host; a catalog that does not parse: this machine only', () => {
+    const listed = [{ name: 'local' }, { name: 'box-a' }];
+    assert.deepEqual(fleetScope(listed, { found: false }, { identity: 'work' }).known, listed);
+    const bad = fleetScope(listed, { found: false, invalid: true, errors: ['fleet.json: bad JSON'] }, { identity: 'work' }, ['box-a']);
+    assert.deepEqual(bad.known.map((h) => h.name), ['local']);
+    assert.match(bad.refused[0].reason, /catalog is invalid \(fleet.json: bad JSON\)/);
   });
   test('hosts chosen by the caller: only their failures count; keyword mode is not partial', () => {
     const c = fleetCoverage({ known, targets: ['devbox'], perHost: [{ host: 'devbox', ok: true, vector: 'off' }], probes, chosen: true, vectors: false });

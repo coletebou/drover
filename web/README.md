@@ -613,8 +613,9 @@ drover grep turbo.json --roles tool_result   # raw transcripts on every machine,
 drover embed status
 ```
 
-Ops: `search.semantic` (one host), `search.fleet` (every reachable host, merged, with `coverage.notCovered`
-naming the hosts it could not see), `search.grep` / `search.grepFleet` (ripgrep over the raw transcripts),
+Ops: `search.semantic` (one host), `search.fleet` (every reachable host of this machine's fleet, merged, with
+`coverage.notCovered` naming the hosts it could not see; with a fleet catalog only this identity's machines are asked
+or reported, as for `fleet.vitals`, and a named host the catalog gives another identity is refused), `search.grep` / `search.grepFleet` (ripgrep over the raw transcripts),
 `search.status`, `search.reindex`; MCP tools `drover_search_*`. UI: the Search view (`g`, or
 `search <words>` in Cmd+K). In `~/.local/state/drover/env`: `DROVER_SEARCH=off` turns indexing off on a host;
 `DROVER_SEARCH_DAYS=N` limits it; `DROVER_SEARCH_KINDS=claude,subagent` indexes only those kinds (an archive
