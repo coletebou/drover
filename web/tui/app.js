@@ -101,6 +101,7 @@ export class App {
     for (const v of [...this.views.values(), this.overlay]) v?.hide?.();
     this.stream?.close(); clearInterval(this.boardTimer);
     for (const t of this.animations.values()) clearInterval(t.timer);
+    if (this.histTimer) this.#flushHistory();   // a sub-view picked or a line sent just before q is kept
     this.term.stop();
     this.client.close();
     this.onQuit?.(code);
@@ -311,9 +312,9 @@ export class App {
   #saveSubs() { const was = JSON.stringify(this.histories.subs ?? null); this.histories.subs = { ...this.subSel }; if (JSON.stringify(this.histories.subs) !== was) this.#writeHistory(); }
   #writeHistory() {
     clearTimeout(this.histTimer);
-    this.histTimer = setTimeout(() => { try { mkdirSync(this.stateDir, { recursive: true, mode: 0o700 }); writeFileSync(path.join(this.stateDir, 'tui-history.json'), JSON.stringify(this.histories), { mode: 0o600 }); } catch { /* history is a convenience */ } }, 500);
-    this.histTimer.unref?.();
+    this.histTimer = setTimeout(() => this.#flushHistory(), 500);
   }
+  #flushHistory() { clearTimeout(this.histTimer); this.histTimer = null; try { mkdirSync(this.stateDir, { recursive: true, mode: 0o700 }); writeFileSync(path.join(this.stateDir, 'tui-history.json'), JSON.stringify(this.histories), { mode: 0o600 }); } catch { /* history is a convenience */ } }
 
   // ------------------------------------------------------------ overlays and toasts
   toast(text, style = 'dim', ms = 4000) { this.toastMsg = { text: oneLine(text), style, until: ms ? Date.now() + ms : Infinity }; clearTimeout(this.toastTimer); if (ms) this.toastTimer = setTimeout(() => this.invalidate(), ms + 20); this.invalidate(); }

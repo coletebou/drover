@@ -50,6 +50,10 @@ export function server(name, env) {
       const seq = b >= 64 ? `\x1b[<${at}M` : `\x1b[<${at}M\x1b[<${at}m`;
       return t(['send-keys', '-t', target, '-H', ...[...Buffer.from(seq)].map((c) => c.toString(16).padStart(2, '0'))]);
     },
+    /** The pointer moved to column x, row y with no button held: the SGR any-motion report (mode 1003) a terminal sends. */
+    move: (target, x, y) => t(['send-keys', '-t', target, '-H', ...[...Buffer.from(`\x1b[<35;${x + 1};${y + 1}M`)].map((c) => c.toString(16).padStart(2, '0'))]),
+    /** The screen with its SGR escapes (capture-pane -e), to check colours. */
+    captureEscapes: (target) => t(['capture-pane', '-p', '-e', '-t', target]).stdout,
     kill: () => t(['kill-server']),
   };
 }

@@ -151,6 +151,39 @@ describe('drover tui against a current daemon', { skip: hasTmux ? false : 'tmux 
     c.tmux.keys('t', 'C-u'); c.tmux.keys('t', 'Escape');   // as the test before left it: not typing
   });
 
+  test('seven workspaces and a sub-tab row; hover follows motion reports; Prompts list and detail; the Wall in colour', async () => {
+    let s = await c.until((x) => x.includes('thread main'), 'the manager');
+    const lines = s.split('\n');
+    assert.match(lines[0], /1 Manager\s+2 Agents\s+3 Prompts\s+4 Work\s+5 Fleet\s+6 Find\s+7 Settings/);
+    assert.match(lines[1], /Manager\s+What should I do next\?/, 'the sub-tab row');
+    // Hover: the pointer over a tab tints it (its background changes), and moves elsewhere take the tint away.
+    const tab = at(s, '4 Work');
+    const bgAt = (screen, needle) => { const row = screen.split('\n').find((l) => l.replace(/\x1b\[[0-9;]*m/g, '').includes(needle)) ?? ''; const i = row.indexOf(needle); return (row.slice(0, i).match(/\x1b\[[0-9;]*m/g) ?? []).join(''); };
+    const before = bgAt(c.tmux.captureEscapes('t'), ' 4 Work ');
+    c.tmux.move('t', tab.x + 1, 0);
+    await waitFor(() => bgAt(c.tmux.captureEscapes('t'), ' 4 Work ') !== before, { what: 'the hover tint on the tab' });
+    c.tmux.move('t', 20, 20);
+    await waitFor(() => bgAt(c.tmux.captureEscapes('t'), ' 4 Work ') === before, { what: 'the tint gone when the pointer leaves' });
+    assert.ok(c.screen().includes('thread main'), 'hovering a tab goes nowhere');
+    // Prompts: newest first, the detail with the verbatim text; hovering a row previews it in the bottom bar.
+    c.tmux.keys('t', 'Escape'); c.tmux.keys('t', '3');
+    s = await c.until((x) => x.includes('Prompts · Mine') && x.includes('Keep the old API:'), 'Prompts with the detail');
+    assert.match(s, /when host\s+engine\s+project\s+via\s+text/);
+    assert.ok(c.daemon.callsOf('prompts.list').some((x) => Array.isArray(x.args.via) && !x.args.via.includes('peer')), 'Mine asks for what a person sent');
+    const row = at(s, 'write the release notes (#2)');
+    c.tmux.move('t', row.x, row.y);
+    await c.until((x) => x.split('\n')[44].trimEnd().endsWith('write the release notes (#2)'), 'the hovered prompt previewed in the bottom bar');
+    // The Wall: tiles with the pane in colour (the fake pane's green tick).
+    c.tmux.keys('t', '2'); c.tmux.mouse('t', 1, 1);   // Agents, then its first sub-tab (Lanes) by a click
+    s = await c.until((x) => x.includes('Waiting on you'), 'Lanes');
+    c.tmux.mouse('t', at(s, ' Wall ', 1).x + 1, 1);
+    s = await c.until((x) => x.includes(' Wall  3 agents') && x.includes('✗ 1 failing'), 'the Wall with captured panes');
+    assert.ok(c.daemon.callsOf('tmux.captureMany').some((x) => x.args.escapes === true && x.args.targets.includes('work:1') && x.args.targets.includes('work:2')), 'one captureMany for both panes');
+    assert.match(c.tmux.captureEscapes('t'), /\x1b\[[0-9;]*(32|38;5;\d+|38;2;13;188;121)[0-9;]*m✓/, 'the tick in green');
+    c.tmux.keys('t', 'Escape'); c.tmux.keys('t', '1');
+    await c.until((x) => x.includes('thread main'), 'back to the manager');
+  });
+
   test('slash commands: /status and /threads answer inline; q quits and gives the terminal back', async () => {
     c.tmux.keys('t', 'i');
     c.tmux.type('t', '/status'); c.tmux.keys('t', 'Enter');
