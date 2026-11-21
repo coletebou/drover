@@ -1,0 +1,24 @@
+{
+  "ok": true,
+  "ms": 6,
+  "cache": null,
+  "result": {
+    "host": "demo-mac",
+    "enabled": true,
+    "daemon": true,
+    "files": 31,
+    "records": 1204,
+    "oldest": "2026-10-21T08:00:00.000Z",
+    "newest": "2026-11-21T22:03:11.000Z",
+    "lastScan": "2026-11-21T22:04:00.000Z",
+    "lastMs": 85,
+    "lastError": null,
+    "scanning": false,
+    "sources": 412,
+    "config": { "file": "~/.config/drover/prompts.json", "found": true, "errors": [] },
+    "sinks": [
+      { "name": "personal", "type": "git", "labels": ["personal", "default"], "lastSync": "2026-11-21T22:00:00.000Z", "lastAttempt": "2026-11-21T22:00:00.000Z", "lastError": null, "nextAttempt": null, "failures": 0, "pending": 2, "syncing": false },
+      { "name": "work", "type": "git", "labels": ["work"], "lastSync": null, "lastAttempt": "2026-11-21T21:30:00.000Z", "lastError": "push failed: remote rejected", "nextAttempt": "2026-11-21T22:34:00.000Z", "failures": 2, "pending": 40, "syncing": false }
+    ]
+  }
+}

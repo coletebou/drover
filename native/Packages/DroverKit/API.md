@@ -11,6 +11,14 @@ add `-Xswiftc -plugin-path -Xswiftc /Library/Developer/CommandLineTools/usr/lib/
 - `NativeSummary` (+ `HostCount`, `WaitingItem`, `WorkingItem`, `Totals`, `ManagerState`), `NativeNotifications`,
   `NotificationItem`, `SessionList`, `SessionInfo`, `Transcript` (+ `Turn`, `ToolUse`, `Summary`), `MessageDelivery`,
   `PaneCapture`, `PaneSendResult`, `HostEntry`, `OpEnvelope<T>`, `JSONValue`.
+- The prompt spool (`Models/Prompts.swift`, added 2026-11-21): `PromptRecord` (one prompt, verbatim `text`; `route` is
+  the `host` arg for other ops, `opHost` falls back to the record's own host), `PromptsList` (+ `HostResult`, `Coverage`;
+  `downHosts`), `PromptsStatus` (+ `Config`, `Sink`; `line(now:)` is the web UI's status line), `PromptsSyncResult`
+  (+ `Sink`; `summary`), `PromptsQuery` (`scope` `.mine` = the daemon's default via set, `.all` = `via: "all"`; `q`,
+  `host`, `engine`, `label`, `before`, `limit`; `arguments`, `after(_:)` for the next page; Encodable as the argument
+  object), `PromptsMerge.merge` (by id, newest first), open enum `PromptVia`. Decoding is tolerant: only `id`, `ts` and
+  `text` are required, unknown fields are ignored, and a record (or perHost row, sink, gap) that does not decode is
+  dropped from its list instead of failing the answer.
 - `DroverTimestamp`: ISO 8601 string or epoch number (ms if > 1e11, else s); encodes ISO 8601 with fractional seconds.
 - Open enums (unknown raw values decode fine): `Engine`, `AskKind`, `NotificationKind`, `NotificationCategory`, `TurnRole`.
 - `DroverIdentifiers`: App Group, Keychain service/group suffix, summary cache file name, defaults key, URL scheme.
@@ -70,6 +78,12 @@ public struct DroverClient: Sendable {
     public func sendKeys(target: String, keys: [String], host: String? = nil) async throws -> PaneSendResult
     public func answer(target: String, key: String, expect: String? = nil, host: String? = nil) async throws -> PaneSendResult  // tmux.answer
     public func fleetSummary() async throws -> JSONValue                                       // fleet.summary (unmodelled)
+    public func call<T>(_ op: String, _ args: [String: JSONValue], timeout: TimeInterval, as type: T.Type) async throws -> T   // a slow op's own timeout
+
+    // the prompt spool: main scope only (a widget-scoped client throws .forbidden before sending anything)
+    public func prompts(_ query: PromptsQuery = PromptsQuery()) async throws -> PromptsList    // prompts.list
+    public func promptsStatus(host: String? = nil) async throws -> PromptsStatus               // prompts.status
+    public func syncPrompts(sinks: [String]? = nil, host: String? = nil) async throws -> PromptsSyncResult  // prompts.sync (a write, actor = client actor, 150 s)
 }
 ```
 Request rules: `Authorization: Bearer <token>` header only (never `?token=`), `Content-Type: application/json`,

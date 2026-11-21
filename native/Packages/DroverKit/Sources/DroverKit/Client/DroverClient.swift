@@ -30,7 +30,12 @@ public struct DroverClient: Sendable {
     // MARK: generic
 
     public func call<T: Decodable & Sendable>(_ op: String, _ args: [String: JSONValue] = [:], as type: T.Type) async throws -> T {
-        var request = try await authorized(opURL(op), timeout: Self.timeout(args))
+        try await call(op, args, timeout: Self.timeout(args), as: type)
+    }
+
+    /// `call` with its own timeout (seconds) for a slow op.
+    public func call<T: Decodable & Sendable>(_ op: String, _ args: [String: JSONValue], timeout: TimeInterval, as type: T.Type) async throws -> T {
+        var request = try await authorized(opURL(op), timeout: timeout)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         do {
@@ -136,6 +141,39 @@ public struct DroverClient: Sendable {
 
     public func fleetSummary() async throws -> JSONValue {
         try await call("fleet.summary", as: JSONValue.self)
+    }
+
+    // MARK: prompts (the spool: every prompt typed into Claude Code or Codex, fleet-wide)
+
+    /// `prompts.list`: newest first, merged by id across hosts. Page with `query.after(page.prompts.last)` while
+    /// `more`. Main token only (the widget token is read-only and the daemon refuses it).
+    public func prompts(_ query: PromptsQuery = PromptsQuery()) async throws -> PromptsList {
+        try requireMain("prompts.list")
+        return try await call("prompts.list", query.arguments, as: PromptsList.self)
+    }
+
+    /// `prompts.status`: the spool and its sinks on one machine (nil: the daemon's own).
+    public func promptsStatus(host: String? = nil) async throws -> PromptsStatus {
+        try requireMain("prompts.status")
+        var args: [String: JSONValue] = [:]
+        Self.put(&args, host: host)
+        return try await call("prompts.status", args, as: PromptsStatus.self)
+    }
+
+    /// `prompts.sync` (a write): scan the transcripts now, then push every sink (or the ones named). Never sent with
+    /// the widget token: a widget-scoped client throws `.forbidden` before anything leaves.
+    public func syncPrompts(sinks: [String]? = nil, host: String? = nil) async throws -> PromptsSyncResult {
+        try requireMain("prompts.sync")
+        var args: [String: JSONValue] = ["actor": .string(actor)]
+        Self.put(&args, host: host)
+        if let sinks, !sinks.isEmpty { args["sinks"] = .array(sinks.map { .string($0) }) }
+        // A sync pushes git sinks over the network: give it the daemon's own per-host budget, not the 30 s default.
+        return try await call("prompts.sync", args, timeout: 150, as: PromptsSyncResult.self)
+    }
+
+    /// The prompts ops need the main token; refuse here rather than send the widget token for them.
+    private func requireMain(_ op: String) throws {
+        guard scope == .main else { throw DroverError.forbidden("\(op) needs the main token") }
     }
 
     // MARK: internals
