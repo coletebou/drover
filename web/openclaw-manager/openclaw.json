@@ -334,8 +334,7 @@
   "tools": {
     "profile": "full",
     "exec": {
-      "security": "full",
-      "ask": "off",
+      "mode": "full",
       "host": "gateway",
       "timeoutSeconds": 600,
       "notifyOnExit": false

@@ -53,7 +53,9 @@ export const EGRESS_ENV = {
   OPENCLAW_EXEC_SHELL_SNAPSHOT: '0', DO_NOT_TRACK: '1', CLAWHUB_DISABLE_TELEMETRY: '1',
 };
 /** Config subtrees OpenClaw writes itself (doctor, migrations): kept from the live file, never rendered. */
-export const OPENCLAW_OWNED = [['meta'], ['wizard'], ['agents', 'entries']];
+// skills.entries: Doctor pins bundled skills a release turns on by default to their previous state (2026.11.6 wrote
+// enabled:false for coding-agent, openai-whisper-api, sherpa-onnx-tts and trello); rendering it would undo that.
+export const OPENCLAW_OWNED = [['meta'], ['wizard'], ['agents', 'entries'], ['skills', 'entries']];
 const MARKER = '.drover-openclaw';
 const ENV_NAME = /^[A-Z_][A-Z0-9_]*$/;
 

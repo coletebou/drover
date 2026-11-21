@@ -171,7 +171,7 @@ describe('pure parts', () => {
     assert.match(sweep(fleetView).message, /answered the way the owner would, except what 'What needs the owner' lists\); fix what you can yourself; pin what only the owner can answer;/, 'the owner\'s name is install data (DROVER_OWNER_NAME)');
     for (const c of [fleet, mac]) {
       assert.equal(d(c).toolFilter, undefined, 'every drover tool: launches, tmux input, MR and file writes included');
-      assert.deepEqual([c.tools.profile, c.tools.exec.security, c.tools.exec.ask, c.tools.deny, c.tools.fs, c.plugins.allow], ['full', 'full', 'off', undefined, undefined, undefined], 'the full tool profile: no deny list, no workspace-only files, no plugin allowlist');
+      assert.deepEqual([c.tools.profile, c.tools.exec.mode, c.tools.exec.security, c.tools.exec.ask, c.tools.deny, c.tools.fs, c.plugins.allow], ['full', 'full', undefined, undefined, undefined, undefined, undefined], 'the full tool profile: exec mode full (2026.11.6 retired exec.security/ask), no deny list, no workspace-only files, no plugin allowlist');
       assert.equal(c.tools.web.fetch.enabled, true);
       assert.deepEqual([c.gateway.port, c.diagnostics.otel.endpoint], [18789, 'http://127.0.0.1:3000/api/public/otel'], 'the default profile\'s port and trace endpoint');
       assert.equal(c.models.providers.cliproxy.apiKey, '${CLIPROXY_API_KEY}', 'the loopback proxy key is an env ref, never a literal in the config');
