@@ -627,6 +627,16 @@ describe('setup in a sandbox', () => {
     const r7b = await install.setup({});
     assert.equal(by(r7b, 'service').action, 'unchanged', 'links fixed: nothing pending');
 
+    // 7b. A link to the same tree through another path (doctor relinks to the resolved path; ~/.local/share may be a
+    // symlink to another volume) is current: nothing to relink, nothing to restart.
+    const alias = path.join(home, 'tree-alias'); await symlink(path.dirname(path.dirname(m.openclaw.mjs)), alias);
+    const viaAlias = path.join(alias, path.basename(path.dirname(m.openclaw.mjs)));
+    await rm(path.join(ext, 'openclaw')); await symlink(viaAlias, path.join(ext, 'openclaw'));
+    assert.deepEqual(install.peerLinks(L, m.openclaw.mjs).map((l) => [l.plugin, l.ok]), [['amazon-bedrock', true], ['@openclaw/exa-plugin', true]]);
+    const r7f = await install.setup({});
+    assert.equal(by(r7f, 'service').action, 'unchanged', 'the same tree through an alias is not stale');
+    assert.equal(await readlink(path.join(ext, 'openclaw')), viaAlias, 'and is left as it is');
+
     // 7c. A start on another OpenClaw tree runs doctor --fix first, with the gateway stopped: 2026.11.6 refuses to
     // start on a 2026.10.1 agent database until it has migrated. A failure leaves the gateway stopped.
     const doctors = () => host.calls.filter((c) => c.includes(' doctor --fix')).length;

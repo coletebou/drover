@@ -621,6 +621,10 @@ export function runtimeFor(lay = layout(), manifest = readManifest(lay), env = p
  */
 export function peerLinks(lay, mjs) {
   const want = path.dirname(mjs);
+  // The same tree through another path is the same tree: openclaw doctor --fix relinks to the resolved path, and on
+  // a host whose ~/.local/share is a symlink to another volume that differs from this install's own path.
+  const real = (p) => { try { return realpathSync(p); } catch { return null; } };
+  const wantReal = real(want);
   const out = [];
   const walk = (dir, depth, name) => {
     let entries = []; try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
@@ -629,7 +633,8 @@ export function peerLinks(lay, mjs) {
       if (e.isDirectory() && depth > 0) walk(p, depth - 1, name);
       else if (e.isSymbolicLink() && e.name === 'openclaw' && path.basename(dir) === 'node_modules') {
         let target; try { target = readlinkSync(p); } catch { continue; }
-        out.push({ plugin: name(p), link: p, target, ok: path.resolve(dir, target) === want });
+        const at = path.resolve(dir, target);
+        out.push({ plugin: name(p), link: p, target, ok: at === want || (wantReal !== null && real(at) === wantReal) });
       }
     }
   };
