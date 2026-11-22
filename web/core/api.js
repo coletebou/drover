@@ -39,6 +39,7 @@ import { filterSessions, filtersGiven } from './session-filter.js';
 import * as version from './version.js';
 import { ops as searchOps } from './search/service.js';
 import * as prompts from './prompts.js';
+import * as mailbox from './mailbox.js';
 import * as docker from './docker.js';
 import * as prs from './prs.js';
 import * as vitals from './vitals.js';
@@ -1374,7 +1375,25 @@ export async function dispatch(op, args = {}) {
   if (op === 'files.wait') return callOn(host, op, rest, dispatchLocal, { timeoutMs: hostTimeoutMs(op, rest) }).catch((e) => {
     throw /unknown op files\.wait/.test(e?.message ?? '') ? new Error(`${host} runs Drover code from before files.wait: update Drover there (${UPDATE_HINT})`) : e;
   });
+  if (op === 'sessions.message' && !grok.isGrokTarget(rest.id)) return messageOrQueue(host, rest);
   return callOn(host, op, rest, dispatchLocal, { timeoutMs: hostTimeoutMs(op, rest) });
+}
+
+/**
+ * sessions.message to another host. When ssh cannot reach that host at all (core/mailbox.js isUnreachable), the
+ * message waits in this host's mailbox for that host to collect (its daemon pulls when DROVER_MAILBOX_PULL names
+ * it) instead of failing; the result says queued and why. Any answer from the host itself, errors included, is
+ * passed on as it is.
+ */
+async function messageOrQueue(host, rest) {
+  try { return await callOn(host, 'sessions.message', rest, dispatchLocal, { timeoutMs: hostTimeoutMs('sessions.message', rest) }); }
+  catch (e) {
+    if (!mailbox.isUnreachable(e)) throw e;
+    const text = str(rest.text, 'text');
+    const mid = await mailbox.enqueue({ to: host, id: str(rest.id, 'id', { max: 200 }), text, actor: rest.actor, why: e.message });
+    await events.append({ type: 'message', to: { kind: 'claude', host, id: rest.id }, text, delivery: { ok: false, queued: true, via: 'mailbox', mailbox: mid } }, { actor: rest.actor ?? OWNER }).catch(() => {});
+    return { ok: false, queued: true, mailbox: mid, host, why: `${host} is not reachable from here (${e.message}); the message waits in this host's mailbox until ${host} collects it (it must set DROVER_MAILBOX_PULL)` };
+  }
 }
 
 /**
@@ -1558,6 +1577,8 @@ export async function dispatchCached(op, args = {}) {
 }
 
 Object.assign(local, survey.ops, credentialOps, settingsOps, notifyOps, uploadOps, fileOps, fileWaitOps, openclaw.consoleOps, native.ops, searchOps, docker.ops, askOps, prs.ops, prompts.ops);
+// The mailbox for hosts that take no inbound ssh (core/mailbox.js): the puller on such a host calls these over rpc.
+Object.assign(local, { 'mailbox.take': (a) => mailbox.take(a), 'mailbox.ack': (a) => mailbox.ack(a), 'mailbox.status': () => mailbox.status() });
 // Asks (core/ask): this host's ops, a peer's over its ssh rpc, and the alerts every client shows.
 askDeps.dispatch = (op, args) => dispatchLocal(op, args);
 askDeps.call = (host, op, args, opts) => (!host || host === hosts.LOCAL ? dispatchLocal(op, args) : callOn(host, op, args, dispatchLocal, opts));
