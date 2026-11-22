@@ -47,11 +47,20 @@ struct AppCommands: Commands {
             }
             .disabled(!hasPane)
         }
+        // Command F on the Prompts screen: its search field. Elsewhere the item is off and the key goes on as usual.
+        CommandGroup(after: .textEditing) {
+            Button("Search prompts") { model.prompts.focusSearch() }
+                .keyboardShortcut("f", modifiers: .command)
+                .disabled(model.sidebarSelection != .prompts)
+            Button("Copy prompt") { if let p = model.prompts.selected { model.prompts.copy(p) } }
+                .keyboardShortcut("c", modifiers: [.command, .shift])
+                .disabled(model.sidebarSelection != .prompts || model.prompts.selected == nil)
+        }
         CommandGroup(after: .sidebar) {
             Divider()
             Button("Manager") { model.showManagerInWindow() }
                 .keyboardShortcut("0", modifiers: [.command, .control])
-            Button("All sessions") { model.sidebarSelection = .all }
+            Button("All agents") { model.sidebarSelection = .all }
                 .keyboardShortcut("1", modifiers: [.command, .control])
             Button("Waiting on you") { model.sidebarSelection = .lane(.waiting) }
                 .keyboardShortcut("2", modifiers: [.command, .control])
@@ -59,6 +68,8 @@ struct AppCommands: Commands {
                 .keyboardShortcut("3", modifiers: [.command, .control])
             Button("Idle") { model.sidebarSelection = .lane(.idle) }
                 .keyboardShortcut("4", modifiers: [.command, .control])
+            Button("Prompts") { model.sidebarSelection = .prompts }
+                .keyboardShortcut("5", modifiers: [.command, .control])
             Divider()
             Button("Manager panel") { WindowRouter.shared.toggleManagerPanel() }
                 .keyboardShortcut("m", modifiers: [.command, .shift])

@@ -1,3 +1,4 @@
+import DroverKit
 import Foundation
 
 /// Everything the macOS app asks of Drover. Views and AppModel depend on this protocol only.
@@ -49,6 +50,12 @@ protocol DroverService: Sendable {
     func notifications(since cursor: String?, wait: Int) async throws -> NotificationPage
     /// Cheap authenticated call for Settings > Test connection. Returns the daemon's host name.
     func ping() async throws -> String
+    /// `prompts.list` (DroverKit models): every prompt typed into Claude Code or Codex, fleet-wide, newest first.
+    func prompts(_ query: PromptsQuery) async throws -> PromptsList
+    /// `prompts.status` on the daemon's own machine: the spool and its sinks.
+    func promptsStatus() async throws -> PromptsStatus
+    /// `prompts.sync` (a write): scan now, then push every sink.
+    func syncPrompts() async throws -> PromptsSyncResult
 }
 
 /// Defaults for services that have no manager or dialogs (test doubles).
@@ -70,6 +77,9 @@ extension DroverService {
     }
     func managerThreads(host: String?) async throws -> [ManagerThread] { throw DroverError.unsupported("openclaw.threads") }
     func sweep(host: String?) async throws -> String { throw DroverError.unsupported("openclaw.sweep") }
+    func prompts(_ query: PromptsQuery) async throws -> PromptsList { throw DroverError.unsupported("prompts.list") }
+    func promptsStatus() async throws -> PromptsStatus { throw DroverError.unsupported("prompts.status") }
+    func syncPrompts() async throws -> PromptsSyncResult { throw DroverError.unsupported("prompts.sync") }
 }
 
 enum DroverError: LocalizedError, Equatable {

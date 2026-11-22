@@ -1,3 +1,4 @@
+import DroverKit
 import Foundation
 import os
 
@@ -335,6 +336,48 @@ final class LiveDroverService: DroverService, @unchecked Sendable {
 
     func ping() async throws -> String {
         try await call("host.identity")["host"]?.text ?? "drover"
+    }
+
+    // MARK: prompts (DroverKit's models; the body is PromptsQuery's argument object)
+
+    @concurrent
+    func prompts(_ query: PromptsQuery) async throws -> PromptsList {
+        try await decoded("prompts.list", body: try JSONEncoder().encode(query), as: PromptsList.self)
+    }
+
+    @concurrent
+    func promptsStatus() async throws -> PromptsStatus {
+        try await decoded("prompts.status", body: Data("{}".utf8), as: PromptsStatus.self)
+    }
+
+    /// A write: the dev build's write guard applies (DevConfig.mutatingOps), and a sync pushes git sinks, so it waits
+    /// as long as the daemon gives each host for it.
+    @concurrent
+    func syncPrompts() async throws -> PromptsSyncResult {
+        let body = try JSONEncoder().encode(JSONValue.object(["actor": .string(Owner.alias)]))
+        return try await decoded("prompts.sync", body: body, timeout: 150, as: PromptsSyncResult.self)
+    }
+
+    /// POST /api/op/<op> with a ready JSON body, the result decoded into `T` (a DroverKit model). Errors as `call`'s.
+    @concurrent
+    private func decoded<T: Decodable & Sendable>(_ op: String, body: Data, timeout: TimeInterval = LiveDroverService.defaultTimeout, as: T.Type) async throws -> T {
+        #if DROVER_DEV
+        if DevConfig.mutatingOps.contains(op) && !DevConfig.allowsWrites(to: baseURL) {
+            throw DroverError.server("The dev build does not write to this daemon (\(op)). Point it at the test daemon, or set DROVER_DEV_ALLOW_WRITES=1.")
+        }
+        #endif
+        var req = try request(path: "api/op/\(op)", method: "POST", body: body)
+        req.timeoutInterval = timeout
+        let (data, resp) = try await session.data(for: req)
+        _ = try Self.unwrap(data: data, response: resp)   // the daemon's errors, as for every op
+        do {
+            guard let result = try JSONDecoder().decode(OpEnvelope<T>.self, from: data).result else { throw DroverError.decoding("\(op): no result") }
+            return result
+        } catch let e as DroverError {
+            throw e
+        } catch {
+            throw DroverError.decoding("\(op): \(error.localizedDescription)")
+        }
     }
 
     // MARK: events

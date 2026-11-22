@@ -1,7 +1,9 @@
 # Drover for macOS (Apps/macOS)
 
-SwiftUI, macOS 14+. Three columns like the web board: sidebar (the manager, views, hosts), board (Waiting on you /
-Working / Idle), detail (Chat, Screen, Info, or the manager). Talks to the Drover daemon over HTTP + SSE
+SwiftUI, macOS 14+. Three columns like the web board: the sidebar, grouped by the shared workspaces (Manager; Agents:
+All agents, then the lanes Waiting on you, Working, Idle; Prompts; Fleet: each host), the board (Waiting on you /
+Working / Idle) or the prompt list, and the detail (Chat, Screen, Info, the manager, or a prompt). Settings is the
+Settings window. Talks to the Drover daemon over HTTP + SSE
 (`CONTRACT.md`, `docs/specs/2026-10-20-ux-overhaul.md`).
 
 Layout
@@ -59,6 +61,16 @@ have no 40 s idle timeout, so another server (Settings' Apply, a pairing) starts
 whatever the last one still answers (`ManagerModel.reset`, `AppModel.generation`). A conversation keeps its newest
 500 turns, as many as a read brings, however long the app runs.
 
+Prompts (sidebar, `drover://prompts?q=`, Control Command 5): every prompt typed into Claude Code or Codex on every
+machine, newest first, from `prompts.list` (DroverKit's models; `Sources/Prompts`). Mine is the daemon's default via
+set, All asks for `via: "all"`; the host menu is its `host`; the search field is its `q` (every word must match,
+asked of the daemon after 300 ms of quiet; Command F focuses it). The list pages with `before` as it scrolls; rows
+highlight under the pointer like the board's. A prompt shows whole in the detail column, verbatim and selectable in
+monospace (never Markdown), with Copy (Command C with the list focused, or Shift Command C) and Open session, which
+selects that session on the board when it is there (same id, the record's `route` host). j and k move, Enter opens
+the session. The status line is `prompts.status`; Sync now is `prompts.sync` (a write: the dev build's write guard
+applies). New user turns read the top again at most every 4 s while the screen shows.
+
 Notifications: dialog alerts carry one action per key (the options, or Approve and Deny, Deliver and Drop for a held
 message) that call `sessions.answer` with the alert's hash, plus Reply and Open. A tap opens the session in the one
 window. Replies and answers go to the alert's host as the board names it (`AppModel.opHost`): the daemon's own name
@@ -78,7 +90,7 @@ Keychain tokens and the App Group copy stay as they are.
 DroverKit: the app links it (`project.part.yml`) for pairing (`PairingController`, `PairingClient`); this app's own
 types (`TokenStore`, `KeychainTokenStore`, `JSONValue`, `DroverError`...) shadow DroverKit's same-named ones in files
 that import it. tools/*.sh build DroverKit as a static module first (`tools/env.sh`), so `script/typecheck.sh`, which
-builds one module, no longer covers this app's sources.
+builds one module, compiles DroverKit as a module first whenever a file imports it.
 
 Known differences from the web UI: tmux targets are window targets (`work:3`), as in the web UI's `windowTarget()`,
 so in a split window the keys go to the active pane.
@@ -86,7 +98,7 @@ so in a split window the keys go to the active pane.
 Without Xcode's license (this Mac):
 - `tools/test.sh` runs the logic harness (`Tests/Harness`, no XCTest).
 - `tools/snapshot.sh` renders views offscreen to PNGs in light and dark (`chat-tools`, `manager`, `manager-panel`,
-  `pairing-*`...). The sidebar's material renders white inside the full window offscreen; `sidebar-*` shows it alone.
+  `prompts`, `pairing-*`...; `SNAPSHOT_ONLY=prompts,sidebar` renders only those). The sidebar's material renders white inside the full window offscreen; `sidebar-*` shows it alone.
 - `tools/build-app.sh` builds an unsandboxed, ad-hoc signed dev `.app` with swiftc and `-D DROVER_DEV`: bundle
   `dev.drover.macos.dev`, URL scheme `droverdev://` only (the build fails if the plist declares `drover`), the token
   from `~/.local/state/drover/token`, the server from `DROVER_URL` (default `http://127.0.0.1:7337`), no App Group,

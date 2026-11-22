@@ -1,5 +1,6 @@
-import SwiftUI
 import AppKit
+import DroverKit
+import SwiftUI
 
 struct PaletteItem: Identifiable {
     enum Kind: Int {
@@ -49,11 +50,12 @@ enum PaletteCatalog {
         }
 
         let views: [(String, String, SidebarItem, Color?)] = [
-            ("Show all sessions", "view:all", .all, nil),
+            ("Show all agents", "view:all", .all, nil),
             ("Show waiting on you", "view:waiting", .lane(.waiting), Theme.amber),
             ("Show working", "view:working", .lane(.working), Theme.steel),
             ("Show idle", "view:idle", .lane(.idle), Theme.moss),
             ("Show manager", "view:manager", .manager, Theme.lilac),
+            ("Show prompts", "view:prompts", .prompts, nil),
         ]
         out.append(PaletteItem(id: "action:manager-panel", title: "Toggle the floating manager", subtitle: "Shift Command M", kind: .action,
                                tint: Theme.lilac, symbol: "macwindow.on.rectangle", perform: { _ in WindowRouter.shared.toggleManagerPanel() }))
@@ -103,6 +105,16 @@ enum PaletteCatalog {
                                        NSPasteboard.general.setString(sid, forType: .string)
                                    }))
         }
+        if model.sidebarSelection == .prompts, let p = model.prompts.selected {
+            out.append(PaletteItem(id: "action:copy-prompt", title: "Copy prompt", subtitle: p.firstLine(max: 60), kind: .action, tint: nil,
+                                   symbol: "doc.on.doc", perform: { $0.prompts.copy(p) }))
+            if model.prompts.session(for: p) != nil {
+                out.append(PaletteItem(id: "action:open-prompt-session", title: "Open the prompt's session", subtitle: p.project ?? p.host,
+                                       kind: .action, tint: nil, symbol: "terminal", perform: { $0.prompts.openSession(p) }))
+            }
+        }
+        out.append(PaletteItem(id: "action:search-prompts", title: "Search prompts", subtitle: "Command F on the Prompts screen", kind: .action,
+                               tint: nil, symbol: "magnifyingglass", perform: { m in m.sidebarSelection = .prompts; m.prompts.focusSearch() }))
         out.append(PaletteItem(id: "action:refresh", title: "Refresh board", subtitle: nil, kind: .action, tint: nil,
                                symbol: "arrow.clockwise", perform: { m in Task { await m.refresh() } }))
         out.append(PaletteItem(id: "action:settings", title: "Open settings", subtitle: nil, kind: .action, tint: nil,

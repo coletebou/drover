@@ -131,6 +131,14 @@ func main() async {
             await m.manager.refresh()
             return AnyView(ManagerView(compact: true).environment(m))
         }),
+        ("prompts", main, true, {
+            // Prompts: the list on the mock's prompts.list fixture, the multi-line one selected in the detail column.
+            let m = await makeModel { $0.sidebarSelection = .prompts }
+            m.prompts.appear()
+            for _ in 0..<300 where !m.prompts.loaded || m.prompts.status == nil { try? await Task.sleep(for: .milliseconds(10)) }
+            m.prompts.selectedID = m.prompts.records.dropFirst().first?.id
+            return AnyView(ContentView().environment(m))
+        }),
         ("info", main, true, {
             let m = await makeModel { $0.select(MockDroverService.sessions[2]); $0.detailTab = .info }
             return AnyView(ContentView().environment(m))
@@ -163,7 +171,9 @@ func main() async {
             return AnyView(PairLinkSheet(url: m.pairLink!).environment(m))
         }),
     ]
-    for s in scenes {
+    // SNAPSHOT_ONLY=prompts,sidebar renders just those scenes.
+    let only = Set((ProcessInfo.processInfo.environment["SNAPSHOT_ONLY"] ?? "").split(separator: ",").map(String.init))
+    for s in scenes where only.isEmpty || only.contains(s.name) {
         for dark in [false, true] {
             await render(await s.make(), size: s.size, dark: dark, window: s.window,
                          to: out.appending(path: "\(s.name)-\(dark ? "dark" : "light").png"))
