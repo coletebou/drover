@@ -137,6 +137,7 @@ export async function startFakeDaemon({ token = 'test-token', mode = 'new', port
     'tmux.capture': ({ target }) => ({ target, text: CAPTURE, screen: { state: 'idle', reason: 'claude prompt footer visible' } }),
     'tmux.windows': () => fleet().hosts[0].windows.map((w) => ({ ...w, index: Number(w.target.split(':')[1]), cmd: 'claude', cwd: '/home/demo/code/demo', panes: 1, activityTs: Date.now() - 5000 })),
     'tmux.send': () => ({ ok: true }), 'tmux.keys': () => ({ ok: true }),
+    'sessions.lastReply': ({ id }) => (id === 's-idle' ? { id, name: 'demo-idle', engine: 'codex', text: 'Done. The parser **keeps line numbers** now, and the three suites pass.', line: 'Done.', ts: ago(600), ask: null } : { id, name: null, engine: 'claude', text: null, line: null, ask: null }),
     'tmux.captureMany': ({ targets = [], escapes = true }) => ({ captures: targets.slice(0, 64).map((target) => (target === 'gone:9' ? { target, ok: false, error: "can't find window: gone" } : { target, ok: true, text: escapes ? `${COLOR_PANE}\x1b[2m${target}\x1b[0m` : `${CAPTURE}\n${target}`, hash: `h-${target}` })) }),
     'prompts.list': (a) => listPrompts(a),
     'prompts.status': () => ({ files: 2, records: prompts.length, oldest: prompts.at(-1).ts, newest: prompts[0].ts, lastScan: now(), scanning: false, sinks: [] }),

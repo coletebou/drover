@@ -508,16 +508,30 @@ most every 4 s. The status line is `prompts.status` (records, newest, each sink'
 
 ### Wall
 
-A grid of live mini terminals, one per agent on the board, waiting first, then working, then idle. A tile is a
-header (lane dot, name, host, age) over the bottom of its pane in color, bordered in its lane's color (waiting
-tiles pulse). Panes come from `tmux.captureMany`, one call per host per refresh, only for the tiles on screen
-(IntersectionObserver), every 2 s (1 s zoomed), paused while the page is hidden; the escapes are parsed by
-`ui/ansi.js` into spans, text only as textContent and colors only as validated `#rrggbb` inline styles, on a
-terminal's dark ground in both schemes. A host whose daemon has no `tmux.captureMany` is read with `tmux.capture`,
-a few panes at a time, without color; a tile with no pane (a headless session, a Grok bot) shows its board tail.
-Click selects, a second click or `z` zooms the tile to the whole view, Enter or a double click opens the drawer, Esc
-unzooms, arrows or `h j k l` move, `+` `-` (or the slider) set the density, 1x1 up to 6x5. Pure half:
-`ui/wall-model.js` (tests: `test/ui-wall.test.js`).
+A grid of live tiles, one per agent, in the board's own order: waiting, then working, then idle, the newest first.
+A tile is a header (lane dot, name, host, working directory, state and age) over what its pane says, in color,
+bordered in its lane's color (waiting tiles pulse). Panes come from `tmux.captureMany`, one call per host per
+refresh, only for the tiles on screen (IntersectionObserver), every 2 s (1 s zoomed), paused while the page is
+hidden; the escapes are parsed by `ui/ansi.js` into spans, text only as textContent and colors only as validated
+`#rrggbb` inline styles, on a terminal's dark ground in both schemes.
+
+**A tile is what the agent said, not its status line.** The bottom rows of a Claude Code or Codex pane are always
+the same furniture (the input box, the status line, the mode line, a notice), so the bottom of the pane is the one
+part that says nothing. `ui/pane-content.js` (shared with the TUI) leaves those rows out, keeps what was typed and
+not sent, drops tips, and joins the prose the agent wrapped at the pane's width back into lines, which then wrap
+to the tile; a rule, a box or a table row keeps its shape and is clipped. A dialog is never cut, and a pane it does
+not recognise (a shell) is shown whole. A tile shows its text from the top when it fits, else its end.
+
+**Scopes.** Active (the default) is what waits, what works, and what went idle within a day; Live is waiting and
+working; All is the board. A program's run with no pane (`claude -p`, the Agent SDK: it lives for seconds) is only
+in All, and what waits on you is in every scope. The choice is kept in localStorage; `f` steps through them.
+
+A tile with no pane (a headless session, one in a terminal outside tmux) shows its agent's last reply as Markdown
+(`sessions.lastReply`, asked for the tiles on screen only: every 8 s while it works, every minute otherwise), else
+its board tail. A host whose daemon has no `tmux.captureMany` is read with `tmux.capture`, a few panes at a time,
+without color. Click selects, a second click or `z` zooms the tile to the whole view, Enter or a double click opens
+the drawer, Esc unzooms, arrows or `h j k l` move, `+` `-` (or the slider) set the density, 1x1 up to 6x5. Pure
+halves: `ui/wall-model.js` and `ui/pane-content.js` (tests: `test/ui-wall.test.js`, `test/pane-content.test.js`).
 
 ## Asks: questions by text
 

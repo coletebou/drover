@@ -172,6 +172,25 @@ tile: a header (lane dot, name, host, age), the bottom of its pane in color, a b
 zooms the tile to the whole view (refreshed every second), Enter opens the session, Esc unzooms. Only visible
 tiles are captured; refresh every 2 s (1 s zoomed), paused when the view is not in front.
 
+Update 2026-11-22 (the owner, on a fleet of 130 agents: "way more usable and readable and not just a bunch of
+statuslines"). Three things made the first Wall say nothing, and each is changed in both clients:
+
+- **The bottom of a pane is the agent's furniture.** Claude Code and Codex end every pane with the input box, the
+  status line, the mode line and a notice, so a tile of six rows was all furniture. A tile now shows what the pane
+  says above it (`web/ui/pane-content.js`, pure, shared): the furniture is left out, a typed draft is kept, tips
+  go, and prose the agent wrapped at the pane's width is joined and wraps to the tile instead of being cut at its
+  edge. A dialog is never cut. The TUI keeps the old picture on `c`.
+- **By name, the oldest sessions came first.** Tiles are in the board's order (lane, live before faded, newest
+  first), and the Wall has scopes (`wall-model.js` `SCOPES`): Active, the default (waiting, working, idle for less
+  than a day), Live (waiting and working) and All. A program's run with no pane is only in All; what waits is in
+  every scope. On its own the TUI grid stops at tiles of 36x8, where it used to go to 6x5.
+- **A tile with no pane was empty.** It shows the agent's last reply (`sessions.lastReply`, the tiles on screen
+  only, seldom). `lastAssistantText` reads further back when the transcript's tail is all tool calls, so a working
+  session's reply is found.
+
+The header spells the state out (`idle 2h`, `working 3m`, `failed 4d`), and the footer (TUI) or the header (web)
+says where the agent works.
+
 ## Space (Agents › Space)
 
 The fleet in 3D. The manager is a glowing core at the origin; each host is a disc on a ring around it (size by

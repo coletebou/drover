@@ -336,24 +336,34 @@ export async function readTranscript(file, { since = 0, limit = 200, maxBytes = 
 /**
  * The last thing the assistant said in a transcript (its final text block),
  * read from the tail only so it stays cheap on multi-megabyte transcripts.
+ * A long run of tool calls leaves no text in the tail (a working session's
+ * last words were 700 KB back, behind tool output and request records): the
+ * read then goes four times further back, up to maxBytes, before it gives up.
  * Returns { text, ts, model } or null.
  */
-export async function lastAssistantText(file, { tailBytes = 384 * 1024 } = {}) {
+export async function lastAssistantText(file, { tailBytes = 384 * 1024, maxBytes = 8 * 1024 * 1024 } = {}) {
   if (!file || !existsSync(file)) return null;
   const s = await stat(file);
-  const start = Math.max(0, s.size - tailBytes);
   const fh = await open(file, 'r');
   try {
-    const buf = Buffer.alloc(s.size - start);
-    await fh.read(buf, 0, buf.length, start);
-    const lines = buf.toString('utf8').split('\n');
-    if (start > 0) lines.shift();
-    for (let i = lines.length - 1; i >= 0; i--) {
-      if (!lines[i].includes('"assistant"')) continue;
-      const p = parseTranscriptLine(lines[i]);
-      if (p?.role === 'assistant' && p.text?.trim()) return { text: p.text.trim(), ts: p.ts ?? null, model: p.model ?? null };
+    let seen = s.size;   // lines from here to the end were read by the pass before
+    for (let tail = tailBytes; ; tail *= 4) {
+      const start = Math.max(0, s.size - Math.min(tail, maxBytes));
+      const buf = Buffer.alloc(seen - start);
+      await fh.read(buf, 0, buf.length, start);
+      // The first line is cut wherever the read began (in bytes: it can begin inside a character): it is left for
+      // the next pass, which starts further back and reads it whole.
+      const nl = start > 0 ? buf.indexOf(0x0a) : -1;
+      const whole = start === 0 ? buf : nl < 0 ? buf.subarray(buf.length) : buf.subarray(nl + 1);
+      if (start > 0 && nl >= 0) seen = start + nl;
+      const lines = whole.toString('utf8').split('\n');
+      for (let i = lines.length - 1; i >= 0; i--) {
+        if (!lines[i].includes('"assistant"')) continue;
+        const p = parseTranscriptLine(lines[i]);
+        if (p?.role === 'assistant' && p.text?.trim()) return { text: p.text.trim(), ts: p.ts ?? null, model: p.model ?? null };
+      }
+      if (start === 0 || tail >= maxBytes) return null;
     }
-    return null;
   } finally { await fh.close(); }
 }
 

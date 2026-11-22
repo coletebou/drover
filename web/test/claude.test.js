@@ -71,3 +71,26 @@ test('sendToSession refuses dead or socketless sessions and empty text', async (
   await assert.rejects(claude.sendToSession({ pid: 1, socket: '/nope', alive: true }, '  '), /empty message/);
 });
 
+
+test('lastAssistantText: read from the tail, and further back when the tail is all tool calls', async () => {
+  const { lastAssistantText } = await import('../core/claude.js');
+  const dir = await mkdtemp(path.join(tmpdir(), 'drover-last-'));
+  const said = (text, ts) => JSON.stringify({ type: 'assistant', timestamp: ts, message: { role: 'assistant', model: 'm', content: [{ type: 'text', text }] } });
+  const tool = (n) => JSON.stringify({ type: 'assistant', timestamp: '2026-01-01T00:00:09Z', message: { role: 'assistant', content: [{ type: 'tool_use', id: `t${n}`, name: 'Bash', input: { command: 'x'.repeat(300) } }] } });
+  const result = (n) => JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `t${n}`, content: 'é'.repeat(200) }] } });
+  const run = (n) => Array.from({ length: n }, (_, i) => `${tool(i)}\n${result(i)}`).join('\n');
+  const write = async (name, lines) => { const f = path.join(dir, name); await writeFile(f, `${lines.join('\n')}\n`); return f; };
+  // In the tail: found on the first read.
+  const near = await write('near.jsonl', [said('first words', '2026-01-01T00:00:01Z'), run(2), said('the last words', '2026-01-01T00:00:02Z')]);
+  assert.deepEqual(await lastAssistantText(near, { tailBytes: 2000 }), { text: 'the last words', ts: '2026-01-01T00:00:02Z', model: 'm' });
+  // Behind a long run of tool calls (about 40 KB, multi-byte output): the read goes further back and finds it.
+  const far = await write('far.jsonl', [said('older', '2026-01-01T00:00:01Z'), said('what it said before the long run', '2026-01-01T00:00:03Z'), run(40)]);
+  assert.equal((await lastAssistantText(far, { tailBytes: 2000 }))?.text, 'what it said before the long run');
+  for (const tailBytes of [1500, 1777, 2048, 3001, 5000]) assert.equal((await lastAssistantText(far, { tailBytes }))?.text, 'what it said before the long run', `wherever the read begins (${tailBytes})`);
+  // A bound on how far: past maxBytes it gives up, as before.
+  assert.equal(await lastAssistantText(far, { tailBytes: 2000, maxBytes: 8000 }), null);
+  // Nothing said at all, a missing file, no file.
+  assert.equal(await lastAssistantText(await write('none.jsonl', [run(3)]), { tailBytes: 500 }), null);
+  assert.equal(await lastAssistantText(path.join(dir, 'missing.jsonl')), null);
+  assert.equal(await lastAssistantText(null), null);
+});

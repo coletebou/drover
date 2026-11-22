@@ -177,7 +177,8 @@ describe('drover tui against a current daemon', { skip: hasTmux ? false : 'tmux 
     c.tmux.keys('t', '2'); c.tmux.mouse('t', 1, 1);   // Agents, then its first sub-tab (Lanes) by a click
     s = await c.until((x) => x.includes('Waiting on you'), 'Lanes');
     c.tmux.mouse('t', at(s, ' Wall ', 1).x + 1, 1);
-    s = await c.until((x) => x.includes(' Wall  3 agents') && x.includes('✗ 1 failing'), 'the Wall with captured panes');
+    s = await c.until((x) => x.includes(' Wall  1 waiting · 1 working · 1 idle   Active 3') && x.includes('✗ 1 failing'), 'the Wall with captured panes');
+    await c.until((x) => x.includes('Done. The parser keeps line numbers now'), 'the last reply of the agent with no pane');
     assert.ok(c.daemon.callsOf('tmux.captureMany').some((x) => x.args.escapes === true && x.args.targets.includes('work:1') && x.args.targets.includes('work:2')), 'one captureMany for both panes');
     assert.match(c.tmux.captureEscapes('t'), /\x1b\[[0-9;]*(32|38;5;\d+|38;2;13;188;121)[0-9;]*m✓/, 'the tick in green');
     c.tmux.keys('t', 'Escape'); c.tmux.keys('t', '1');
