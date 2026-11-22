@@ -89,7 +89,7 @@ import Testing
         var r = try #require(MockURLProtocol.lastRequest(in: s))
         #expect(r.method == "POST")
         #expect(r.url.path == "/api/op/prompts.list")
-        #expect(r.bodyJSON == ["q": "lexer", "limit": 200, "via": "all"])
+        #expect(r.bodyJSON == ["q": "lexer", "limit": 200, "who": "all"])
         _ = try await c.prompts(PromptsQuery().after(l.prompts.last))
         #expect(MockURLProtocol.lastRequest(in: s)?.bodyJSON == ["limit": 200, "before": "p_4d5e6f708192a3b4"])
         let st = try await c.promptsStatus()

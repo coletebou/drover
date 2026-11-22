@@ -167,7 +167,8 @@ struct PromptsView: View {
 }
 
 /// Mark mine or not (`prompts.mark`, fleet-wide), with feedback; the list or detail refreshes under the store
-/// itself. A free function so both the list row and the detail screen share it.
+/// itself. A free function so both the list row and the detail screen share it; main actor, as the views calling it.
+@MainActor
 func markPrompt(_ p: PromptRecord, mine: Bool?, model: AppModel) {
     Haptics.tap()
     Task {
@@ -177,7 +178,7 @@ func markPrompt(_ p: PromptRecord, mine: Bool?, model: AppModel) {
 }
 
 /// Mark mine / Mark not mine, and Clear mark once a person's mark decided it.
-@ViewBuilder
+@MainActor @ViewBuilder
 func markMenu(_ p: PromptRecord, model: AppModel) -> some View {
     let isMine = p.mine ?? false
     Button(isMine ? "Mark not mine" : "Mark mine", systemImage: isMine ? "person.fill.xmark" : "person.fill.checkmark") { markPrompt(p, mine: !isMine, model: model) }
