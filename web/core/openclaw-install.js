@@ -464,6 +464,8 @@ export function renderPlist(lay) {
   <key>Label</key><string>${xml(lay.service.name)}</string>
   <!-- OpenClaw manager gateway; installed by drover manager setup (web/core/openclaw-install.js), re-run it instead of editing -->
   <key>ProgramArguments</key><array><string>${xml(lay.launcher)}</string></array>
+  <!-- Interactive: the agents the manager starts inherit its priority; with no ProcessType a LaunchAgent's children run at 20, not a terminal's 31 -->
+  <key>ProcessType</key><string>Interactive</string>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>30</integer>
