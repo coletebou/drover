@@ -23,7 +23,7 @@ through them), and each workspace comes back on the sub-view it showed last (kep
 | 2 | Agents › Lanes | `native.board` and `board` events (`fleet.summary` and `fleet` events on an older daemon); answers with `sessions.answer {id, key, expect}` (`tmux.answer` on an older daemon) |
 | | Agents › List | `sessions.list` per host |
 | | Agents › Windows | `tmux.windows {classify: true}` per host |
-| | Agents › Wall | the board's strips as live tiles: `tmux.captureMany {targets, lines, escapes: true}` per host (`tmux.capture` per tile on an older daemon) |
+| | Agents › Wall | the board's strips as live tiles: `tmux.captureMany {targets, lines, escapes: true}` per host (`tmux.capture` per tile on an older daemon); `sessions.lastReply` for a tile with no pane |
 | | Agents › Space | the fleet in 3D (`views/space.js`; a placeholder until it lands) |
 | 3 | Prompts › Mine, All | `prompts.list {q, via, hosts, limit, before}`; `launch.start` on `l` |
 | 4 | Work › Pulls | `prs.list` (GitHub through the host's `gh`): `s` scope (yours and the ones asking your review, yours, asking your review, involving you), `t` state, `prs.get` for the selected one, Enter or `o` opens it in the browser |
@@ -95,14 +95,33 @@ while the view is shown; the selected prompt stays selected.
 
 ### Wall
 
-A grid of live mini terminals, one per strip, waiting first and then by name. A tile is a border in its lane's colour
-(heavy when selected; a waiting tile's border alternates bright and dim at 2 Hz while the Wall is in front) around a
-header (lane dot, name, host, age) and the bottom of its pane in colour: `tmux.captureMany` with escapes, parsed by
-`ui/ansi.js` into styled segments (no escape from a pane reaches the terminal) and cut by display width. Only the
-tiles on screen are captured, one call per host per refresh, every 2 s (every second zoomed), and nothing while
-another view is in front. A failed capture keeps the last one, marked stale. A strip with no pane shows its own last
-lines. The grid fits every tile when tiles stay at least 18x4, else the densest grid that does; `+`/`-` step from 1x1
-to 6x5; the wheel scrolls rows of tiles.
+A grid of live tiles, one per strip, in the board's own order: waiting, working, idle, the newest first. A tile is a
+border in its lane's colour (heavy when selected; a waiting tile's border alternates bright and dim at 2 Hz while the
+Wall is in front) around a header (lane dot, name, host, the state spelled out and its age: `idle 2h`, `working 3m`,
+`failed 4d`), what the agent's pane says, and a footer (the engine and the working directory; on a waiting tile what
+it asks).
+
+**A tile is what the agent said, not its status line.** The bottom rows of a Claude Code or Codex pane are always the
+same furniture: the input box, the status line, the mode line, a notice. A tile that drew the bottom of the pane drew
+only those. `ui/pane-content.js` (shared with the web Wall) takes the capture (`tmux.captureMany` with escapes, parsed
+by `ui/ansi.js` into styled segments, so no escape from a pane reaches the terminal) and leaves the furniture out,
+keeps what was typed and not sent, drops tips, and joins the prose the agent wrapped at the pane's width back into
+lines. Those lines then wrap to the tile at a space, with a hanging indent and their colours, so nothing is cut at the
+tile's edge; a rule, a box or a table row keeps its shape and is cut. The text starts at the top of the tile; when it
+does not fit, its end is shown. A dialog is never cut (it is what the pane asks), and a pane the reader does not
+recognise (a shell) is shown whole. `c` shows the panes as they are, furniture and all, and back.
+
+**Scopes.** Active (the default): what waits, what works, and what went idle within a day. Live: waiting and working.
+All: every agent on the board. A program's run with no pane (`claude -p`, the Agent SDK: it lives for seconds) is only
+in All; what waits on you is in every scope. `f` steps through them (`F` back); the header says how many of the board
+the scope shows. `/` filters by name, host, engine, directory or window.
+
+A strip with no pane shows its agent's last reply as Markdown (`sessions.lastReply`, for the tiles on screen only:
+every 8 s while it works, every minute otherwise), else its own last lines. Only the tiles on screen are captured, one
+call per host per refresh, every 2 s (every second zoomed), and nothing while another view is in front. A failed
+capture keeps the last one, marked stale. On its own the grid is the sparsest that shows every tile while tiles stay
+comfortable to read (36x8 at least); when they cannot all be shown that way, the densest comfortable grid, and the
+rest scroll (the wheel, or the arrows); `+`/`-` step from 1x1 to 6x5.
 
 ## Keys
 
@@ -112,7 +131,7 @@ to 6x5; the wheel scrolls rows of tiles.
 | Manager composer | Enter sends; Ctrl-J or Alt-Enter new line; Up/Down rows, then history; Ctrl-A/E/U/W/K, Alt-B/F; paste keeps newlines; PgUp/PgDn scroll; Tab completes a slash command; Esc leaves it |
 | Manager, Esc pressed | `i` or Enter types again, `j`/`k` scroll, `w` selects what waits on you: left and right choose, digits, Enter, Esc and y/n press that dialog's keys, `o` opens it, `r` replies |
 | Agents › Lanes | `j`/`k` select; on a waiting strip selected here, digits, Enter and Esc answer it (a strip carried from another view: Enter picks it here first); Enter or `o` opens; `r` replies with a message; `/` filters |
-| Agents › Wall | arrows or `h` `j` `k` `l` move; `+` `-` density; `z` or a second click zooms the tile to the whole view, Esc unzooms; Enter or `o` opens; `r` replies; `R` refreshes |
+| Agents › Wall | arrows or `h` `j` `k` `l` move; `f` `F` the scope (Active, Live, All); `/` filters; `+` `-` density; `z` or a second click zooms the tile to the whole view, Esc unzooms; `c` the panes as they are, and back; Enter or `o` opens; `r` replies; `R` refreshes |
 | Prompts | `/` words (the daemon matches them); Enter or `o` opens the session; `y` copies; `l` launches a new agent with the prompt; `v` Mine / All; `[` `]` host; `j` past the end reads older ones |
 | Session | Tab cycles Chat, Screen, Info; `j`/`k` select, Enter expands a tool group (again: all output); `a` jumps to the answer card, whose keys answer; `r` or `i` types; `t` or Ctrl-T sends to the inbox or the pane; `K` then a key sends that key to the pane; `F` forces a paste a dialog refused |
 | Mouse | a click on a workspace tab goes there (" drover " opens the palette, the waiting count Agents › Lanes), on a sub-tab to that sub-view; on a key hint in the bottom bar presses that key (not a range like `j/k` or `1-7`); on a row, a strip, a tile, a chat item or Chat/Screen/Info selects it, a second click opens it (Enter; on a tile: zooms); on a composer types there, the cursor where you clicked; on a palette entry runs it, outside the palette or help closes it. The wheel scrolls. Shift-drag still selects text in most terminals; `--no-mouse`, `DROVER_TUI_MOUSE=0` or the palette's "Mouse: off" leave the mouse to the terminal |
@@ -149,7 +168,7 @@ host only, by the session first and by its window second.
 | `board.js` | strips, lanes, `stripKey` and `stripFor` (a session or window to its strip), the keys a dialog takes, the answer plan and its fallback |
 | `composer.js` | the multi-line editor |
 | `popup.js` | `drover manager popup` and `keys` |
-| `views/` | manager, board (Lanes), session, the generic table and the table definitions, prompts, wall, space, overlays |
+| `views/` | manager, board (Lanes), session, the generic table and the table definitions, prompts, wall (its tiles, scopes and pane reading are shared with the web Wall: `../ui/wall-model.js`, `../ui/pane-content.js`), space, overlays |
 | `test-support/` | a fake daemon and private tmux servers for the end-to-end tests |
 
 Startup: the first frame is drawn before anything is asked of the daemon, about 60 to 120 ms after launch; data
@@ -171,8 +190,9 @@ A daemon from before the UX overhaul still works: `native.board` "unknown op" sw
 (and the stream to the `fleet` event), `sessions.answer` falls back to `tmux.answer` on the strip's window, and a
 manager message that comes back with `reply` (the old blocking call) lands in place of a "waiting for the reply"
 line. Threads need a current daemon (an old one answers on main). Without `tmux.captureMany` the Wall asks
-`tmux.capture` once per visible tile (plain text, and it says so); without `prompts.list` Prompts says the daemon
-predates the prompt spool.
+`tmux.capture` once per visible tile (plain text, and it says so: with no colours a typed draft cannot be told from
+a placeholder, so the input box is left out whole); without `sessions.lastReply` a tile with no pane shows the
+board's own lines; without `prompts.list` Prompts says the daemon predates the prompt spool.
 
 ## The popup
 

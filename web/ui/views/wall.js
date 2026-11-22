@@ -1,50 +1,85 @@
-// Agents › Wall: a grid of live mini terminals, one per agent on the board, waiting first (docs/specs/2026-11-21-
-// cohesion-overhaul.md, "Wall"). Each tile is a header (lane dot, name, host, age) over the bottom of its pane in
-// color, its border in the lane's color (waiting pulses, not under reduced motion). Panes come from tmux.captureMany:
-// one call per host per refresh, only for tiles on screen (IntersectionObserver), every 2 s (1 s zoomed), paused while
-// the page is hidden; a daemon without it is read with tmux.capture, a few panes at a time, without color. Pane text
-// is parsed (ansi.js) into spans: text only as textContent, colors only as validated #rrggbb inline styles.
+// Agents › Wall: a grid of live tiles, one per agent on the board, in the board's order: waiting, working, idle,
+// the newest first (docs/specs/2026-11-21-cohesion-overhaul.md, "Wall"). Each tile is a header (lane dot, name, host,
+// where it works, state and age) over what its pane says, in color, its border in the lane's color (waiting pulses,
+// not under reduced motion). Panes come from tmux.captureMany: one call per host per refresh, only for tiles on
+// screen (IntersectionObserver), every 2 s (1 s zoomed), paused while the page is hidden; a daemon without it is read
+// with tmux.capture, a few panes at a time, without color. Pane text is parsed (ansi.js) into spans: text only as
+// textContent, colors only as validated #rrggbb inline styles. pane-content.js leaves out the agent's own furniture
+// (input box, status line, mode line, notices) and prose wraps to the tile, so a tile reads as what the agent said
+// last and not as its status line. An agent with no pane shows its last reply (sessions.lastReply), as Markdown.
+// The scope (Active by default: waiting, working, idle for less than a day; Live; All) is kept in localStorage.
 // Click selects (the selection Lanes, List, Windows and Space share), a second click or z zooms, Enter or a double
-// click opens the drawer, Esc unzooms, arrows or h j k l move, + and - change the density. Nothing here answers a
-// dialog: that takes the drawer or a click on the strip in Lanes.
-import { h, clear, append, ago, empty, loading, plural } from '../dom.js';
-import { parseAnsi, stripAnsi } from '../ansi.js';
-import { wallTiles, densityGrid, capturePlan, moveIndex, runStyle, fitLines, tailText, DENSITY_MIN, DENSITY_MAX } from '../wall-model.js';
+// click opens the drawer, Esc unzooms, arrows or h j k l move, + and - change the density, f steps the scope.
+// Nothing here answers a dialog: that takes the drawer or a click on the strip in Lanes.
+import { h, clear, append, ago, empty, loading, plural, seg, shortPath } from '../dom.js';
+import { parseAnsi } from '../ansi.js';
+import { paneContent, keepsShape, hangingIndent, lastText } from '../pane-content.js';
+import { renderMarkdown } from '../markdown.js';
+import { wallTiles, densityGrid, capturePlan, moveIndex, runStyle, fitLines, tailText, stateWord, repliesDue, replyText, SCOPES, DENSITY_MIN, DENSITY_MAX } from '../wall-model.js';
 
-const DENSITY_KEY = 'drover.wall.density';
+const DENSITY_KEY = 'drover.wall.density', SCOPE_KEY = 'drover.wall.scope';
 const REFRESH_MS = 2000, ZOOM_MS = 1000, LINES = 60, ZOOM_LINES = 200, OLD_DAEMON_PANES = 8;
 const LANE = { wait: ['amber', 'waiting'], work: ['steel', 'working'], idle: ['moss', 'idle'] };
 const ms = (v) => (v == null ? 0 : typeof v === 'number' ? (v < 1e11 ? v * 1000 : v) : Date.parse(v) || 0);
 const unknownOp = (e) => /unknown op/i.test(e?.message ?? '');
 
-/** Parsed lines into a screen element: one div per line, one span per styled run. */
-function paintLines(el, text, maxLines) {
+/**
+ * Parsed lines (what pane-content.js kept) into a screen element: one div per line, one span per styled run. Prose
+ * wraps with its own hanging indent; a rule, a box or a table row keeps its shape and is clipped. The element shows
+ * the end of the lines when they do not all fit (CSS), so the newest is always in sight.
+ */
+function paintLines(el, lines, maxLines) {
   clear(el);
-  for (const line of parseAnsi(text, { maxLines, maxCols: 400 })) {
-    const row = h('div', { class: 'wl' });
-    if (!line.length || !line.some((r) => r.text)) row.textContent = ' ';
-    for (const run of line) { const sp = document.createElement('span'); sp.textContent = run.text; Object.assign(sp.style, runStyle(run)); row.append(sp); }
-    el.append(row);
+  const box = h('div', { class: 'wall-lines' });
+  for (const line of lines.slice(-maxLines)) {
+    const text = line.map((r) => r.text).join('');
+    const row = h('div', { class: keepsShape(text) ? 'wl keep' : 'wl' });
+    if (!text.trim()) row.textContent = ' ';
+    else {
+      const hang = hangingIndent(text);
+      if (hang && !row.classList.contains('keep')) { row.style.paddingLeft = `${hang}ch`; row.style.textIndent = `-${hang}ch`; }
+      for (const run of line) { const sp = document.createElement('span'); sp.textContent = run.text; Object.assign(sp.style, runStyle(run)); row.append(sp); }
+    }
+    box.append(row);
   }
+  el.append(box);
 }
-const lastLine = (text) => (stripAnsi(text).split('\n').map((l) => l.trim()).filter(Boolean).at(-1) ?? '');
+/** What an agent with no pane said last, as Markdown, or the board's own lines as text. */
+function paintSaid(el, text, markdown) {
+  clear(el);
+  el.append(h('div', { class: 'wall-lines' }, markdown ? renderMarkdown(text) : h('div', { class: 'wl' }, text || ' ')));
+}
+const lastOf = (text) => (String(text ?? '').split('\n').map((l) => l.trim()).filter(Boolean).at(-1) ?? '');
 
 export default {
   id: 'wall', label: 'Wall',
   mount(root, ctx) {
-    let alive = true; let q = ''; let tiles = []; let zoomed = null; let clickTimer = null;
+    let alive = true; let q = ''; let tiles = []; let zoomed = null; let clickTimer = null; let boardCount = 0;
+    let scope = SCOPES.some(([id]) => id === localStorage.getItem(SCOPE_KEY)) ? localStorage.getItem(SCOPE_KEY) : 'active';
     let density = Math.max(DENSITY_MIN, Math.min(DENSITY_MAX, Number(localStorage.getItem(DENSITY_KEY)) || 3));
     const nodes = new Map();      // strip key -> { el, head, screen, sig, drawn }
-    const caps = new Map();       // strip key -> { ok, text, error, at, plain }
+    const caps = new Map();       // strip key -> { ok, text, lines (what pane-content.js kept), error, at, plain }
+    const replies = new Map();    // strip key -> { text, at } for agents with no pane
+    const asking = new Set();     // strip keys with a sessions.lastReply out
+    let replyOp = true;           // false: this daemon has no sessions.lastReply
     const visible = new Set();
     const oldDaemon = new Set();  // hosts that have no tmux.captureMany: read pane by pane
     let fit = 12; let cols = 3;
 
     const meta = h('span', { class: 'muted small' });
     const slider = h('input', { type: 'range', min: DENSITY_MIN, max: DENSITY_MAX, step: 1, value: density, 'aria-label': 'Tiles per row', title: 'Tiles per row (+ / -)', oninput: () => setDensity(Number(slider.value)) });
-    const head = h('div', { class: 'view-head' }, h('h1', null, 'Wall'), meta, h('span', { class: 'spacer' }),
+    let scopeSeg = null;
+    const scopeBox = h('span', { class: 'wall-scope' });
+    function drawScope() { scopeSeg = seg(SCOPES.map(([id, label]) => [id, label]), scope, setScope); scopeSeg.title = SCOPES.map(([, label, what]) => `${label}: ${what}`).join('\n'); clear(scopeBox).append(scopeSeg); }
+    function setScope(v) {
+      scope = v; localStorage.setItem(SCOPE_KEY, v); drawScope();
+      if (zoomed) unzoom();
+      render(); refreshSoon(50);
+    }
+    drawScope();
+    const head = h('div', { class: 'view-head' }, h('h1', null, 'Wall'), meta, h('span', { class: 'spacer' }), scopeBox,
       h('label', { class: 'check small wall-density' }, 'density', slider),
-      h('span', { class: 'muted small board-keys' }, 'click select, again zoom, enter open'));
+      h('span', { class: 'muted small board-keys' }, 'click select, again zoom, enter open, f scope'));
     const notice = h('div', { class: 'notice', hidden: true });
     const grid = h('div', { class: 'wall', role: 'listbox', 'aria-label': 'Agents', 'aria-multiselectable': 'false' });
     const zoomEl = h('section', { class: 'wall-zoom', hidden: true, 'aria-label': 'Zoomed pane' });
@@ -77,7 +112,7 @@ export default {
     }
 
     // ------------------------------------------------------------ tiles
-    function current() { const all = wallTiles(ctx.board()); return q ? all.filter((s) => JSON.stringify([s.name, s.host, s.tmux, s.cwd, s.engine]).toLowerCase().includes(q.toLowerCase())) : all; }
+    function current() { const board = ctx.board(); boardCount = wallTiles(board).length; const all = wallTiles(board, { scope }); return q ? all.filter((s) => JSON.stringify([s.name, s.host, s.tmux, s.cwd, s.engine]).toLowerCase().includes(q.toLowerCase())) : all; }
     function render() {
       if (!alive) return;
       tiles = current();
@@ -97,12 +132,13 @@ export default {
         prev = n.el;
         paintScreen(s, n);
       }
-      for (const [k, n] of nodes) if (!keep.has(k)) { io.unobserve(n.el); n.el.remove(); nodes.delete(k); caps.delete(k); visible.delete(k); }
+      for (const [k, n] of nodes) if (!keep.has(k)) { io.unobserve(n.el); n.el.remove(); nodes.delete(k); caps.delete(k); replies.delete(k); visible.delete(k); }
       grid.querySelector(':scope > .empty')?.remove();
-      if (!tiles.length) grid.append(empty(q ? 'Nothing matches' : 'No agents on the board', q ? 'Loosen the search.' : 'Launch one from Fleet › Launch.'));
-      const waiting = tiles.filter((s) => s.lane === 'wait').length;
+      const hidden = boardCount - tiles.length;
+      if (!tiles.length) grid.append(q ? empty('Nothing matches', 'Loosen the search.') : boardCount ? empty(scope === 'live' ? 'Nothing is waiting or working' : 'Nothing is active right now', `${plural(boardCount, 'agent')} on the board: All shows them.`) : empty('No agents on the board', 'Launch one from Fleet › Launch.'));
+      const n = (lane) => tiles.filter((s) => s.lane === lane).length;
       const hosts = new Set(tiles.map((s) => s.host)).size;
-      meta.textContent = `${plural(tiles.length, 'agent')}${waiting ? `, ${waiting} waiting` : ''} on ${plural(hosts, 'host')}${document.hidden ? ', paused' : ''}`;
+      meta.textContent = `${n('wait')} waiting · ${n('work')} working · ${n('idle')} idle on ${plural(hosts, 'host')}${hidden > 0 && !q ? ` · ${hidden} more in All` : ''}${document.hidden ? ', paused' : ''}`;
       notice.hidden = !oldDaemon.size;
       notice.textContent = oldDaemon.size ? `${[...oldDaemon].join(', ')} ${oldDaemon.size > 1 ? 'have' : 'has'} no tmux.captureMany yet: those tiles are read a few panes at a time, without color.` : '';
       if (zoomed && !tiles.some((s) => s.key === zoomed)) unzoom();
@@ -122,20 +158,35 @@ export default {
       append(n.head, [h('span', { class: `dot ${color === 'amber' ? 'wait' : color === 'steel' ? 'busy' : 'idle'}`, 'aria-hidden': 'true' }),
         h('span', { class: 'wall-name trunc', title: s.cwd ?? '' }, s.name),
         s.host !== 'local' ? h('span', { class: 'wall-host trunc' }, s.host) : null,
+        s.cwd ? h('span', { class: 'wall-cwd trunc', title: s.cwd }, shortPath(s.cwd, 40)) : null,
         h('span', { class: 'spacer' }),
-        s.since ? h('span', { class: 'wall-age' }, ago(s.since)) : null]);
+        h('span', { class: `wall-age${stateWord(s) === 'failed' || stateWord(s) === 'dead' ? ' bad' : ''}` }, stateWord(s), s.since ? ' ' : null, s.since ? ago(s.since) : null)]);
+    }
+    /** What a tile shows: the pane's kept lines, else the agent's last reply (Markdown), else the board's own lines. */
+    function shown(s) {
+      const c = caps.get(s.key);
+      if (c?.ok && c.lines.length) return { kind: 'pane', lines: c.lines, plain: c.plain, peek: lastText(c.lines) };
+      const said = replies.get(s.key)?.text?.trim();
+      if (said) return { kind: 'said', text: said, peek: lastOf(said) };
+      const own = tailText(s);
+      const text = own && own !== s.status ? own : c?.ok ? 'nothing on screen yet' : c?.error ? `could not capture: ${c.error}` : s.tmux ? 'capturing the pane…' : 'no pane, and no reply on record';
+      return { kind: 'board', text, peek: lastOf(text) };
+    }
+    function paintShown(el, v, maxLines) {
+      el.classList.toggle('from-board', v.kind === 'board');
+      el.classList.toggle('said', v.kind === 'said');
+      el.classList.toggle('plain', Boolean(v.plain));
+      if (v.kind === 'pane') paintLines(el, v.lines, maxLines); else paintSaid(el, v.text, v.kind === 'said');
     }
     function paintScreen(s, n) {
       const c = caps.get(s.key);
-      const text = c?.ok ? c.text : tailText(s);
-      const drawn = `${fit}|${c?.ok ? 'pane' : 'tail'}|${text}`;
+      const v = shown(s);
+      const drawn = `${fit}|${v.kind}|${v.kind === 'pane' ? c.text : v.text}`;
       if (n.drawn === drawn) return;
       n.drawn = drawn;
-      n.screen.classList.toggle('from-board', !c?.ok);
-      n.screen.classList.toggle('plain', Boolean(c?.plain));
-      paintLines(n.screen, text, fit);
+      paintShown(n.screen, v, fit);
       // Hover shows the last line whole (a tile clips it); never selects.
-      n.el.dataset.peek = `${s.name}${s.host !== 'local' ? ` on ${s.host}` : ''}: ${lastLine(text) || (LANE[s.lane]?.[1] ?? '')}${c && !c.ok && c.error ? ` (pane: ${c.error})` : ''}`;
+      n.el.dataset.peek = `${s.name}${s.host !== 'local' ? ` on ${s.host}` : ''}: ${v.peek || (LANE[s.lane]?.[1] ?? '')}${c && !c.ok && c.error ? ` (pane: ${c.error})` : ''}`;
     }
     function paintAll() { for (const s of tiles) { const n = nodes.get(s.key); if (n) paintScreen(s, n); } if (zoomed) paintZoom(); }
 
@@ -169,10 +220,8 @@ export default {
     }
     function paintZoom() {
       const s = tiles.find((x) => x.key === zoomed); if (!s) return;
-      const c = caps.get(s.key);
       const lh = parseFloat(getComputedStyle(zScreen).lineHeight) || 17;
-      paintLines(zScreen, c?.ok ? c.text : tailText(s), fitLines(zScreen.clientHeight || 600, lh));
-      zScreen.classList.toggle('from-board', !c?.ok);
+      paintShown(zScreen, shown(s), fitLines(zScreen.clientHeight || 600, lh));
     }
 
     // ------------------------------------------------------------ captures
@@ -183,7 +232,11 @@ export default {
     }, { root, rootMargin: '120px 0px' });
     function store(host, c) {
       const s = tiles.find((x) => (x.host ?? 'local') === host && x.tmux === c.target); if (!s) return;
-      caps.set(s.key, { ok: c.ok !== false && typeof c.text === 'string', text: c.text ?? '', error: c.error ?? null, at: Date.now(), plain: Boolean(c.plain) });
+      const ok = c.ok !== false && typeof c.text === 'string'; const was = caps.get(s.key);
+      const state = c.screen?.state ?? s.screen ?? null;
+      // The same text again (most refreshes): the lines parsed from it stand.
+      const lines = !ok ? [] : was?.ok && was.text === c.text && was.state === state ? was.lines : paneContent(parseAnsi(c.text, { maxLines: ZOOM_LINES, maxCols: 400 }), { state }).lines;
+      caps.set(s.key, { ok, text: c.text ?? '', lines, state, error: c.error ?? null, at: Date.now(), plain: Boolean(c.plain) });
     }
     async function captureHost(host, targets, lines) {
       if (!oldDaemon.has(host)) {
@@ -200,6 +253,18 @@ export default {
       await Promise.all(targets.slice(0, OLD_DAEMON_PANES).map((target) => ctx.callQuiet('tmux.capture', { target, lines }, { host })
         .then((r) => store(host, { target, ok: true, text: r?.text ?? '', plain: true }), (e) => store(host, { target, ok: false, error: e.message }))));
     }
+    /** The last reply of the tiles on screen that have no pane: a few calls a refresh, each agent seldom. */
+    async function askReplies() {
+      if (!replyOp) return;
+      const due = repliesDue(tiles.filter((s) => (zoomed ? s.key === zoomed : visible.has(s.key))), { replies, asking });
+      await Promise.all(due.map(async (s) => {
+        asking.add(s.key);
+        const was = replies.get(s.key);
+        try { replies.set(s.key, { text: replyText(await ctx.callQuiet('sessions.lastReply', { id: s.sessionId ?? s.id }, { host: s.host ?? 'local' }), was), at: Date.now() }); }
+        catch (e) { if (unknownOp(e)) replyOp = false; replies.set(s.key, { text: was?.text ?? '', at: Date.now() }); }
+        finally { asking.delete(s.key); }
+      }));
+    }
     let busy = false; let timer = null;
     async function refresh() {
       clearTimeout(timer); timer = null;
@@ -209,11 +274,11 @@ export default {
       try {
         if (zoomed) {
           const s = tiles.find((x) => x.key === zoomed);
-          if (s?.tmux) await captureHost(s.host ?? 'local', [s.tmux], ZOOM_LINES);
+          await Promise.all([s?.tmux ? captureHost(s.host ?? 'local', [s.tmux], ZOOM_LINES) : null, askReplies()]);
           if (alive && zoomed) paintZoom();
         } else {
           const plan = capturePlan(tiles, visible);
-          await Promise.all([...plan].map(([host, targets]) => captureHost(host, targets, LINES)));
+          await Promise.all([...[...plan].map(([host, targets]) => captureHost(host, targets, LINES)), askReplies()]);
           if (alive) render();
         }
       } finally { busy = false; schedule(); }
@@ -246,6 +311,7 @@ export default {
         if (k === 'Escape' && zoomed) { e.preventDefault(); unzoom(); return; }
         if (k === '+' || k === '=') { e.preventDefault(); setDensity(density + 1); return; }
         if (k === '-' || k === '_') { e.preventDefault(); setDensity(density - 1); return; }
+        if (k === 'f' || k === 'F') { e.preventDefault(); const ids = SCOPES.map(([id]) => id); setScope(ids[(ids.indexOf(scope) + (k === 'f' ? 1 : -1) + ids.length) % ids.length]); return; }
         const i = tiles.findIndex((s) => s.key === ctx.selected());
         if (k === 'Enter') { if (i >= 0) { e.preventDefault(); openKey(tiles[i].key); } return; }
         if (k === 'z') { e.preventDefault(); if (zoomed) unzoom(); else if (i >= 0) zoom(tiles[i].key); return; }

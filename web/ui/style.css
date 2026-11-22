@@ -820,13 +820,29 @@ input[type=checkbox] { accent-color: var(--ink-2); width: 16px; height: 16px; }
 .wall-tile.lane-wait[aria-selected="true"] { animation: none; box-shadow: 0 0 0 2px var(--amber); }
 .wall-head { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 4px 8px; background: var(--bg-2); border-bottom: 1px solid var(--line); font-size: var(--fs-1); }
 .wall-head .spacer { flex: 1; }
-.wall-name { color: var(--ink); min-width: 0; }
+/* The name keeps its room: the host and the directory give way first. */
+.wall-name { color: var(--ink); flex: 0 0 auto; max-width: 62%; }
+.wall-host { flex: 0 1 auto; min-width: 2.5em; }
 .wall-host { font-family: var(--mono); font-size: var(--fs-0); color: var(--ink-3); }
 .wall-age { font-family: var(--mono); font-size: var(--fs-0); color: var(--ink-3); white-space: nowrap; }
 .wall-screen { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; padding: 4px 8px 5px;
   font-family: var(--mono); font-size: var(--wall-fs, 11.5px); line-height: var(--wall-lh, 15px); color: var(--term-fg); background: var(--term-bg); white-space: pre; }
-.wall-screen .wl { min-height: var(--wall-lh, 15px); overflow: hidden; text-overflow: clip; }
-.wall-screen.from-board { color: #b9b6ae; font-style: italic; white-space: pre-wrap; }
+.wall-cwd { flex: 0 1 auto; min-width: 0; font-family: var(--mono); font-size: var(--fs-0); color: var(--ink-4); }
+.wall-age.bad { color: var(--brick); }
+/* What the pane says, from the top when it fits; when it does not, its end stays in sight and the start is clipped. */
+.wall-lines { flex: 0 0 auto; margin-bottom: auto; min-width: 0; }
+.wall-screen .wl { min-height: var(--wall-lh, 15px); white-space: pre-wrap; overflow-wrap: anywhere; }
+.wall-screen .wl.keep { white-space: pre; overflow: hidden; text-overflow: clip; }
+.wall-screen.from-board { color: #8d8a83; font-style: italic; white-space: pre-wrap; }
+/* An agent with no pane: its last reply as Markdown, in the tile's own colors whatever the page's theme. */
+.wall-screen.said { white-space: normal; }
+.wall-screen.said .md { color: var(--term-fg); line-height: 1.45; }
+.wall-screen.said .md * { color: inherit; }
+.wall-screen.said .md p, .wall-screen.said .md ul, .wall-screen.said .md ol { margin: 0 0 .45em; }
+.wall-screen.said .md .md-h { margin: .5em 0 .25em; font-size: inherit; }
+.wall-screen.said .md code, .wall-screen.said .md pre { background: rgba(255, 255, 255, .07); border-color: transparent; font-size: inherit; }
+.wall-screen.said .md a { color: #8fb8de; }
+.wall-screen.said .md th, .wall-screen.said .md td { border-color: rgba(255, 255, 255, .14); background: transparent; }
 .wall-density input[type=range] { width: 110px; }
 .wall-zoom { display: flex; flex-direction: column; height: calc(100% - 64px); min-height: 360px; border: 1px solid var(--line-2); border-left: 3px solid var(--moss); border-radius: var(--r); overflow: hidden; background: var(--term-bg); }
 .wall-zoom.lane-wait { border-left-color: var(--amber); } .wall-zoom.lane-work { border-left-color: var(--steel); }
