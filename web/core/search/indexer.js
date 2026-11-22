@@ -16,6 +16,7 @@
 import { readdir, stat, open, readFile } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+import { zstdDecompressSync } from 'node:zlib';
 import { claudeLine, codexLine, codexAttribute, codexState, PENDING, walEvent, memoryDoc, docSections, reflectionItem, projectOf } from './extract.js';
 import { chunkText } from './chunk.js';
 import { quantize } from './vec.js';
@@ -160,8 +161,28 @@ export function defaultRoots(env = process.env) {
     docs: docPatterns(env),
     // Preserved refs come from the plugin that keeps them (core/plugins.js search.preserved), if one is loaded.
     preserved: async () => (await plugins.preservedSearch()?.preserved?.()) ?? null,
+    archive: archiveRoots(env),
   };
 }
+
+/**
+ * Transcript archives this host indexes beside its own: DROVER_SEARCH_ARCHIVE, `|`-separated directories, each laid
+ * out as <dir>/<host>/claude-projects/ (a copy of that host's ~/.claude/projects) and <dir>/<host>/codex-sessions/
+ * (its ~/.codex/sessions), the way a nightly push from every machine of a fleet fills one hub. A file may be
+ * zstd-compressed in place (<name>.jsonl.zst, read whole: an archived session no longer changes). Each chunk keeps
+ * <host> as the host that wrote it, so a hit says whose session it was, and a tenant search (repoIdentity), which
+ * admits only this host's own files, never takes an archived copy's authority.
+ */
+export function archiveRoots(env = process.env) {
+  const v = String(envvar('SEARCH_ARCHIVE', env) ?? '').trim();
+  if (!v || /^(0|off|none)$/i.test(v)) return [];
+  return v.split('|').map((x) => x.trim()).filter(Boolean).map((d) => (d.startsWith('~/') ? path.join(env.HOME, d.slice(2)) : d));
+}
+
+const ARCHIVE_HOST = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$/;
+// A transcript's name without its extension: <id>.jsonl, or <id>.jsonl.zst in an archive.
+const stem = (name) => name.replace(/\.jsonl(\.zst)?$/, '');
+const isTranscript = (name, zst) => name.endsWith('.jsonl') || (zst && name.endsWith('.jsonl.zst'));
 
 /**
  * Every file to index with its kind, newest first. homes: the memory homes ({repo: dir}); scope: { identity, dotfiles }
@@ -173,27 +194,46 @@ export async function listSources(roots, { homes = {}, scope = {}, docs = [] } =
     if (seen.has(file)) return;
     try { const s = await stat(file); if (s.isFile()) { seen.add(file); out.push({ path: file, kind, size: s.size, mtime_ms: s.mtimeMs, ino: String(s.ino), ...extra }); } } catch { /* vanished */ }
   };
-  if (roots.claude && existsSync(roots.claude)) {
-    for (const slug of await readdir(roots.claude).catch(() => [])) {
-      const dir = path.join(roots.claude, slug);
-      for (const e of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
-        if (e.isFile() && e.name.endsWith('.jsonl')) await add(path.join(dir, e.name), 'claude', { session_id: e.name.slice(0, -6) });
-        else if (e.isDirectory()) {
-          const sub = path.join(dir, e.name, 'subagents');
-          for (const n of await readdir(sub).catch(() => [])) if (n.endsWith('.jsonl')) await add(path.join(sub, n), 'subagent', { session_id: e.name });
-        }
+  // A Claude Code projects tree: <slug>/<session>.jsonl and <slug>/<session>/subagents/*.jsonl. In an archive (zst) a
+  // file may be compressed; when a session is there both ways (a resumed session pushed again beside its old
+  // compressed copy), the plain one is the newer and the only one read.
+  const claudeTree = async (root, extra = {}, zst = false) => {
+    if (!root || !existsSync(root)) return;
+    const pick = (names) => names.filter((n) => isTranscript(n, zst) && !(n.endsWith('.zst') && names.includes(n.slice(0, -4))));
+    for (const slug of await readdir(root).catch(() => [])) {
+      const dir = path.join(root, slug);
+      const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+      for (const n of pick(entries.filter((e) => e.isFile()).map((e) => e.name))) await add(path.join(dir, n), 'claude', { session_id: stem(n), ...extra });
+      for (const e of entries) {
+        if (!e.isDirectory()) continue;
+        const sub = path.join(dir, e.name, 'subagents');
+        for (const n of pick(await readdir(sub).catch(() => []))) await add(path.join(sub, n), 'subagent', { session_id: e.name, ...extra });
       }
     }
-  }
-  if (roots.codex && existsSync(roots.codex)) {
+  };
+  const codexTree = async (root, extra = {}, zst = false) => {
+    if (!root || !existsSync(root)) return;
     const walk = async (dir, depth) => {
-      for (const e of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
+      const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+      const names = entries.filter((e) => e.isFile()).map((e) => e.name);
+      for (const e of entries) {
         const f = path.join(dir, e.name);
         if (e.isDirectory()) { if (depth < 5) await walk(f, depth + 1); }
-        else if (/^rollout-.*\.jsonl$/.test(e.name)) await add(f, 'codex', { session_id: e.name.match(/([0-9a-f]{8}-[0-9a-f-]{27,})\.jsonl$/)?.[1] ?? null });
+        else if (/^rollout-/.test(e.name) && isTranscript(e.name, zst) && !(e.name.endsWith('.zst') && names.includes(e.name.slice(0, -4)))) {
+          await add(f, 'codex', { session_id: stem(e.name).match(/([0-9a-f]{8}-[0-9a-f-]{27,})$/)?.[1] ?? null, ...extra });
+        }
       }
     };
-    await walk(roots.codex, 0);
+    await walk(root, 0);
+  };
+  await claudeTree(roots.claude);
+  await codexTree(roots.codex);
+  for (const dir of roots.archive ?? []) {
+    for (const e of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
+      if (!e.isDirectory() || !ARCHIVE_HOST.test(e.name)) continue;
+      await claudeTree(path.join(dir, e.name, 'claude-projects'), { host: e.name }, true);
+      await codexTree(path.join(dir, e.name, 'codex-sessions'), { host: e.name }, true);
+    }
   }
   // The truth file and its daily segments (claude/drover-events/<day>.jsonl, core/events.js): each is its own source.
   if (roots.wal) for (const f of await storeFiles(roots.wal)) await add(f, 'wal');
@@ -239,6 +279,17 @@ export async function* readNewLines(file, offset, size, { window = READ_WINDOW }
       yield { lines, end: pos - carry.length };
     }
   } finally { await fh.close(); }
+}
+
+/**
+ * readNewLines for a zstd-compressed transcript (<name>.jsonl.zst in an archive): an archived session no longer
+ * changes, so it is read whole, as one window ending at the file's (compressed) size, from the start unless it was
+ * read to the end already.
+ */
+export async function* readCompressedLines(file, offset, size) {
+  if (offset >= size) return;
+  const text = zstdDecompressSync(await readFile(file)).toString('utf8');
+  yield { lines: text.split('\n').filter(Boolean), end: size };
 }
 
 export class Indexer {
@@ -342,7 +393,8 @@ export class Indexer {
     if (prev?.skipped && src.size >= prev.offset && prev.ino === src.ino) { this.store.upsertSource({ ...src, ...prev, size: src.size, mtime_ms: src.mtime_ms, offset: src.size, decided: true, xv }); return 0; }
     const slug = path.basename(path.dirname(src.kind === 'subagent' ? path.dirname(path.dirname(src.path)) : src.path));
     // A subagent of a skipped session is skipped with it (its own first prompt is the subagent's task, not the generator's).
-    const parentSkip = src.kind === 'subagent' ? this.store.source(path.join(path.dirname(path.dirname(path.dirname(src.path))), `${src.session_id}.jsonl`))?.skipped : null;
+    const parentDir = path.dirname(path.dirname(path.dirname(src.path)));
+    const parentSkip = src.kind === 'subagent' ? (this.store.source(path.join(parentDir, `${src.session_id}.jsonl`)) ?? this.store.source(path.join(parentDir, `${src.session_id}.jsonl.zst`)))?.skipped : null;
     const early = skipReason({ slug }, this.env) ?? (parentSkip ? `parent session skipped: ${parentSkip}` : null);
     if (early) { this.store.purgeSource(src.path); this.store.upsertSource({ ...src, offset: src.size, skipped: early, decided: true, xv }); return 0; }
     // Appended JSONL. A shrunk or replaced file is read again from the start, and so is one an older extractor read.
@@ -365,7 +417,7 @@ export class Indexer {
     let n = 0, firstUser = null, end = offset, skipped = null;
     // One transaction per window, and the read position saved after each, so a
     // 100 MB transcript neither sits in memory whole nor holds the event loop.
-    for await (const win of readNewLines(src.path, offset, src.size)) {
+    for await (const win of (src.path.endsWith('.zst') ? readCompressedLines : readNewLines)(src.path, offset, src.size)) {
       const rows = [];
       // A run of consecutive tool calls is one command chunk (keyword-only, see store.js KEYWORD_ONLY): a session runs
       // hundreds of commands, and a row each would multiply the index for no better match.
@@ -408,10 +460,10 @@ export class Indexer {
       if (!decided) { skipped = skipReason({ cwd: meta.cwd, firstUser }, this.env); decided = Boolean(firstUser || skipped); }
       if (skipped) {
         this.store.purgeSource(src.path); n = 0; end = win.end;
-        if (src.kind === 'claude') this.store.skipUnder(path.join(path.dirname(src.path), path.basename(src.path, '.jsonl'), 'subagents') + path.sep, `parent session skipped: ${skipped}`);
+        if (src.kind === 'claude') this.store.skipUnder(path.join(path.dirname(src.path), stem(path.basename(src.path)), 'subagents') + path.sep, `parent session skipped: ${skipped}`);
         this.store.upsertSource({ ...src, ...meta, size: -1, offset: end, skipped, decided: true, xv }); await yieldNow(); continue;
       }
-      for (const row of rows) { row.title = meta.title; row.project = meta.project; row.session_id = meta.session_id; if (row.cwd === PENDING) { row.cwd = null; row.pending = true; } }
+      for (const row of rows) { row.title = meta.title; row.project = meta.project; row.session_id = meta.session_id; row.host = src.host ?? null; if (row.cwd === PENDING) { row.cwd = null; row.pending = true; } }
       keep();
       n += this.store.addChunks(rows);
       this.state.readBytes += win.end - end;

@@ -689,6 +689,15 @@ or reported, as for `fleet.vitals`, and a named host the catalog gives another i
 `DROVER_SEARCH_DAYS=N` limits it; `DROVER_SEARCH_KINDS=claude,subagent` indexes only those kinds (an archive
 host); `DROVER_SEARCH_DOCS` replaces the document patterns (`|`-separated, `off` for none).
 
+A hub can index other machines' transcripts too. `DROVER_SEARCH_ARCHIVE` names directories (`|`-separated, `~`
+expanded) laid out as `<dir>/<host>/claude-projects/` (a copy of that machine's `~/.claude/projects`) and
+`<dir>/<host>/codex-sessions/` (its `~/.codex/sessions`), the shape a nightly push from every machine leaves on one
+box. Files may be zstd-compressed in place (`<name>.jsonl.zst`, read whole, since an archived session no longer
+changes); when a session is there both ways, the plain copy is the newer one and the only one read. Each chunk keeps
+`<host>` as the machine that wrote it (a hit's `provenance.host`), so a fleet search that reaches the hub finds the
+sessions of machines that are down or gone, and a copy also found on its live machine folds into one hit. A tenant
+search (`repoIdentity`) admits only the answering host's own files, never an archived copy.
+
 Where a plugin serves it (`search.remote` in `core/plugins.js`), search kind `brain` adds the Badland brain's
 entries, fetched at query time and never indexed (`core/search/remote.js`). Only a front asks it, and only for a
 call that says `remote: true`: the MCP server, `drover search`, `drover op` and the web UI add it, so a search a host
