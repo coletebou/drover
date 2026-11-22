@@ -76,13 +76,20 @@ else
   fi
   gen=()
   if command -v ninja >/dev/null 2>&1; then gen=(-G Ninja); fi
+  # The clone is shallow, so llama.cpp cannot count commits and calls itself build 1: its server then asks Hugging
+  # Face for UI assets b1, falls back to "latest", and fails its own asset check when latest no longer matches this
+  # tag. The tag is the build number (b11461 -> 11461), so say it.
   flags=(-DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DLLAMA_CURL=OFF -DLLAMA_OPENSSL=OFF
-         -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON)
+         -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON
+         "-DLLAMA_BUILD_NUMBER=${TAG#b}")
   if [[ "$os" == Darwin ]]; then flags+=(-DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0)
   else flags+=(-DGGML_NATIVE=ON); fi
   say "building llama-server (-j $jobs; a few minutes)"
-  "$CMAKE" -S "$SRC" -B "$BUILD" ${gen[@]+"${gen[@]}"} "${flags[@]}" >/dev/null
-  "$CMAKE" --build "$BUILD" --config Release -j "$jobs" --target llama-server >/dev/null
+  # Quiet when it works; when a step fails, the end of its log says why (it used to go to /dev/null).
+  log="$DEST/build.log"
+  step() { if ! "$@" >"$log" 2>&1; then say "build step failed: $*"; tail -n 40 "$log" >&2; say "full log: $log"; exit 1; fi; }
+  step "$CMAKE" -S "$SRC" -B "$BUILD" ${gen[@]+"${gen[@]}"} "${flags[@]}"
+  step "$CMAKE" --build "$BUILD" --config Release -j "$jobs" --target llama-server
   cp "$BUILD/bin/llama-server" "$DEST/bin/llama-server.tmp"
   mv -f "$DEST/bin/llama-server.tmp" "$DEST/bin/llama-server"
   printf '%s\n' "$stamp" > "$DEST/bin/BUILD"
