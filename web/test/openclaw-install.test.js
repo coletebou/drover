@@ -397,6 +397,9 @@ function fakeHost(home) {
       return ok(JSON.stringify({ jobs: [...busy, ...host.jobs.map((j) => ({ ...j, status: 'idle' }))] }));
     }
     const flag = (f) => (a.includes(f) ? a[a.indexOf(f) + 1] : undefined);
+    // The agent is still in startup inspection for the next N writes (the gateway already answers the list).
+    if (has('automations', 'add') && host.addFails) return { code: 1, stdout: '', stderr: 'Error: invalid cron expression' };
+    if (has('automations', 'add') && host.addStarting > 0) { host.addStarting--; host.clock += 1000; return { code: 1, stdout: '', stderr: 'Error: Agent main has not completed startup inspection and preparation. Inspection and writable admission continue after the Gateway listener binds.' }; }
     if (has('automations', 'add')) { host.jobs.push({ id: `job-${host.jobs.length}`, name: flag('--name'), enabled: true, schedule: { kind: 'cron', expr: flag('--cron'), tz: flag('--tz') }, sessionTarget: flag('--session'), payload: { kind: 'agentTurn', message: flag('--message'), model: flag('--model'), thinking: flag('--thinking') } }); return ok('{}'); }
     if (has('automations', 'edit')) {
       const j = host.jobs.find((x) => x.id === a[a.indexOf('edit') + 1]); if (!j) return { code: 1, stdout: '', stderr: 'no such job' };
@@ -946,6 +949,29 @@ describe('setup in a sandbox', () => {
     host.listFailsUntil = Infinity;
     assert.deepEqual(service(await install.setup({ restart: 'always', waitIdleSec: 30 })), [['still busy', 'the automation list did not answer after 30 s; restarting anyway'], ['restarted', 'asked for']]);
     host.listFailsUntil = 0;
+    done();
+  });
+
+  test('automations are still created when the agent refuses writes while it finishes startup inspection', async () => {
+    // The Mac, 2026-11-22: a restart onto a new tree answered the list, then refused the first add, and sweep was never created.
+    host.addStarting = 3;
+    const r = await install.setup({ scope: 'all', exclude: ['laptop'], digest: true, actor: 'manager' });
+    assert.equal(host.addStarting, 0, 'every refused add was retried');
+    assert.deepEqual(r.steps.filter((x) => x.step.startsWith('automation ')).map((x) => [x.step, x.action]), [['automation sweep', 'created'], ['automation fleet-digest', 'created']]);
+    assert.deepEqual(host.jobs.map((j) => j.name), ['sweep', 'fleet-digest'], 'each created once');
+    done();
+  });
+
+  test('a write that keeps failing for another reason is not retried', async () => {
+    await install.setup({ scope: 'all', exclude: ['laptop'], digest: true, actor: 'manager' });
+    const id = host.jobs.find((j) => j.name === 'sweep').id;
+    host.jobs = host.jobs.filter((j) => j.id !== id);
+    let adds = 0; const realCalls = host.calls.length;
+    host.addStarting = 0; host.addFails = true;
+    await assert.rejects(install.setup({}), /automations add exited 1/);
+    adds = host.calls.slice(realCalls).filter((c) => c.includes('automations add')).length;
+    assert.equal(adds, 1, 'one attempt, then the error');
+    host.addFails = false;
     done();
   });
 

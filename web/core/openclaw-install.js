@@ -1133,7 +1133,19 @@ export async function setup({ role: name = 'manager', profile: profileName, over
       if (!list) step('automations', 'not ok', 'the automation list did not answer; duties not reconciled, re-run drover manager setup');
       else {
         const jobs = new Map(list.map((j) => [j.name, j]));
-        const ocOk = async (args) => { const r = await oc(lay, rt, args); if (r.code !== 0) throw new Error(cliError(r, args.slice(0, 2))); };
+        // After a restart (a new OpenClaw tree, a doctor migration) the gateway listens, and answers the list,
+        // before its agent has finished startup inspection, and refuses writes until then: setup on the Mac
+        // (2026-11-22) failed its first `automations add` that way and never created sweep. Wait it out
+        // (up to 10 minutes), like the approvals step above.
+        const ocOk = async (args) => {
+          for (let i = 0; ; i++) {
+            const r = await oc(lay, rt, args);
+            if (r.code === 0) return;
+            const starting = /not completed startup inspection/i.test(`${r.stdout ?? ''}\n${r.stderr ?? ''}`);
+            if (!starting || i >= 60) throw new Error(cliError(r, args.slice(0, 2)));
+            await _deps.sleep(10_000);
+          }
+        };
         for (const a of view.automations) {
           const j = jobs.get(a.name);
           if (!j) {
