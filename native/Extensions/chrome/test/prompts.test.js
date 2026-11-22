@@ -4,7 +4,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { listArgs, mergePrompts, normalizePrompts, fmtTime, promptRow, stripForPrompt, statusLine, isUnknownPromptsOp, PANEL_PAGE, VIA_LABEL } from '../lib/prompts.js';
+import { listArgs, markArgs, mergePrompts, normalizePrompts, fmtTime, promptRow, stripForPrompt, statusLine, isUnknownPromptsOp, PANEL_PAGE, VIA_LABEL, WHO_SCOPES, WHO_LABEL } from '../lib/prompts.js';
 import { boardUrl, managerUrl, promptsUrl, sessionUrl } from '../lib/links.js';
 import { startFakeDaemon, FAKE_TOKEN } from '../tools/fake-daemon.mjs';
 import { createClient } from '../lib/api.js';
@@ -12,14 +12,26 @@ import { createClient } from '../lib/api.js';
 const NOW = Date.parse('2026-11-21T23:00:00Z');
 const rec = (id, ts, extra = {}) => ({ v: 1, id, ts, host: 'demo-mac', engine: 'claude', session: null, cwd: '~/code/demo', project: 'demo', label: 'work', via: 'typed', text: id, route: 'local', ...extra });
 
-test('listArgs: the daemon default via set, search words, before, a clamped limit', () => {
+test('listArgs: who (default Mine, sent only otherwise), search words, before, a clamped limit', () => {
   assert.deepEqual(listArgs(), { limit: PANEL_PAGE });
   assert.deepEqual(listArgs({ q: '  fix the parser ', before: 'p_1' }), { limit: PANEL_PAGE, q: 'fix the parser', before: 'p_1' });
   assert.deepEqual(listArgs({ q: '   ', before: '' }), { limit: PANEL_PAGE });
   assert.equal(listArgs({ limit: 99999 }).limit, 2000);
   assert.equal(listArgs({ limit: -3 }).limit, 1);
   assert.equal(listArgs({ q: 'x'.repeat(900) }).q.length, 500);
-  assert.ok(!('via' in listArgs({ q: 'x' })), 'Mine: no via, the daemon picks its default');
+  assert.ok(!('who' in listArgs({ q: 'x' })), 'Mine: no who, the daemon picks its default');
+  assert.ok(!('who' in listArgs({ who: 'mine' })), 'Mine sent explicitly is still left out');
+  assert.deepEqual(listArgs({ who: 'all' }), { limit: PANEL_PAGE, who: 'all' });
+  for (const s of WHO_SCOPES) assert.ok(s in WHO_LABEL, `${s} has a label`);
+  assert.ok(!('who' in listArgs({ who: 'nonsense' })), 'an unknown scope is dropped, not sent');
+});
+
+test('markArgs: ids (one or a list), mine true/false/null', () => {
+  assert.deepEqual(markArgs({ ids: ['p_1', 'p_2'], mine: true }), { ids: ['p_1', 'p_2'], mine: true });
+  assert.deepEqual(markArgs({ ids: 'p_1', mine: false }), { ids: ['p_1'], mine: false });
+  assert.deepEqual(markArgs({ ids: ['p_1'], mine: null }), { ids: ['p_1'], mine: null });
+  assert.deepEqual(markArgs({ ids: ['p_1'] }), { ids: ['p_1'], mine: null }, 'mine omitted clears, same as null');
+  assert.deepEqual(markArgs({ ids: [null, 'p_1', 3], mine: true }), { ids: ['p_1'], mine: true }, 'non-string ids are dropped');
 });
 
 test('mergePrompts: by id, newest first, ties by id', () => {
@@ -53,6 +65,12 @@ test('promptRow: the meta line and the text verbatim', () => {
   assert.equal(promptRow(rec('p4', '2026-11-21T21:58:40Z', { via: 'someday' }), { now: NOW, utc: true }).meta.endsWith('someday'), true, 'an unknown via shows as itself');
   assert.equal(promptRow(rec('p5', '2026-11-21T21:58:40Z', { source: 'sink:personal' })).fromSink, true);
   assert.equal(VIA_LABEL.drover, 'via Drover');
+  assert.equal(VIA_LABEL.manager, 'to manager');
+  assert.equal(VIA_LABEL.agent, 'via drover_send');
+  const marked = promptRow(rec('p6', '2026-11-21T21:58:40Z', { mine: true, marked: true, actor: 'owner' }));
+  assert.equal(marked.mine, true);
+  assert.equal(marked.marked, true);
+  assert.equal(promptRow(rec('p7', '2026-11-21T21:58:40Z')).mine, false, 'no mine field: not mine by this helper (the daemon decides the default)');
 });
 
 test('stripForPrompt: the session on the board, on the host the record routes to', () => {
@@ -116,4 +134,30 @@ test('prompts.list over HTTP: Mine by default, a search, then the next page with
   assert.deepEqual(daemon.promptQueries.at(-1), { limit: PANEL_PAGE, q: 'THE tests' });
   const st = await client.op('prompts.status', {});
   assert.match(statusLine(st), /^1,204 prompts/);
+});
+
+test('prompts.list over HTTP: Manager, Agents, Programs, Not mine and All', async () => {
+  const client = createClient({ baseUrl: daemon.url, token: FAKE_TOKEN });
+  const ids = async (who) => normalizePrompts(await client.op('prompts.list', listArgs({ who }))).map((p) => p.id);
+  assert.deepEqual(await ids('all'), ['p_0d1e2f3a4b5c6d7e', 'p_1a2b3c4d5e6f7081', 'p_2b3c4d5e6f708192', 'p_3c4d5e6f708192a3', 'p_4d5e6f708192a3b4']);
+  assert.deepEqual(await ids('not-mine'), ['p_4d5e6f708192a3b4'], 'the peer message, mine: false in the fixture');
+  assert.deepEqual(await ids('agents'), ['p_4d5e6f708192a3b4'], 'via peer or agent');
+  assert.deepEqual(await ids('programs'), ['p_3c4d5e6f708192a3'], 'via headless or sdk');
+  assert.deepEqual(await ids('manager'), [], 'none in the fixture');
+});
+
+test('prompts.mark over HTTP: marks fleet-wide, then clears', async () => {
+  const client = createClient({ baseUrl: daemon.url, token: FAKE_TOKEN });
+  const id = 'p_4d5e6f708192a3b4';   // the peer message, mine: false in the fixture
+  const marked = await client.op('prompts.mark', markArgs({ ids: [id], mine: true }));
+  assert.deepEqual(marked, { ok: true, ids: [id], mine: true, event: `ev-mark-${id}` });
+  const mine = normalizePrompts(await client.op('prompts.list', listArgs({ who: 'mine' })));
+  assert.ok(mine.some((p) => p.id === id), 'marking it mine puts it in Mine');
+  const row = mine.find((p) => p.id === id);
+  assert.equal(row.marked, true);
+  assert.equal(row.actor, 'owner');
+  await client.op('prompts.mark', markArgs({ ids: [id], mine: null }));
+  const after = normalizePrompts(await client.op('prompts.list', listArgs({ who: 'mine' })));
+  assert.ok(!after.some((p) => p.id === id), 'nil clears the mark, back to the via default (not mine)');
+  assert.deepEqual(daemon.markCalls.at(-1), { ids: [id], mine: null });
 });

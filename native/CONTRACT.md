@@ -94,18 +94,30 @@ Details as built by core (these refine the bullets above; DroverKit models and `
   mid-turn; never hide it.
 
 ## Ops added 2026-11-21 (design: `docs/specs/2026-11-21-cohesion-overhaul.md`)
-- `prompts.list {q?, host?, hosts?, engine?, label?, via?, since?, until?, session?, cwd?, limit?, before?}` (main token):
-  every prompt typed into Claude Code or Codex, fleet-wide, newest first, merged by id. `->{ms, prompts[{v, id, ts, host,
-  engine, session, cwd, project, label, via, text, from?, route, source?}], more, perHost[{host, ok, count, ms?, error?,
-  source?}], coverage{searched, notCovered, partial}, total?}`. `via` is `typed|queued|peer|drover|headless|sdk`
-  (tolerate others); the default is `typed, queued, drover, headless`, `via: "all"` (or a list) for more. `route` is the
-  `host` to pass back to other ops (`local` for the daemon's machine; `null` when no alias is known). `source:
-  "sink:<name>"` marks a record read from a git sink's clone because its host did not answer. Page with `before` = the
-  last `id` while `more` is true. `since`/`until` take ISO times, epoch ms or spans (`30m`, `12h`, `7d`); `limit`
-  defaults to 200, at most 2000. Show `text` verbatim (secrets are already redacted) and never as markup.
+- `prompts.list {q?, host?, hosts?, engine?, label?, who?, via?, since?, until?, session?, cwd?, limit?, before?}`
+  (main token): every prompt typed into Claude Code or Codex, fleet-wide, newest first, merged by id. `->{ms,
+  prompts[{v, id, ts, host, engine, session, cwd, project, label, via, text, from?, route, source?, mine?, marked?,
+  actor?}], more, perHost[{host, ok, count, ms?, error?, source?}], coverage{searched, notCovered, partial}, total?}`.
+  `via` is `typed|queued|drover|manager|peer|agent|headless|sdk` (tolerate others): `typed` a person at the agent;
+  `queued` typed while a turn ran; `drover` sent through Drover (`sessions.message`, `tmux.send`); `manager` the
+  owner's own message to the fleet manager (engine `openclaw`, session `manager`); `peer` another session's message;
+  `agent` an agent's own `drover_send`; `headless` a headless launch's first prompt; `sdk` a program's own run
+  (`claude -p`, the Agent SDK, `codex exec`) that no Drover launch started. `mine` is whether this record counts as
+  the human's own after any mark (a mark decides it when `marked` is true, else the via default: `typed`, `queued`,
+  `drover`, `manager` or `headless`); `actor` is who set the mark, when `marked`. `who` picks what to show: `mine`
+  (the default — what a person actually typed, into a session, tmux, Drover, or the manager), `manager` (via
+  `manager` only), `agents` (via `peer` or `agent`), `programs` (via `headless` or `sdk`), `not-mine` (`!mine`), or
+  `all` (no filter). `via` (a value or a list) is still accepted from older clients and filters on the raw field
+  instead; new clients send `who` and never `via`. `route` is the `host` to pass back to other ops (`local` for the
+  daemon's machine; `null` when no alias is known). `source: "sink:<name>"` marks a record read from a git sink's
+  clone because its host did not answer. Page with `before` = the last `id` while `more` is true. `since`/`until`
+  take ISO times, epoch ms or spans (`30m`, `12h`, `7d`); `limit` defaults to 200, at most 2000. Show `text` verbatim
+  (secrets are already redacted) and never as markup.
 - `prompts.status {host?}` -> `{host, enabled, files, records, oldest, newest, lastScan, scanning, sources, config{file,
   found, errors}, sinks[{name, type, labels, lastSync, lastAttempt, lastError, nextAttempt, failures, pending}]}`.
 - `prompts.sync {sinks?, actor}` (a write) -> `{host, scanned, added, sinks[{name, type, ok, added, pushed?, error?, ms}]}`.
+- `prompts.mark {ids (or id), mine, actor}` (a write): marks one or more prompts, fleet-wide. `ids` is a prompt id or
+  a list; `mine` is `true`, `false`, or `null` (clears the mark, back to the via default). `-> {ok, ids, mine, event}`.
 - `prompts.local` is what `prompts.list` asks each host; clients call `prompts.list`.
 - `tmux.captureMany {host?, targets[<=64], lines? (60), escapes? (true)}` -> `{captures[{target, ok, text?, hash?, screen?,
   error?}]}`, in the order given; one bad or gone target is an `ok:false` row, never a failed call. With escapes, `text`

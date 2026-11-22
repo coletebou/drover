@@ -1,12 +1,14 @@
 // Prompts (workspace 3) against the fake daemon's prompt spool: the list is newest first with its columns; `/` words
-// go to the daemon as q; Mine and All send their via sets; [ ] one host; j past the end reads the next page with
-// before; Enter opens the session (its strip when the board has it); y copies with OSC 52 (tmux-wrapped under tmux);
-// l launches through launch.start; mutation and turn events refresh at most every 5 s while shown.
+// go to the daemon as q; `who` (never `via`) picks one of the six filters and `v` cycles through them; `m` marks the
+// selected prompt mine or not mine (prompts.mark) and toasts exactly what happened; [ ] one host; j past the end
+// reads the next page with before; Enter opens the session (its strip when the board has it); y copies with OSC 52
+// (tmux-wrapped under tmux); l launches through launch.start; mutation and turn events refresh at most every 5 s
+// while shown.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { startFakeDaemon } from '../tui/test-support/fake-daemon.js';
 import { Client } from '../tui/client.js';
-import { PromptsView, VIA, PAGE, mergeById } from '../tui/views/prompts.js';
+import { PromptsView, PROMPTS, FILTERS, PAGE, mergeById } from '../tui/views/prompts.js';
 import { LaunchPrompt } from '../tui/views/overlays.js';
 import { rowText } from '../tui/screen.js';
 
@@ -34,19 +36,20 @@ function app(extra = {}) {
   return a;
 }
 
-test('the list: prompts.list with the Mine via set, newest first, its columns, the verbatim text in the detail', async () => {
+test('the list: prompts.list with who=mine, newest first, its columns, the verbatim text in the detail', async () => {
   const a = app(); const v = new PromptsView(a); current = v;
   v.show(); await settle();
-  assert.deepEqual(lastArgs(), { via: VIA.mine, limit: PAGE });
-  assert.ok(v.rowsAll.every((r) => VIA.mine.includes(r.via)), 'peer turns are not Mine');
+  assert.deepEqual(lastArgs(), { who: 'mine', limit: PAGE });
+  assert.ok(v.rowsAll.every((r) => r.mine === true), 'peer, agent and program turns are not Mine');
   assert.ok(v.rowsAll.every((r, i, l) => !i || Date.parse(l[i - 1].ts) >= Date.parse(r.ts)), 'newest first');
-  const rows = v.render(160, 40).map(rowText);
+  const rows = v.render(170, 40).map(rowText);
   assert.match(rows[2], /when\s+host\s+engine\s+project\s+via\s+text/);
   assert.match(rows[3], /1m fakehost\s+claude\s+demo\s+typed\s+Make the demo parser keep line numbers/);
   const detail = rows.join('\n');
   assert.match(detail, /Keep the old API:/, 'the text with its line breaks');
   assert.match(detail, / {4}parse\(text\) still returns the tree\./, 'and its indentation');
   assert.match(detail, /session\s+s-build/); assert.match(detail, /cwd\s+~\/code\/demo/); assert.match(detail, /label\s+default/);
+  assert.match(detail, /mine\s+yes/); assert.match(detail, /mark not mine/, 'the footer offers m');
   v.hide();
 });
 
@@ -68,12 +71,21 @@ test('/ words go to the daemon (q), after a pause and on Enter; Esc clears them'
   v.hide();
 });
 
-test('Mine and All are the sub-views (v toggles); [ ] one host, then every host', async () => {
+test('v cycles Mine → Manager → Agents → Programs → Not mine → All → Mine; setMode still enters Mine or All directly; [ ] one host, then every host', async () => {
   const a = app(); const v = new PromptsView(a); current = v;
   v.show(); await settle();
-  v.key(key('v')); assert.deepEqual(a.went, ['prompts/all'], 'v goes to the other sub-view');
-  v.setMode('all'); await settle();
-  assert.deepEqual(lastArgs().via, VIA.all);
+  assert.equal(v.title, 'Prompts · Mine');
+  v.key(key('v')); await settle();
+  assert.equal(v.who, 'manager'); assert.equal(lastArgs().who, 'manager');
+  assert.ok(v.rowsAll.length && v.rowsAll.every((r) => r.via === 'manager'));
+  v.key(key('v')); await settle();
+  assert.equal(v.who, 'agents'); assert.ok(v.rowsAll.length && v.rowsAll.every((r) => r.via === 'peer' || r.via === 'agent'));
+  v.key(key('v')); await settle();
+  assert.equal(v.who, 'programs'); assert.ok(v.rowsAll.length && v.rowsAll.every((r) => r.via === 'headless' || r.via === 'sdk'));
+  v.key(key('v')); await settle();
+  assert.equal(v.who, 'not-mine'); assert.ok(v.rowsAll.length && v.rowsAll.every((r) => r.mine === false));
+  v.key(key('v')); await settle();
+  assert.equal(v.who, 'all'); assert.equal(v.title, 'Prompts · All');
   assert.ok(v.rowsAll.some((r) => r.via === 'peer'), 'All has what agents sent each other');
   v.key(key(']')); await settle();
   assert.deepEqual(lastArgs().hosts, ['fakehost']);
@@ -82,8 +94,41 @@ test('Mine and All are the sub-views (v toggles); [ ] one host, then every host'
   assert.ok(v.rowsAll.every((r) => r.host === 'box-a'));
   v.key(key(']')); await settle();
   assert.equal(lastArgs().hosts, undefined, 'every host again');
-  v.key(key('v')); assert.equal(a.went.at(-1), 'prompts/mine');
+  v.key(key('v')); await settle();
+  assert.equal(v.who, 'mine', 'the cycle wraps back to Mine');
+  v.setMode('all'); await settle();
+  assert.equal(v.who, 'all', 'the All sub-tab still enters All directly, bypassing the cycle');
   v.hide();
+});
+
+test('m marks the selected prompt mine or not mine (prompts.mark), toasts exactly what happened, then refreshes', async () => {
+  const a = app(); const v = new PromptsView(a); current = v;
+  v.show(); await settle();
+  const r0 = v.visible()[0];
+  assert.equal(r0.mine, true);
+  v.sel = 0; v.key(key('m')); await settle();
+  assert.deepEqual(daemon.callsOf('prompts.mark').at(-1).args, { ids: [r0.id], mine: false });
+  assert.equal(a.toasts.at(-1), 'marked not mine');
+  v.setMode('all'); await settle();
+  const marked = v.rowsAll.find((r) => r.id === r0.id);
+  assert.equal(marked.mine, false, 'the mark took: no longer mine'); assert.equal(marked.marked, true, 'a person decided it');
+  v.sel = v.visible().findIndex((x) => x.id === r0.id); v.key(key('m')); await settle();
+  assert.deepEqual(daemon.callsOf('prompts.mark').at(-1).args, { ids: [r0.id], mine: true }, 'm toggles off the current effective value');
+  assert.equal(a.toasts.at(-1), 'marked mine');
+  v.hide();
+});
+
+test('the mark column: a person\'s mark always shows; an automatic not-mine only shows in All', () => {
+  const col = PROMPTS.columns[0];
+  assert.deepEqual(col.get({ marked: true, mine: true }, { who: 'mine' }), ['●', 'accent']);
+  assert.deepEqual(col.get({ marked: true, mine: false }, { who: 'not-mine' }), ['●', 'accent']);
+  assert.deepEqual(col.get({ marked: false, mine: false }, { who: 'all' }), ['○', 'dim']);
+  assert.deepEqual(col.get({ marked: false, mine: false }, { who: 'not-mine' }), [''], 'the dim marker is only for All');
+  assert.deepEqual(col.get({ marked: false, mine: true }, { who: 'all' }), ['']);
+});
+
+test('FILTERS is the six names, in cycling order', () => {
+  assert.deepEqual(FILTERS, ['mine', 'manager', 'agents', 'programs', 'not-mine', 'all']);
 });
 
 test('paging: j past the last row reads the next page (before the last id); nothing more when a page came back short', async () => {

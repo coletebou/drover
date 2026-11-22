@@ -3,12 +3,13 @@ import DroverKit
 import Foundation
 import Observation
 
-/// Prompts › Mine and Prompts › All (docs/specs/2026-11-21-cohesion-overhaul.md "Prompts: the spool"): every prompt
-/// typed into Claude Code or Codex on any machine, newest first, from `prompts.list` on the daemon (which fans out to
-/// every host). The search field is its `q` (every word must match, debounced), Mine leaves `via` to the daemon's
-/// default and All asks for every via, the host menu is its `host`. Scrolling to the end pages with `before`. New user
-/// turns refresh the top at most every few seconds while the screen shows. The status line is `prompts.status`; Sync
-/// now is `prompts.sync`. Owned by AppModel (`AppModel.prompts`), which resets it when the server changes.
+/// Prompts › Mine, Manager, Agents, Programs, Not mine and All (docs/specs/2026-11-21-cohesion-overhaul.md "Prompts:
+/// the spool"): every prompt typed into Claude Code or Codex on any machine, newest first, from `prompts.list` on the
+/// daemon (which fans out to every host). The search field is its `q` (every word must match, debounced), the scope
+/// picker is its `who` (Mine leaves it to the daemon's default), the host menu is its `host`. Scrolling to the end
+/// pages with `before`. New user turns refresh the top at most every few seconds while the screen shows. The status
+/// line is `prompts.status`; Sync now is `prompts.sync`; mark(_:mine:) is `prompts.mark`. Owned by AppModel
+/// (`AppModel.prompts`), which resets it when the server changes.
 @Observable @MainActor
 final class PromptsModel {
     @ObservationIgnored weak var app: AppModel?
@@ -193,6 +194,22 @@ final class PromptsModel {
         reload()
         refreshStatus()
     }
+
+    /// Mark prompts mine or not (`prompts.mark`); `mine: nil` clears the mark, back to the via default. Reloads
+    /// after: the current scope may no longer include the prompt (marking it not mine while viewing Mine, say).
+    func mark(_ ids: [String], mine: Bool?) async {
+        guard let service = app?.service, !ids.isEmpty else { return }
+        do {
+            _ = try await service.markPrompts(ids: ids, mine: mine)
+            reload()
+            refreshStatus()
+        } catch {
+            app?.show(Toast(text: "Could not mark: \(error.localizedDescription)", kind: .error))
+        }
+    }
+
+    /// One prompt (a context menu or detail action).
+    func mark(_ p: PromptRecord, mine: Bool?) async { await mark([p.id], mine: mine) }
 
     /// Another server: start over (AppModel.reconfigure).
     func reset() {

@@ -27,7 +27,7 @@ export const LEGACY_EVENTS_PATH = path.join(DOTFILES, 'claude', 'apx-events.json
 export const LEGACY_FEATURE_LOG = process.env.DROVER_FEATURE_LOG ?? process.env.APX_FEATURE_LOG ?? path.join(DOTFILES, 'claude', 'feature-log.jsonl');
 
 export const FEATURE_STATES = ['not-started', 'in-progress', 'shipped', 'abandoned'];
-export const EVENT_TYPES = ['feature', 'note', 'pin', 'unpin', 'message', 'launch', 'survey', 'survey-item', 'handoff', 'chat', 'failover', 'review', 'op', 'notify', 'settings', 'file-write', 'upload', 'status', 'receipt', 'approval', 'ask'];
+export const EVENT_TYPES = ['feature', 'note', 'pin', 'unpin', 'message', 'launch', 'survey', 'survey-item', 'handoff', 'chat', 'failover', 'review', 'op', 'notify', 'settings', 'file-write', 'upload', 'status', 'receipt', 'approval', 'ask', 'prompt-mark'];
 // A plugin adds its own event types with a validator each (core/plugins.js eventTypes).
 
 export function shortHost() {
@@ -90,6 +90,11 @@ export function validateEvent(ev) {
     case 'approval':
       if (typeof ev.aid !== 'string' || !/^ap_[a-f0-9]{12}$/.test(ev.aid) || !['pending', 'decided', 'withdrawn'].includes(ev.state) || typeof ev.bot !== 'string' || !ev.bot) throw new Error('approval.aid (ap_ and 12 hex digits), approval.state (pending, decided or withdrawn) and approval.bot required');
       if (ev.state === 'decided' && (!Number.isInteger(ev.decision?.n) || typeof ev.decision?.label !== 'string')) throw new Error('a decided approval needs decision { n, label }');
+      break;
+    // The owner's word on whether prompts are theirs (core/prompts.js prompts.mark): mine true or false, null to clear.
+    case 'prompt-mark':
+      if (!Array.isArray(ev.prompts) || !ev.prompts.length || ev.prompts.length > 500 || ev.prompts.some((x) => typeof x !== 'string' || !/^p_[0-9a-f]{16}$/.test(x))) throw new Error('prompt-mark.prompts must be 1 to 500 prompt ids (p_ and 16 hex digits)');
+      if (ev.mine !== true && ev.mine !== false && ev.mine !== null) throw new Error('prompt-mark.mine must be true, false or null');
       break;
     default: break;
   }

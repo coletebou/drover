@@ -11,14 +11,34 @@ const fixture = async (name) => JSON.parse(await readFile(new URL(name, FIX), 'u
 // The prompt spool's answers: the shared synthetic fixtures (native/Fixtures, full envelopes) the Apple clients test too.
 const SHARED = new URL('../../../Fixtures/', import.meta.url);
 const shared = async (name) => JSON.parse(await readFile(new URL(name, SHARED), 'utf8')).result;
-const MINE = new Set(['typed', 'queued', 'drover', 'headless']);
+const MINE = new Set(['typed', 'queued', 'drover', 'manager', 'headless']);
 
-/** prompts.list as the daemon filters it: the via set (default Mine, `all`, or a list), every word of q, before, limit. */
-export async function fakePromptsList(args = {}) {
+/** The daemon's `who` filter: mine is `record.mine` (a mark, else the via default); the rest are via groups. */
+function whoFilter(who) {
+  switch (who) {
+    case 'manager': return (p) => p.via === 'manager';
+    case 'agents': return (p) => p.via === 'peer' || p.via === 'agent';
+    case 'programs': return (p) => p.via === 'headless' || p.via === 'sdk';
+    case 'not-mine': return (p) => !(p.mine ?? MINE.has(p.via));
+    case 'all': return null;
+    default: return (p) => p.mine ?? MINE.has(p.via);   // mine, or an old client's absent who
+  }
+}
+
+/**
+ * prompts.list as the daemon filters it: `who` (default Mine; tolerates the old `via: "all"`/list too), every word
+ * of q, before, limit. `marks` (id -> { mine, actor }, from fakePromptsMark) overrides a record's mine/marked/actor.
+ */
+export async function fakePromptsList(args = {}, marks = new Map()) {
   const res = await shared('prompts.list.json');
-  const via = args.via === 'all' ? null : Array.isArray(args.via) ? new Set(args.via) : MINE;
+  const prompts = res.prompts.map((p) => {
+    const m = marks.get(p.id);
+    return m ? { ...p, mine: m.mine, marked: true, actor: m.actor } : p;
+  });
+  // Old clients: via "all", or an explicit via list, still work; who (new clients) takes over otherwise.
+  const filter = args.via === 'all' ? null : Array.isArray(args.via) ? (() => { const s = new Set(args.via); return (p) => s.has(p.via); })() : whoFilter(args.who);
   const words = String(args.q ?? '').toLowerCase().split(/\s+/).filter(Boolean);
-  let list = res.prompts.filter((p) => (!via || via.has(p.via)) && words.every((w) => p.text.toLowerCase().includes(w)));
+  let list = prompts.filter((p) => (!filter || filter(p)) && words.every((w) => p.text.toLowerCase().includes(w)));
   if (args.before) {
     const i = list.findIndex((p) => p.id === args.before);
     if (i < 0) throw new Error(`before: no prompt ${args.before} on any host that answered`);
@@ -26,6 +46,18 @@ export async function fakePromptsList(args = {}) {
   }
   const limit = Math.max(1, Math.min(2000, Number(args.limit) || 200));
   return { ...res, prompts: list.slice(0, limit), more: list.length > limit };
+}
+
+/** prompts.mark (a write) as the daemon would answer it: `mine: null` clears the mark, back to the via default. */
+export async function fakePromptsMark(marks, args = {}) {
+  const ids = Array.isArray(args.ids) ? args.ids : (typeof args.id === 'string' ? [args.id] : []);
+  if (!ids.length) throw new Error('ids (or id) required');
+  const mine = args.mine === true || args.mine === false ? args.mine : null;
+  for (const id of ids) {
+    if (mine === null) marks.delete(id);
+    else marks.set(id, { mine, actor: args.actor ?? 'owner' });
+  }
+  return { ok: true, ids, mine, event: `ev-mark-${ids.join('-')}` };
 }
 
 export const FAKE_TOKEN = 'test-token-not-secret';
@@ -40,6 +72,8 @@ export async function startFakeDaemon({ token = FAKE_TOKEN, port = 0, host = '12
   const answers = [];
   const promptQueries = [];  // prompts.list args, in order
   const syncs = [];          // prompts.sync args
+  const marks = new Map();   // id -> { mine, actor }, from prompts.mark
+  const markCalls = [];      // prompts.mark args, in order
   const clients = new Set();
   let seq = 0;
   const pairs = new Map();   // requestId -> { requestId, code, client, device, expiresAt, state }
@@ -161,9 +195,10 @@ export async function startFakeDaemon({ token = FAKE_TOKEN, port = 0, host = '12
         result = args.since === n.cursor ? { cursor: n.cursor, items: [] } : n;
       } else if (op === 'sessions.transcript') result = await fixture('sessions-transcript.json');
       else if (op === 'sessions.message') { messages.push(args); result = { ok: true, queuedBehindTurn: false, event: 'ev-demo' }; }
-      else if (op === 'prompts.list') { promptQueries.push(args); result = await fakePromptsList(args); }
+      else if (op === 'prompts.list') { promptQueries.push(args); result = await fakePromptsList(args, marks); }
       else if (op === 'prompts.status') result = await shared('prompts.status.json');
       else if (op === 'prompts.sync') { syncs.push(args); result = await shared('prompts.sync.json'); }
+      else if (op === 'prompts.mark') { markCalls.push(args); result = await fakePromptsMark(marks, args); }
       else return json(res, 400, { ok: false, error: `unknown op ${op}` }, cors);
       return json(res, 200, { ok: true, result, ms: 0 }, cors);
     } catch (e) {
@@ -185,6 +220,8 @@ export async function startFakeDaemon({ token = FAKE_TOKEN, port = 0, host = '12
     answers,
     promptQueries,
     syncs,
+    markCalls,
+    marks,
     pairs,
     pairCalls,
     decide,

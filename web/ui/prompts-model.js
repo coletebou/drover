@@ -1,24 +1,29 @@
-// The Prompts workspace's pure half (views/prompts.js renders it): the prompts.list args for a scope and filters,
-// merging pages and live refreshes by id (newest first), finding the board strip a prompt's session is, and the
-// status line from prompts.status. Record shape: docs/specs/2026-11-21-cohesion-overhaul.md ("Record").
+// The Prompts workspace's pure half (views/prompts.js renders it): the prompts.list args for a filter (`who`, never
+// `via`), merging pages and live refreshes by id (newest first), finding the board strip a prompt's session is, and
+// the status line from prompts.status. Record shape: docs/specs/2026-11-21-cohesion-overhaul.md ("Record") — each
+// record now also carries `mine` (bool, after marks), `marked` (true once a person decided it) and maybe `actor`.
 // Tests in test/ui-prompts.test.js.
 import { fmtAgo } from './dom.js';
 
-/** Where a turn came from. Mine: what a person (or Drover for them) sent; All adds peer messages between agents. */
-export const MINE_VIA = ['typed', 'queued', 'drover', 'headless'];
-export const ALL_VIA = [...MINE_VIA, 'peer'];
+/** The six filter chips, in the order they're offered; who the daemon's prompts.list/prompts.local takes. */
+export const FILTERS = ['mine', 'manager', 'agents', 'programs', 'not-mine', 'all'];
+export const FILTER_LABEL = { mine: 'Mine', manager: 'Manager', agents: 'Agents', programs: 'Programs', 'not-mine': 'Not mine', all: 'All' };
 export const PAGE = 200;
 
-/** prompts.list args: empty filters left out; Mine leaves via to the daemon's default (the mine set). */
+/** prompts.list args: empty filters left out; `who` is always sent (never `via` — the daemon's old-client fallback). */
 export function listArgs({ scope = 'mine', q, host, engine, label, before, limit = PAGE } = {}) {
-  const a = { limit };
+  const a = { limit, who: FILTERS.includes(scope) ? scope : 'mine' };
   if (q && String(q).trim()) a.q = String(q).trim();
   if (host) a.host = host;
   if (engine) a.engine = engine;
   if (label) a.label = label;
-  if (scope === 'all') a.via = ALL_VIA;
   if (before) a.before = before;
   return a;
+}
+
+/** prompts.mark args: one id or many; mine true/false marks it, null clears the mark (back to automatic). */
+export function markArgs(ids, mine) {
+  return { ids: Array.isArray(ids) ? ids : [ids], mine };
 }
 
 const tsOf = (p) => Date.parse(p?.ts ?? '') || 0;

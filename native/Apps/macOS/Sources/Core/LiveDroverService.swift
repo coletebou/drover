@@ -358,6 +358,15 @@ final class LiveDroverService: DroverService, @unchecked Sendable {
         return try await decoded("prompts.sync", body: body, timeout: 150, as: PromptsSyncResult.self)
     }
 
+    /// A write (DevConfig.mutatingOps): `mine: nil` sends a literal JSON null, which clears the mark.
+    @concurrent
+    func markPrompts(ids: [String], mine: Bool?) async throws -> PromptsMarkResult {
+        var args: [String: JSONValue] = ["ids": .array(ids.map { .string($0) }), "actor": .string(Owner.alias)]
+        args["mine"] = mine.map { .bool($0) } ?? .null
+        let body = try JSONEncoder().encode(JSONValue.object(args))
+        return try await decoded("prompts.mark", body: body, as: PromptsMarkResult.self)
+    }
+
     /// POST /api/op/<op> with a ready JSON body, the result decoded into `T` (a DroverKit model). Errors as `call`'s.
     @concurrent
     private func decoded<T: Decodable & Sendable>(_ op: String, body: Data, timeout: TimeInterval = LiveDroverService.defaultTimeout, as: T.Type) async throws -> T {

@@ -152,6 +152,15 @@ public struct DroverClient: Sendable {
         return try await call("prompts.list", query.arguments, as: PromptsList.self)
     }
 
+    /// `prompts.mark` (a write): mark prompts mine or not, fleet-wide; `mine: nil` clears the mark, back to the
+    /// via default. Never sent with the widget token.
+    public func markPrompts(ids: [String], mine: Bool?) async throws -> PromptsMarkResult {
+        try requireMain("prompts.mark")
+        var args: [String: JSONValue] = ["ids": .array(ids.map { .string($0) }), "actor": .string(actor)]
+        args["mine"] = mine.map { .bool($0) } ?? .null
+        return try await call("prompts.mark", args, as: PromptsMarkResult.self)
+    }
+
     /// `prompts.status`: the spool and its sinks on one machine (nil: the daemon's own).
     public func promptsStatus(host: String? = nil) async throws -> PromptsStatus {
         try requireMain("prompts.status")

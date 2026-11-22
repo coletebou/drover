@@ -1,9 +1,9 @@
 import DroverKit
 import Foundation
 
-// Logic tests of the prompts slice: the tab bar's Agents grouping, deep links, the store (Mine and All, debounced
-// search, paging, pull to refresh, sync, an older daemon), the session behind a prompt, the row text, and the HTTP
-// client's arguments.
+// Logic tests of the prompts slice: the tab bar's Agents grouping, deep links, the store (the six scopes, debounced
+// search, paging, pull to refresh, sync, mark, an older daemon), the session behind a prompt, the row text, and the
+// HTTP client's arguments.
 extension Suites {
     static var promptsSuites: [(String, () async throws -> Void)] {
         [("prompts tabs", promptsTabs), ("prompts store", promptsStore), ("prompts session", promptsSession),
@@ -47,8 +47,25 @@ extension Suites {
         s.scope = .all
         await until { s.records.count == 5 }
         expect(s.records.count == 5, "All adds the peer message")
+        s.scope = .manager
+        await until { s.records.isEmpty }
+        expect(s.records.isEmpty, "manager: none of the fixture's vias")
+        s.scope = .agents
+        await until { s.records.count == 1 }
+        expect(s.records.first?.via == .peer, "agents: via peer or agent")
+        s.scope = .programs
+        await until { s.records.count == 1 }
+        expect(s.records.first?.via == .headless, "programs: via headless or sdk")
+        s.scope = .notMine
+        await until { s.records.count == 1 }
+        expect(s.records.first?.via == .peer, "not mine: the peer message (the headless launch is marked mine)")
         s.scope = .mine
         await until { s.records.count == 4 }
+        let before = s.records.count
+        await s.mark(try need(s.records.first), mine: false)
+        expect(s.error == nil, "mark did not throw")
+        await until { s.loaded }
+        expect(s.records.count == before, "the stateless mock echoes the same fixture back")
         s.search = "t"
         s.search = "the tests"
         await until { s.records.count == 1 }
@@ -108,16 +125,23 @@ extension Suites {
 
     static func promptsHTTP() async throws {
         let args = try HTTPDroverAPI.promptArgs(PromptsQuery(scope: .all, q: " lexer ", before: "p_1"))
-        expect(args == ["q": .string("lexer"), "before": .string("p_1"), "limit": .number(200), "via": .string("all")], "\(args)")
+        expect(args == ["q": .string("lexer"), "before": .string("p_1"), "limit": .number(200), "who": .string("all")], "\(args)")
         let mine = try HTTPDroverAPI.promptArgs(PromptsQuery())
-        expect(mine == ["limit": .number(200)], "Mine sends no via")
+        expect(mine == ["limit": .number(200)], "Mine sends no who")
+        for (scope, who) in [(PromptsQuery.Scope.manager, "manager"), (.agents, "agents"), (.programs, "programs"), (.notMine, "not-mine")] {
+            expect(try HTTPDroverAPI.promptArgs(PromptsQuery(scope: scope))["who"] == .string(who), "\(scope)")
+        }
         // The daemon's envelope decodes into DroverKit's models.
         let list: PromptsList = try HTTPDroverAPI.decodeResult(try need(Fixtures.data("prompts.list.json")), op: "prompts.list")
         expect(list.prompts.count == 5 && list.more, "prompts.list fixture")
+        expect(list.prompts.first?.mine == true, "mine decodes")
+        expect(list.prompts[4].mine == false && list.prompts[4].marked == true && list.prompts[4].actor == "owner", "a mark overrides the via default")
         let status: PromptsStatus = try HTTPDroverAPI.decodeResult(try need(Fixtures.data("prompts.status.json")), op: "prompts.status")
         expect(status.sinks.count == 2, "prompts.status fixture")
         let sync: PromptsSyncResult = try HTTPDroverAPI.decodeResult(try need(Fixtures.data("prompts.sync.json")), op: "prompts.sync")
         expect(sync.added == 3, "prompts.sync fixture")
+        let mark: PromptsMarkResult = try HTTPDroverAPI.decodeResult(try need(Fixtures.data("prompts.mark.json")), op: "prompts.mark")
+        expect(mark.ok == true && mark.ids.count == 2 && mark.mine == false, "prompts.mark fixture")
     }
 
     /// A daemon from before the spool answers "unknown op": the tab says so instead of showing an error.

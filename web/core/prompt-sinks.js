@@ -65,15 +65,18 @@ export async function loadConfig(env = process.env) {
     if (names.has(s.name)) { bad('name used twice'); continue; }
     const labels = s.labels === undefined ? ['*'] : Array.isArray(s.labels) ? s.labels.filter((l) => typeof l === 'string' && l) : null;
     if (!labels?.length) { bad('labels: a list of label strings ("*" for every label)'); continue; }
+    // skipVia: records of these vias never reach this sink (sdk: program runs, most of a busy host's bytes).
+    const skipVia = s.skipVia === undefined ? [] : Array.isArray(s.skipVia) && s.skipVia.every((v) => typeof v === 'string' && v) ? s.skipVia : null;
+    if (!skipVia) { bad('skipVia: a list of vias (typed, queued, drover, manager, peer, agent, headless, sdk)'); continue; }
     if (s.type === 'git') {
       if (typeof s.remote !== 'string' || !s.remote.trim() || s.remote.startsWith('-') || /^ext::/i.test(s.remote)) { bad('remote: a git URL'); continue; }
       const branch = s.branch ?? 'drover-prompts', dir = String(s.dir ?? 'prompts').replace(/^\/+|\/+$/g, '');
       if (typeof branch !== 'string' || !BRANCH_RE.test(branch)) { bad('branch: a plain branch name'); continue; }
       if (!DIR_RE.test(dir)) { bad('dir: a relative path inside the repository'); continue; }
-      out.sinks.push({ name: s.name, type: 'git', labels, remote: s.remote.trim(), branch, dir, sign: s.sign === true });
+      out.sinks.push({ name: s.name, type: 'git', labels, skipVia, remote: s.remote.trim(), branch, dir, sign: s.sign === true });
     } else if (s.type === 'command') {
       if (!Array.isArray(s.argv) || !s.argv.length || !s.argv.every((a) => typeof a === 'string') || !s.argv[0]) { bad('argv: a list of strings, the program first'); continue; }
-      out.sinks.push({ name: s.name, type: 'command', labels, argv: s.argv });
+      out.sinks.push({ name: s.name, type: 'command', labels, skipVia, argv: s.argv });
     } else { bad('type: git or command'); continue; }
     names.add(s.name);
   }
@@ -199,7 +202,7 @@ export class Sinks {
       for await (const win of readNewLines(file, from, size)) {
         for (let line of win.lines) {
           let r; try { r = JSON.parse(line); } catch { continue; }
-          if (!r || typeof r.id !== 'string' || !wants(sink, r.label)) continue;
+          if (!r || typeof r.id !== 'string' || !wants(sink, r.label) || sink.skipVia?.includes(r.via)) continue;
           // Redacted again on the way out, with today's rules: a record collected before a rule existed (a PEM header
           // left around a redacted key body) reaches no sink as it was. The id stays the record's.
           if (typeof r.text === 'string') { const t = redactSecrets(r.text); if (t !== r.text) { r = { ...r, text: t }; line = JSON.stringify(r); } }

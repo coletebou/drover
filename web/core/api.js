@@ -909,9 +909,11 @@ export const front = {
    * newest first. A host that did not answer (down, or not asked) shows what a git sink's clone on this machine holds
    * for it as of its last pull (core/prompts.js listClones): its perHost row says source sink:<name>. A before cursor
    * (an id) is turned into its time here, from this host's spool, a sink clone or the hosts themselves, so every host
-   * pages from the same point.
+   * pages from the same point. Every host reads with this host's marks too (marks: the truth file reaches the others
+   * by dotsync, minutes later), and the merged records are classified and filtered here again, so a host on code from
+   * before who and mine still answers with them.
    */
-  async 'prompts.list'({ hosts: names, host: named, limit, before, beforeTs, ...rest } = {}) {
+  async 'prompts.list'({ hosts: names, host: named, limit, before, beforeTs, marks: _marks, ...rest } = {}) {
     const chosen = Array.isArray(names) && names.length ? names : named && named !== hosts.LOCAL ? [named] : named === hosts.LOCAL ? [hosts.LOCAL] : null;
     const { targets, known } = await fleetTargets(chosen);
     const lim = prompts.clampLimit(limit);
@@ -923,7 +925,11 @@ export const front = {
       cursorTs = found.flatMap((p) => p.results)[0]?.ts ?? null;
       if (!cursorTs) throw new Error(`before: no prompt ${before} on any host that answered`);
     }
-    const args = { ...rest, limit: lim, ...(before ? { before, beforeTs: cursorTs } : {}) };
+    const view = await prompts.truthView().catch(() => null);
+    const marks = prompts.marksOverlay(view);
+    // Only whose and which via again here: every other filter (cwd under a home, words) is the host's own to apply.
+    const here = prompts.compileFilter({ who: rest.who, via: rest.via, id: rest.id, marks });
+    const args = { ...rest, marks, limit: lim, ...(before ? { before, beforeTs: cursorTs } : {}) };
     const perHost = await askHosts(targets, 'prompts.local', args,
       (r, { route }) => ({ results: (r.prompts ?? []).map((p) => ({ ...p, route })), short: r.host ?? null, more: Boolean(r.more), total: r.total, searchMs: r.ms ?? null }));
     // A host that answered is covered by its own spool; any other host's records come from the sink clones.
@@ -934,7 +940,8 @@ export const front = {
     const byId = new Map();
     for (const p of perHost) for (const r of p.results) if (!byId.has(r.id)) byId.set(r.id, r);
     for (const c of clones) for (const r of c.prompts) if (!byId.has(r.id)) byId.set(r.id, { ...r, route: route(r.host), source: `sink:${c.sinks[0]}` });
-    const merged = [...byId.values()].sort(prompts.newestFirst);
+    const merged = [...byId.values()].map((r) => (typeof r.mine === 'boolean' && !Object.hasOwn(marks, r.id) ? r : { ...prompts.classify(r, view, marks), ...(r.route !== undefined ? { route: r.route } : {}) }))
+      .filter(here.test).sort(prompts.newestFirst);
     const coverage = fleetCoverage({ known, targets, perHost, probes: lastProbe, chosen: Boolean(chosen), vectors: false });
     for (const c of clones) if (c.prompts.length) coverage.partial.push({ host: c.host, reason: `from the ${c.sinks.join(', ')} sink clone (as of its last pull)` });
     const rows = [...perHost.map(({ results: r, short: _s, ...h }) => ({ ...h, count: r.length })),
@@ -1454,7 +1461,7 @@ const INVALIDATES = {
   'openclaw.sweep': ['openclaw.', 'events.'],
   'uploads.put': ['uploads.', 'events.'], 'uploads.remove': ['uploads.', 'events.'], 'files.write': ['files.', 'events.'],
   'docker.restart': ['docker.'], 'docker.start': ['docker.'], 'docker.exec': ['docker.'], 'docker.run': ['docker.'],
-  'prompts.sync': ['prompts.'],
+  'prompts.sync': ['prompts.'], 'prompts.mark': ['prompts.', 'events.'],
   'ask.create': ['events.', 'notify.'], 'ask.cancel': ['events.'], 'ask.deliver': ['events.'], 'ask.mark': ['events.'],
 };
 

@@ -4,10 +4,10 @@ import Observation
 
 /// The Prompts tab's state (docs/specs/2026-11-21-cohesion-overhaul.md "Prompts: the spool"): `prompts.list` on the
 /// daemon, which fans out to every host, newest first. The search field is its `q` (every word must match,
-/// debounced), Mine leaves `via` to the daemon's default and All asks for every via, the end of the list pages with
-/// `before`, pull to refresh reads the first page again. The status line is `prompts.status`; Sync now is
-/// `prompts.sync`. Owned by AppModel (`AppModel.prompts`), which resets it when the connection changes. No UIKit:
-/// Tests/run-logic-tests.sh runs it.
+/// debounced), the scope picker is its `who` (Mine, Manager, Agents, Programs, Not mine, All; Mine leaves `who` to
+/// the daemon's default), the end of the list pages with `before`, pull to refresh reads the first page again. The
+/// status line is `prompts.status`; Sync now is `prompts.sync`; mark(_:mine:) is `prompts.mark`. Owned by AppModel
+/// (`AppModel.prompts`), which resets it when the connection changes. No UIKit: Tests/run-logic-tests.sh runs it.
 @Observable @MainActor
 final class PromptsStore {
     @ObservationIgnored weak var app: AppModel?
@@ -108,6 +108,19 @@ final class PromptsStore {
         syncing = false
         await reload()
         await refreshStatus()
+    }
+
+    /// Mark one prompt mine or not (`prompts.mark`); `mine: nil` clears the mark, back to the via default.
+    /// Reloads after: the current scope may no longer include it (marking it not mine while viewing Mine, say).
+    func mark(_ p: PromptRecord, mine: Bool?) async {
+        guard let api = app?.api else { return }
+        do {
+            _ = try await api.markPrompts(ids: [p.id], mine: mine)
+            await reload()
+            await refreshStatus()
+        } catch {
+            self.error = "Could not mark the prompt: \(error.localizedDescription)"
+        }
     }
 
     /// Another server or token (AppModel.reconnect): start over.

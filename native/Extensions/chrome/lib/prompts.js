@@ -5,17 +5,33 @@
 /** Prompts asked for per page: a side panel shows recent ones, the web UI has the rest. */
 export const PANEL_PAGE = 50;
 
+/** The six `who` scopes `prompts.list` takes, in picker order. Mine is the daemon's default (sent or not, same result). */
+export const WHO_SCOPES = Object.freeze(['mine', 'manager', 'agents', 'programs', 'not-mine', 'all']);
+
+/** A picker label for each scope ("Mine", "Not mine", ...). */
+export const WHO_LABEL = Object.freeze({ mine: 'Mine', manager: 'Manager', agents: 'Agents', programs: 'Programs', 'not-mine': 'Not mine', all: 'All' });
+
 /**
- * prompts.list args: the daemon's default via set (Mine), the search words when there are any, and `before` (the last
- * id shown) for the next page.
- * @param {{ q?: string, before?: string, limit?: number }} [o]
+ * prompts.list args: `who` (default `mine`, the daemon's own default, so sent only when it isn't), the search words
+ * when there are any, and `before` (the last id shown) for the next page.
+ * @param {{ q?: string, before?: string, limit?: number, who?: string }} [o]
  */
-export function listArgs({ q, before, limit = PANEL_PAGE } = {}) {
+export function listArgs({ q, before, limit = PANEL_PAGE, who } = {}) {
   const a = { limit: Math.max(1, Math.min(2000, Number(limit) || PANEL_PAGE)) };
   const words = String(q ?? '').trim();
   if (words) a.q = words.slice(0, 500);
   if (typeof before === 'string' && before) a.before = before;
+  if (typeof who === 'string' && who && who !== 'mine' && WHO_SCOPES.includes(who)) a.who = who;
   return a;
+}
+
+/**
+ * prompts.mark args: ids (one or more), and mine (true, false, or null to clear the mark).
+ * @param {{ ids: string[], mine: boolean|null }} o
+ */
+export function markArgs({ ids, mine }) {
+  const list = (Array.isArray(ids) ? ids : [ids]).filter((id) => typeof id === 'string' && id);
+  return { ids: list, mine: mine === true || mine === false ? mine : null };
 }
 
 const tsOf = (p) => Date.parse(p?.ts ?? '') || 0;
@@ -57,7 +73,10 @@ export function fmtTime(iso, now = Date.now(), { utc = false } = {}) {
 }
 
 /** Where a turn came from, for a row (typed, the common case, says nothing). */
-export const VIA_LABEL = Object.freeze({ typed: '', queued: 'queued', drover: 'via Drover', headless: 'launch', peer: 'from an agent', sdk: 'program' });
+export const VIA_LABEL = Object.freeze({
+  typed: '', queued: 'queued', drover: 'via Drover', manager: 'to manager', headless: 'launch',
+  peer: 'from an agent', agent: 'via drover_send', sdk: 'program',
+});
 
 /**
  * What a row shows: the meta line ("22:03 · demo-box · codex · webapp · queued"), the text verbatim (the row clamps
@@ -67,7 +86,10 @@ export const VIA_LABEL = Object.freeze({ typed: '', queued: 'queued', drover: 'v
 export function promptRow(p, { now = Date.now(), utc = false } = {}) {
   const via = p.from ? `from ${p.from}` : (VIA_LABEL[p.via] ?? String(p.via ?? ''));
   const meta = [fmtTime(p.ts, now, { utc }), p.host ?? '', p.engine ?? '', p.project ?? '', via].filter(Boolean).join(' · ');
-  return { id: p.id, meta, text: String(p.text ?? ''), when: p.ts, cwd: p.cwd ?? null, fromSink: Boolean(p.source) };
+  return {
+    id: p.id, meta, text: String(p.text ?? ''), when: p.ts, cwd: p.cwd ?? null, fromSink: Boolean(p.source),
+    mine: p.mine === true, marked: p.marked === true,
+  };
 }
 
 /**

@@ -62,14 +62,15 @@ whatever the last one still answers (`ManagerModel.reset`, `AppModel.generation`
 500 turns, as many as a read brings, however long the app runs.
 
 Prompts (sidebar, `drover://prompts?q=`, Control Command 5): every prompt typed into Claude Code or Codex on every
-machine, newest first, from `prompts.list` (DroverKit's models; `Sources/Prompts`). Mine is the daemon's default via
-set, All asks for `via: "all"`; the host menu is its `host`; the search field is its `q` (every word must match,
-asked of the daemon after 300 ms of quiet; Command F focuses it). The list pages with `before` as it scrolls; rows
-highlight under the pointer like the board's. A prompt shows whole in the detail column, verbatim and selectable in
-monospace (never Markdown), with Copy (Command C with the list focused, or Shift Command C) and Open session, which
-selects that session on the board when it is there (same id, the record's `route` host). j and k move, Enter opens
-the session. The status line is `prompts.status`; Sync now is `prompts.sync` (a write: the dev build's write guard
-applies). New user turns read the top again at most every 4 s while the screen shows.
+machine, newest first, from `prompts.list` (DroverKit's models; `Sources/Prompts`). A scope menu picks `who`: Mine
+(the daemon's default), Manager, Agents, Programs, Not mine, or All; the host menu is its `host`; the search field is
+its `q` (every word must match, asked of the daemon after 300 ms of quiet; Command F focuses it). The list pages with
+`before` as it scrolls; rows highlight under the pointer like the board's. A prompt shows whole in the detail column,
+verbatim and selectable in monospace (never Markdown), with Copy (Command C with the list focused, or Shift Command
+C), Open session, which selects that session on the board when it is there (same id, the record's `route` host), and
+a Mark menu (Mark mine / Mark not mine / Clear mark, also on the row's context menu; `prompts.mark`, fleet-wide). j
+and k move, Enter opens the session. The status line is `prompts.status`; Sync now is `prompts.sync` (a write: the
+dev build's write guard applies). New user turns read the top again at most every 4 s while the screen shows.
 
 Notifications: dialog alerts carry one action per key (the options, or Approve and Deny, Deliver and Drop for a held
 message) that call `sessions.answer` with the alert's hash, plus Reply and Open. A tap opens the session in the one

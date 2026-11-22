@@ -10,12 +10,15 @@ protocol PromptsAPI: Sendable {
     func promptsStatus() async throws -> PromptsStatus
     /// `prompts.sync` (a write, main token): scan now, then push every sink.
     func syncPrompts() async throws -> PromptsSyncResult
+    /// `prompts.mark` (a write, main token): mark prompts mine or not, fleet-wide; `mine: nil` clears the mark.
+    func markPrompts(ids: [String], mine: Bool?) async throws -> PromptsMarkResult
 }
 
 extension PromptsAPI {
     func prompts(_ query: PromptsQuery) async throws -> PromptsList { throw DroverError.notConfigured }
     func promptsStatus() async throws -> PromptsStatus { throw DroverError.notConfigured }
     func syncPrompts() async throws -> PromptsSyncResult { throw DroverError.notConfigured }
+    func markPrompts(ids: [String], mine: Bool?) async throws -> PromptsMarkResult { throw DroverError.notConfigured }
 }
 
 extension HTTPDroverAPI {
@@ -35,6 +38,44 @@ extension HTTPDroverAPI {
     /// A sync pushes git sinks over the network: it waits as long as the daemon gives each host for it.
     func syncPrompts() async throws -> PromptsSyncResult {
         try await op("prompts.sync", ["actor": .string(DroverIDs.actor)], timeout: 150)
+    }
+
+    private struct MarkPromptsBody: Encodable {
+        var ids: [String]
+        var mine: Bool?
+        var actor: String
+        private enum CodingKeys: String, CodingKey { case ids, mine, actor }
+        // `op`'s generic body strips any argument whose value is JSON null (an "absent" convention elsewhere); here
+        // `mine: nil` must reach the daemon as a literal null (it clears the mark), so this builds its own request.
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(ids, forKey: .ids)
+            if let mine { try c.encode(mine, forKey: .mine) } else { try c.encodeNil(forKey: .mine) }
+            try c.encode(actor, forKey: .actor)
+        }
+    }
+
+    /// `prompts.mark` (a write, main token): `mine: nil` sends a literal JSON null, which clears the mark.
+    func markPrompts(ids: [String], mine: Bool?) async throws -> PromptsMarkResult {
+        guard let token = token(), !token.isEmpty else { throw DroverError.notConfigured }
+        var req = URLRequest(url: baseURL.appending(path: "api/op/prompts.mark"))
+        req.httpMethod = "POST"
+        req.timeoutInterval = 30
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.httpBody = try JSONEncoder().encode(MarkPromptsBody(ids: ids, mine: mine, actor: DroverIDs.actor))
+        let data: Data
+        let response: URLResponse
+        do { (data, response) = try await session.data(for: req) }
+        catch { throw DroverError.transport(error.localizedDescription) }
+        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if code == 401 { throw DroverError.unauthorized }
+        if code == 403 { throw DroverError.forbidden }
+        guard (200..<300).contains(code) else {
+            if let msg = try? JSONDecoder().decode(ErrorEnvelope.self, from: data).error { throw DroverError.server(msg) }
+            throw DroverError.http(code)
+        }
+        return try Self.decodeResult(data, op: "prompts.mark")
     }
 }
 
@@ -62,12 +103,25 @@ extension MockDroverAPI {
         ]
     }()
 
+    /// The daemon's `who` filter: mine is `record.mine` (the via default, since the fixture carries no marks);
+    /// the others are via groups.
+    private static func matches(_ p: PromptRecord, scope: PromptsQuery.Scope) -> Bool {
+        let isMine = p.mine ?? p.via.map { PromptVia.mine.contains($0) } ?? false
+        switch scope {
+        case .mine: return isMine
+        case .notMine: return !isMine
+        case .manager: return p.via == .manager
+        case .agents: return p.via == .peer || p.via == .agent
+        case .programs: return p.via == .headless || p.via == .sdk
+        case .all: return true
+        }
+    }
+
     func prompts(_ query: PromptsQuery) async throws -> PromptsList {
         try await Task.sleep(for: delay)
         let words = (query.q ?? "").lowercased().split(separator: " ").map(String.init)
-        let mine = Set(PromptVia.mine)
         var all = Self.promptsFixture.filter { p in
-            (query.scope == .all || p.via.map(mine.contains) ?? true) && words.allSatisfy { p.text.lowercased().contains($0) }
+            Self.matches(p, scope: query.scope) && words.allSatisfy { p.text.lowercased().contains($0) }
         }
         if let before = query.before, let i = all.firstIndex(where: { $0.id == before }) { all = Array(all[(i + 1)...]) }
         let limit = query.limit ?? PromptsQuery.pageSize
@@ -83,5 +137,12 @@ extension MockDroverAPI {
     func syncPrompts() async throws -> PromptsSyncResult {
         try await Task.sleep(for: delay)
         return PromptsSyncResult(host: "demo-mac", scanned: 30, added: 1, sinks: [.init(name: "personal", type: "git", ok: true, added: 1, pushed: true)])
+    }
+
+    /// A stateless echo (like sendToPane, sendKeys): the fixture never changes, so a reload after marking shows
+    /// the same rows. Real-persistence coverage is macOS's MockDroverService, which does track marks.
+    func markPrompts(ids: [String], mine: Bool?) async throws -> PromptsMarkResult {
+        try await Task.sleep(for: delay)
+        return PromptsMarkResult(ok: true, ids: ids, mine: mine, event: "ev-mock-mark")
     }
 }

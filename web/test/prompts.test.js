@@ -46,13 +46,13 @@ describe('one transcript line', () => {
     assert.equal(p(typed('u1', 'x', 'old Claude Code', { promptSource: undefined, turnOrigin: undefined })).via, 'typed');
     assert.equal(p(typed('u2', 'x', 'while you work', { promptSource: 'queued' })).via, 'queued');
     assert.deepEqual(p(queued('u3', 'x', 'and also this')), { via: 'queued', from: null, text: 'and also this' });
-    assert.deepEqual(p(queued('u4', 'x', '', { kind: 'peer', name: 'drover (owner)', body: 'relayed words' })), { via: 'drover', from: null, text: 'relayed words' });
+    assert.deepEqual(p(queued('u4', 'x', '', { kind: 'peer', name: 'drover (owner)', body: 'relayed words' })), { via: 'drover', from: null, text: 'relayed words', actor: 'owner' }, 'a relay keeps who sent it');
     assert.deepEqual(p(queued('u5', 'x', '', { kind: 'peer', name: 'reviewer-2', body: 'peer words' })), { via: 'peer', from: 'reviewer-2', text: 'peer words' });
     assert.equal(p(queued('u6', 'x', 'task', { kind: 'coordinator' })), null, 'a parent writing to its subagent');
     assert.equal(p(queued('u7', 'x', 'done', { kind: 'task-notification' })), null);
     const env = (attrs, body) => typed('u8', 'x', `<cross-session-message ${attrs}>${body}</cross-session-message>`, { isMeta: true, promptSource: 'system', turnOrigin: 'peer' });
     assert.deepEqual(p(env('from="worker-1"', 'hello from a peer')), { via: 'peer', from: 'worker-1', text: 'hello from a peer' });
-    assert.deepEqual(p(env('from-name="drover (owner)"', 'status?')), { via: 'drover', from: null, text: 'status?' });
+    assert.deepEqual(p(env('from-name="drover (owner)"', 'status?')), { via: 'drover', from: null, text: 'status?', actor: 'owner' });
     assert.equal(p(typed('u9', 'x', 'scripted', { entrypoint: 'sdk-cli', promptSource: 'sdk', turnOrigin: 'sdk' })).via, 'sdk');
     for (const o of [{ turnOrigin: 'task_notification', promptSource: 'system' }, { turnOrigin: 'scheduled' }, { isCompactSummary: true, isVisibleInTranscriptOnly: true }, { isMeta: true, promptSource: undefined, turnOrigin: undefined }, { isSidechain: true }]) {
       assert.equal(p(typed('u10', 'x', 'not a prompt', o)), null, J(o));

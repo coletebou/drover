@@ -56,6 +56,8 @@ protocol DroverService: Sendable {
     func promptsStatus() async throws -> PromptsStatus
     /// `prompts.sync` (a write): scan now, then push every sink.
     func syncPrompts() async throws -> PromptsSyncResult
+    /// `prompts.mark` (a write): mark prompts mine or not, fleet-wide; `mine: nil` clears the mark.
+    func markPrompts(ids: [String], mine: Bool?) async throws -> PromptsMarkResult
 }
 
 /// Defaults for services that have no manager or dialogs (test doubles).
@@ -80,6 +82,7 @@ extension DroverService {
     func prompts(_ query: PromptsQuery) async throws -> PromptsList { throw DroverError.unsupported("prompts.list") }
     func promptsStatus() async throws -> PromptsStatus { throw DroverError.unsupported("prompts.status") }
     func syncPrompts() async throws -> PromptsSyncResult { throw DroverError.unsupported("prompts.sync") }
+    func markPrompts(ids: [String], mine: Bool?) async throws -> PromptsMarkResult { throw DroverError.unsupported("prompts.mark") }
 }
 
 enum DroverError: LocalizedError, Equatable {

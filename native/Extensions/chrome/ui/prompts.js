@@ -1,9 +1,10 @@
-// The side panel's Prompts section: recent prompts from prompts.list (every machine, newest first, the daemon's
-// "Mine" set), a search box (every word must match, asked of the daemon, debounced), Copy on each prompt, a click to
-// read one whole, Open for a prompt whose session is on the board, and a link to Prompts › Mine in the web UI.
-// Text goes in through textContent only (ui/dom.js). The pure half is lib/prompts.js.
+// The side panel's Prompts section: recent prompts from prompts.list (every machine, newest first), a who select
+// (Mine, the daemon's default, Manager, Agents, Programs, Not mine, All), a search box (every word must match,
+// asked of the daemon, debounced), Copy and a mine/not-mine toggle (prompts.mark, fleet-wide) on each prompt, a
+// click to read one whole, Open for a prompt whose session is on the board, and a link to Prompts › Mine in the
+// web UI. Text goes in through textContent only (ui/dom.js). The pure half is lib/prompts.js.
 import { h, render, clear } from './dom.js';
-import { listArgs, mergePrompts, normalizePrompts, promptRow, statusLine, stripForPrompt, isUnknownPromptsOp, PANEL_PAGE } from '../lib/prompts.js';
+import { listArgs, markArgs, mergePrompts, normalizePrompts, promptRow, statusLine, stripForPrompt, isUnknownPromptsOp, PANEL_PAGE, WHO_SCOPES, WHO_LABEL } from '../lib/prompts.js';
 import { promptsUrl } from '../lib/links.js';
 
 const DEBOUNCE_MS = 300;
@@ -23,6 +24,7 @@ export function promptsSection(deps) {
   let status = null;
   let open = null;           // the id shown whole
   let copied = null;         // { id, at }
+  let marking = null;        // the id of a prompts.mark call in flight
   let seq = 0;
   let timer = null;
   let origin = null;
@@ -30,12 +32,15 @@ export function promptsSection(deps) {
   const q = h('input', { type: 'search', id: 'prompts-q', class: 'pr-q', placeholder: 'Search every prompt', 'aria-label': 'Search prompts', autocomplete: 'off', spellcheck: 'false' });
   q.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => reload(), DEBOUNCE_MS); });
   q.addEventListener('keydown', (e) => { if (e.key === 'Enter') { clearTimeout(timer); reload(); } });
+  const who = h('select', { class: 'pr-who', 'aria-label': 'Which prompts' },
+    ...WHO_SCOPES.map((s) => h('option', { value: s }, WHO_LABEL[s])));
+  who.addEventListener('change', () => reload());
   const webBtn = h('button', { type: 'button', class: 'ghost', onclick: openWeb, title: 'Prompts › Mine in Drover' }, 'Open in Drover');
   const statusEl = h('p', { class: 'pr-status', role: 'status', 'aria-live': 'polite' });
   const listEl = h('ul', { class: 'pr-list', 'aria-label': 'Prompts' });
   const moreBtn = h('button', { type: 'button', class: 'pr-more', onclick: () => loadMore(), hidden: true }, 'Older prompts');
   const root = h('section', { class: 'prompts', 'aria-label': 'Prompts', hidden: true },
-    h('div', { class: 'pr-head' }, q, webBtn), statusEl, listEl, moreBtn);
+    h('div', { class: 'pr-head' }, q, who, webBtn), statusEl, listEl, moreBtn);
 
   async function client() {
     const { client: c } = await deps.getClient();
@@ -51,7 +56,7 @@ export function promptsSection(deps) {
 
   async function fetchPage(before) {
     const c = await client();
-    return c.op('prompts.list', listArgs({ q: q.value, before, limit: PANEL_PAGE }), { timeoutMs: 30_000 });
+    return c.op('prompts.list', listArgs({ q: q.value, before, limit: PANEL_PAGE, who: who.value }), { timeoutMs: 30_000 });
   }
 
   /** The first page for the search box as it is now; an answer to an older search is dropped. */
@@ -107,6 +112,22 @@ export function promptsSection(deps) {
     setTimeout(() => { if (btn.isConnected) btn.textContent = 'Copy'; }, COPIED_MS);
   }
 
+  /** prompts.mark (a write), fleet-wide, then re-read this page so the row (and the scope, if it filters on mine) updates. */
+  async function mark(p, mine) {
+    marking = p.id;
+    draw();
+    try {
+      const c = await client();
+      await c.op('prompts.mark', markArgs({ ids: [p.id], mine }));
+      await reload();
+    } catch (e) {
+      error = { message: `Could not mark the prompt: ${e?.message ?? 'error'}`, options: deps.needsOptions(e) };
+    } finally {
+      marking = null;
+      draw();
+    }
+  }
+
   function drawStatus() {
     if (!loaded) statusEl.textContent = 'Reading prompts';
     else if (unsupported) statusEl.textContent = '';
@@ -121,9 +142,15 @@ export function promptsSection(deps) {
     copyBtn.addEventListener('click', (e) => { e.stopPropagation(); copy(p, copyBtn); });
     const openBtn = strip ? h('button', { type: 'button', class: 'ghost pr-open', title: `Open ${strip.name ?? 'the session'} here` }, 'Open') : null;
     openBtn?.addEventListener('click', (e) => { e.stopPropagation(); deps.openSession(strip); });
+    const markBtn = h('button', {
+      type: 'button', class: 'ghost pr-mark', disabled: marking === p.id,
+      title: r.mine ? 'Mark not mine (fleet-wide)' : 'Mark mine (fleet-wide)',
+      'aria-label': r.mine ? 'Mark not mine' : 'Mark mine',
+    }, marking === p.id ? '…' : (r.mine ? 'Mine ✓' : 'Mark mine'));
+    markBtn.addEventListener('click', (e) => { e.stopPropagation(); mark(p, !r.mine); });
     const text = h(whole ? 'pre' : 'p', { class: whole ? 'pr-text whole' : 'pr-text' }, r.text);
-    const li = h('li', { class: `pr-row${whole ? ' open' : ''}`, 'data-id': p.id, tabindex: '0', 'aria-expanded': whole ? 'true' : 'false', title: whole ? '' : 'Show the whole prompt' },
-      h('div', { class: 'pr-meta' }, h('time', { datetime: r.when, title: new Date(r.when).toLocaleString() }, r.meta), r.fromSink ? h('span', { class: 'pr-sink', title: 'From a sink copy: this host did not answer' }, 'copy') : null, h('span', { class: 'spacer' }), openBtn, copyBtn),
+    const li = h('li', { class: `pr-row${whole ? ' open' : ''}${r.mine ? ' mine' : ''}`, 'data-id': p.id, tabindex: '0', 'aria-expanded': whole ? 'true' : 'false', title: whole ? '' : 'Show the whole prompt' },
+      h('div', { class: 'pr-meta' }, h('time', { datetime: r.when, title: new Date(r.when).toLocaleString() }, r.meta), r.fromSink ? h('span', { class: 'pr-sink', title: 'From a sink copy: this host did not answer' }, 'copy') : null, r.marked ? h('span', { class: 'pr-marked', title: 'A person marked this' }, '•') : null, h('span', { class: 'spacer' }), openBtn, markBtn, copyBtn),
       text);
     const toggle = () => { open = whole ? null : p.id; draw(); };
     li.addEventListener('click', toggle);

@@ -2,15 +2,27 @@
 // board strip a prompt's session is, and the status line. Synthetic records in the spec's shape.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { listArgs, mergePrompts, stripForPrompt, statusLine, firstLine, ALL_VIA, MINE_VIA } from '../ui/prompts-model.js';
+import { listArgs, markArgs, mergePrompts, stripForPrompt, statusLine, firstLine, FILTERS, FILTER_LABEL } from '../ui/prompts-model.js';
 
-const P = (id, ts, extra = {}) => ({ v: 1, id, ts, host: 'box-a', engine: 'claude', session: 's1', cwd: '~/code/app', project: 'app', label: 'work', via: 'typed', text: 'verbatim prompt', ...extra });
+const P = (id, ts, extra = {}) => ({ v: 1, id, ts, host: 'box-a', engine: 'claude', session: 's1', cwd: '~/code/app', project: 'app', label: 'work', via: 'typed', mine: true, marked: false, text: 'verbatim prompt', ...extra });
 
-test('list args: empty filters left out, All asks for every via, paging by id', () => {
-  assert.deepEqual(listArgs({}), { limit: 200 });
-  assert.deepEqual(listArgs({ scope: 'mine', q: '  parser  ', host: 'box-a', engine: '', label: 'work' }), { limit: 200, q: 'parser', host: 'box-a', label: 'work' });
-  assert.deepEqual(listArgs({ scope: 'all', before: 'p_1' }), { limit: 200, via: ALL_VIA, before: 'p_1' });
-  assert.ok(ALL_VIA.includes('peer') && !MINE_VIA.includes('peer'));
+test('list args: who is always sent (never via), empty filters left out, paging by id, an unknown scope falls back to mine', () => {
+  assert.deepEqual(listArgs({}), { limit: 200, who: 'mine' });
+  assert.deepEqual(listArgs({ scope: 'mine', q: '  parser  ', host: 'box-a', engine: '', label: 'work' }), { limit: 200, who: 'mine', q: 'parser', host: 'box-a', label: 'work' });
+  assert.deepEqual(listArgs({ scope: 'all', before: 'p_1' }), { limit: 200, who: 'all', before: 'p_1' });
+  assert.deepEqual(listArgs({ scope: 'manager' }), { limit: 200, who: 'manager' });
+  assert.deepEqual(listArgs({ scope: 'agents' }), { limit: 200, who: 'agents' });
+  assert.deepEqual(listArgs({ scope: 'programs' }), { limit: 200, who: 'programs' });
+  assert.deepEqual(listArgs({ scope: 'not-mine' }), { limit: 200, who: 'not-mine' });
+  assert.deepEqual(listArgs({ scope: 'bogus' }), { limit: 200, who: 'mine' });
+  assert.deepEqual(FILTERS, ['mine', 'manager', 'agents', 'programs', 'not-mine', 'all']);
+  assert.ok(FILTERS.every((f) => FILTER_LABEL[f]));
+});
+
+test('mark args: one id or many, mine true/false/null', () => {
+  assert.deepEqual(markArgs('p_1', true), { ids: ['p_1'], mine: true });
+  assert.deepEqual(markArgs(['p_1', 'p_2'], false), { ids: ['p_1', 'p_2'], mine: false });
+  assert.deepEqual(markArgs('p_1', null), { ids: ['p_1'], mine: null });
 });
 
 test('pages merge by id, newest first', () => {
