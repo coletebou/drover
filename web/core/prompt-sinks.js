@@ -25,6 +25,7 @@ import { run } from './proc.js';
 import { gitEnv } from './git-env.js';
 import { envvar } from './envvars.js';
 import { readNewLines } from './search/indexer.js';
+import { redactSecrets } from './redact.js';
 
 export const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
 const BRANCH_RE = /^(?!-)(?!.*\.\.)(?!.*\/\/)(?!.*\.lock$)[A-Za-z0-9._/-]{1,100}(?<![/.])$/;
@@ -196,9 +197,13 @@ export class Sinks {
       const recs = [];
       let end = from;
       for await (const win of readNewLines(file, from, size)) {
-        for (const line of win.lines) {
+        for (let line of win.lines) {
           let r; try { r = JSON.parse(line); } catch { continue; }
-          if (r && typeof r.id === 'string' && wants(sink, r.label)) recs.push(parse ? r : line);
+          if (!r || typeof r.id !== 'string' || !wants(sink, r.label)) continue;
+          // Redacted again on the way out, with today's rules: a record collected before a rule existed (a PEM header
+          // left around a redacted key body) reaches no sink as it was. The id stays the record's.
+          if (typeof r.text === 'string') { const t = redactSecrets(r.text); if (t !== r.text) { r = { ...r, text: t }; line = JSON.stringify(r); } }
+          recs.push(parse ? r : line);
         }
         end = win.end;
       }
@@ -209,6 +214,15 @@ export class Sinks {
   }
 
   // ---------------------------------------------------------------- git
+
+  /**
+   * Locks git left in this sink's own clone by a run that died (the daemon restarted mid-commit): only this daemon
+   * touches the clone (prompts.sync runs in the daemon alone) and its syncs of one sink never overlap (busy), so a lock
+   * there at the start of a sync is never another live git's.
+   */
+  async #clearStaleLocks(repo) {
+    for (const f of ['index.lock', 'HEAD.lock', 'config.lock', 'shallow.lock', 'packed-refs.lock']) await rm(path.join(repo, '.git', f), { force: true }).catch(() => {});
+  }
 
   #git(cwd, args, { timeoutMs = LOCAL_MS, okCodes } = {}) {
     return run('git', args, { cwd, env: gitEnv(), timeoutMs, ...(okCodes ? { okCodes } : {}) });
@@ -221,7 +235,10 @@ export class Sinks {
     if (!existsSync(path.join(repo, '.git'))) {
       await this.#git(repo, ['init', '-q']);
       await this.#git(repo, ['remote', 'add', 'origin', sink.remote]);
-    } else await this.#git(repo, ['remote', 'set-url', 'origin', sink.remote]);
+    } else {
+      await this.#clearStaleLocks(repo);
+      await this.#git(repo, ['remote', 'set-url', 'origin', sink.remote]);
+    }
     // The dedicated branch is the one checked out, whatever init called its first branch.
     const head = (await this.#git(repo, ['symbolic-ref', '-q', 'HEAD'], { okCodes: [0, 1] })).stdout.trim();
     if (head !== ref) await this.#git(repo, ['symbolic-ref', 'HEAD', ref]);

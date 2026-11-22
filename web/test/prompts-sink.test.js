@@ -167,3 +167,34 @@ describe('a command sink', () => {
     assert.deepEqual((await runs()).at(-1).ids, ['p_a000000000000005']);
   });
 });
+
+describe('a git sink after a crash, and records collected before a redaction rule', () => {
+  const remote = path.join(tmp, 'remote-crash.git');
+  const sink = { name: 'crash', type: 'git', labels: ['*'], remote, branch: 'drover-prompts', dir: 'prompts', sign: false };
+  const e = host('box-e');
+  before(() => { spawnSync('git', ['init', '-q', '--bare', remote], { env: process.env }); });
+  // An obviously fake key: what a paste looked like after the old rules redacted its body line by line.
+  const leftover = `my key\n-----BEGIN OPENSSH PRIVATE KEY-----\n[redacted]\n[redacted]\n-----END OPENSSH PRIVATE KEY-----\nthanks`;
+
+  test('a lock a dead git left in the clone does not stop the next sync', async () => {
+    await e.add(rec('box-a', 21, 'x'));
+    const [first] = await e.sinks.syncAll({ sinks: [sink] });
+    assert.equal(first.ok, true, first.error);
+    await writeFile(path.join(e.state, 'prompt-sinks', 'crash', '.git', 'index.lock'), '');
+    await e.add(rec('box-a', 22, 'x'));
+    const [second] = await e.sinks.syncAll({ sinks: [sink] }, { force: true });
+    assert.equal(second.ok, true, second.error);
+    assert.equal(second.added, 1);
+  });
+
+  test('a record is redacted again on its way to a sink: no PEM header reaches the remote', async () => {
+    await e.add({ ...rec('box-a', 23, 'x'), text: leftover });
+    const [r] = await e.sinks.syncAll({ sinks: [sink] }, { force: true });
+    assert.equal(r.ok, true, r.error);
+    const shown = spawnSync('git', ['show', 'drover-prompts:prompts/box-e/2026-11-21.jsonl'], { cwd: remote, encoding: 'utf8', env: process.env }).stdout;
+    const got = shown.trim().split('\n').map((l) => JSON.parse(l)).find((x) => x.id === 'p_a000000000000023');
+    assert.ok(got, 'the record reached the remote, under its own id');
+    assert.ok(!/PRIVATE KEY-----/.test(got.text), got.text);
+    assert.match(got.text, /^my key\n\[redacted private key\]\nthanks$/);
+  });
+});

@@ -3,6 +3,10 @@
 // It imports nothing, so the lowest modules can use it: core/proc.js builds its error texts with it. core/native.js
 // re-exports redactSecrets and redactArgv for their other callers.
 const REDACTIONS = [
+  // A PEM private key as a whole block, the BEGIN and END lines too: a body redacted line by line left the header, which
+  // secret scanners (gitleaks private-key) still flag. A header with no END in reach (a cut paste) goes on its own.
+  [/-----BEGIN ([A-Z0-9 ]*)PRIVATE KEY-----[\s\S]{0,16000}?-----END \1PRIVATE KEY-----/g, '[redacted private key]'],
+  [/-----(?:BEGIN|END) [A-Z0-9 ]*PRIVATE KEY-----/g, '[redacted private key]'],
   [/Bearer\s+\S+/g, '[redacted]'],
   [/sk-[A-Za-z0-9_-]{10,}/g, '[redacted]'],
   [/ghp_\w+/g, '[redacted]'],
