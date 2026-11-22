@@ -147,6 +147,20 @@ describe('kind-filtered vector leg', () => {
   });
 });
 
+describe('full-text legs keep the full-text table outermost', () => {
+  test('with a kinds filter the keyword and exact legs scan chunks_fts first, never the kind index row by row', () => {
+    const f = "SELECT c.hash AS hash, bm25(chunks_fts, 1.0, 0.4) AS r FROM chunks_fts CROSS JOIN chunks c ON c.id = chunks_fts.rowid WHERE chunks_fts MATCH ? AND c.kind IN (?) ORDER BY r LIMIT 4000";
+    const plan = store.db.prepare('EXPLAIN QUERY PLAN ' + f).all('"disk" OR "cortex"', 'reflection').map((r) => r.detail);
+    assert.match(plan[0], /SCAN chunks_fts/, plan.join(' | '));
+    assert.ok(!plan.some((d) => /chunks_kind_hash/.test(d)), plan.join(' | '));
+  });
+  test('the query source uses that join for both full-text legs', async () => {
+    const src = (await import('node:fs')).readFileSync(new URL('../core/search/query.js', import.meta.url), 'utf8');
+    assert.equal((src.match(/FROM chunks_fts CROSS JOIN chunks c/g) || []).length, 2);
+    assert.ok(!/FROM chunks_fts JOIN chunks/.test(src));
+  });
+});
+
 describe('robustness', () => {
   test('one input the model rejects is skipped alone; the rest of its batch is embedded; a down runtime marks nothing', async () => {
     const f = path.join(roots.claude, '-Users-x-code-webapp', 'poison.jsonl');
