@@ -296,15 +296,15 @@ export async function* readCompressedLines(file, offset, size, { window = READ_W
     const data = carry.length ? Buffer.concat([carry, chunk]) : chunk;
     const cut = data.lastIndexOf(0x0a);
     if (cut < 0) { carry = Buffer.from(data); continue; }
-    pending.push(data.subarray(0, cut));
-    pendingBytes += cut;
+    pending.push(data.subarray(0, cut + 1));   // with its newline, so two parts joined below keep their boundary
+    pendingBytes += cut + 1;
     carry = Buffer.from(data.subarray(cut + 1));
     if (pendingBytes >= window) {
       yield { lines: Buffer.concat(pending).toString('utf8').split('\n').filter(Boolean), end: 0 };
       pending = []; pendingBytes = 0;
     }
   }
-  if (carry.length) { pending.push(Buffer.from([0x0a]), carry); }
+  if (carry.length) pending.push(carry);
   const tail = pending.length ? Buffer.concat(pending).toString('utf8').split('\n').filter(Boolean) : [];
   yield { lines: tail, end: size };
 }

@@ -79,6 +79,11 @@ describe('transcript archives', () => {
     assert.ok(wins.length > 5, `windows ${wins.length}`);
     assert.deepEqual(wins.flatMap((w) => w.lines), lines, 'every line, in order, none split');
     assert.deepEqual(wins.map((w) => w.end), [...wins.slice(0, -1).map(() => 0), size]);
+    // A window larger than one decompressed chunk joins several: no line may run into the next where they meet.
+    const joined = [];
+    for await (const w of readCompressedLines(f, 0, size, { window: 100_000 })) joined.push(w);
+    assert.ok(joined.length >= 2 && joined.length < wins.length, `windows ${joined.length}`);
+    assert.deepEqual(joined.flatMap((w) => w.lines), lines);
     const noNewline = path.join(dir, 'tail.jsonl.zst');
     await writeFile(noNewline, zstdCompressSync(Buffer.from('a\nb')));
     const t = []; for await (const w of readCompressedLines(noNewline, 0, (await stat(noNewline)).size)) t.push(...w.lines);
