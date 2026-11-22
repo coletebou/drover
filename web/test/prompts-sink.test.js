@@ -202,6 +202,33 @@ describe('a git sink after a crash, and records collected before a redaction rul
     assert.equal(second.added, 1);
   });
 
+  test('a commit a hook refused is made on the next sync: the records reach the remote, none is skipped', async () => {
+    const g = host('box-g');
+    const remote2 = path.join(tmp, 'remote-hook.git');
+    spawnSync('git', ['init', '-q', '--bare', remote2], { env: process.env });
+    const hooked = { ...sink, name: 'hooked', remote: remote2 };
+    await g.add(rec('box-a', 31, 'x'));
+    const [first] = await g.sinks.syncAll({ sinks: [hooked] });
+    assert.equal(first.ok, true, first.error);
+    // A pre-commit hook (a secret scanner) refuses the next commit, the way the owner's gitleaks hook did.
+    const clone = path.join(g.state, 'prompt-sinks', 'hooked'), hooks = path.join(tmp, 'hooks-refuse'), refuse = path.join(tmp, 'refuse-now');
+    await mkdir(hooks, { recursive: true });
+    await writeFile(path.join(hooks, 'pre-commit'), `#!/bin/sh\n[ -e ${J(refuse)} ] && { echo "Finding: a fake secret" >&2; exit 1; }\nexit 0\n`, { mode: 0o755 });
+    spawnSync('git', ['config', 'core.hooksPath', hooks], { cwd: clone, env: process.env });
+    await writeFile(refuse, '');
+    await g.add(rec('box-a', 32, 'x'), rec('box-a', 33, 'x'));
+    const [refused] = await g.sinks.syncAll({ sinks: [hooked] }, { force: true });
+    assert.equal(refused.ok, false); assert.match(refused.error, /a fake secret/);
+    await rm(refuse);
+    const [ok] = await g.sinks.syncAll({ sinks: [hooked] }, { force: true });
+    assert.equal(ok.ok, true, ok.error);
+    assert.equal(ok.pushed, true);
+    const shown = spawnSync('git', ['show', 'drover-prompts:prompts/box-g/2026-11-21.jsonl'], { cwd: remote2, encoding: 'utf8', env: process.env }).stdout;
+    assert.deepEqual(shown.trim().split('\n').map((l) => JSON.parse(l).id), ['p_a000000000000031', 'p_a000000000000032', 'p_a000000000000033']);
+    const [st] = await g.sinks.status({ sinks: [hooked] });
+    assert.equal(st.pending, 0);
+  });
+
   test('a record is redacted again on its way to a sink: no PEM header reaches the remote', async () => {
     await e.add({ ...rec('box-a', 23, 'x'), text: leftover });
     const [r] = await e.sinks.syncAll({ sinks: [sink] }, { force: true });

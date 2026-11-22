@@ -269,9 +269,14 @@ export class Sinks {
       const lines = d.records.filter((l) => { const id = l.match(ID_IN)?.[1]; if (!id || have.has(id)) return false; have.add(id); return true; });
       if (lines.length) { await appendFile(file, lines.join('\n') + '\n'); added += lines.length; }
     }
-    if (added) {
+    // Commit what this host's directory holds that is not committed yet, not only what this sync appended: a commit
+    // that failed (a hook refused it) left records in the files, which the next sync finds there and does not append
+    // again. Counted from the staged diff, so the message says how many lines the commit carries.
+    if (existsSync(hostAbs)) {
       await this.#git(repo, ['add', '--', hostRel], { timeoutMs: COMMIT_MS });
-      await this.#git(repo, ['-c', `commit.gpgsign=${sink.sign ? 'true' : 'false'}`, 'commit', '-q', '-m', `prompts: ${this.host} +${added}`, '--', hostRel], { timeoutMs: COMMIT_MS });
+      const numstat = (await this.#git(repo, ['diff', '--cached', '--numstat', '--', hostRel], { timeoutMs: COMMIT_MS })).stdout;
+      const lines = numstat.split('\n').reduce((n, l) => n + (Number(l.split('\t')[0]) || 0), 0);
+      if (lines) await this.#git(repo, ['-c', `commit.gpgsign=${sink.sign ? 'true' : 'false'}`, 'commit', '-q', '-m', `prompts: ${this.host} +${lines}`, '--', hostRel], { timeoutMs: COMMIT_MS });
     }
     // Delivered to the clone: the spool positions move now, the push below (or the next sync's) carries them out.
     for (const d of days) st.offsets[d.day] = d.end;

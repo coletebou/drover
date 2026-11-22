@@ -12,6 +12,8 @@ const REDACTIONS = [
   [/ghp_\w+/g, '[redacted]'],
   [/gh[ousr]_\w+/g, '[redacted]'],
   [/glpat-[\w-]+/g, '[redacted]'],
+  // GitLab's other token kinds: deploy, feed, runner, pipeline trigger, SCIM, CI build, incoming mail, agent, OAuth secret.
+  [/\bgl(?:dt|ft|rt|ptt|soat|cbt|imt|agent|oas)-[\w-]{16,}/g, '[redacted]'],
   [/xox[abpr]-[\w-]+/g, '[redacted]'],
   [/AKIA[0-9A-Z]{16}/g, '[redacted]'],
   [/ABSK[A-Za-z0-9+/=]{20,}/g, '[redacted]'],
