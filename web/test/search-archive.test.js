@@ -2,13 +2,13 @@
 // keeping the machine it came from, zstd-compressed copies read whole, and a tenant search never admitting them.
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, stat } from 'node:fs/promises';
 import { zstdCompressSync } from 'node:zlib';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 const { Store } = await import('../core/search/store.js');
-const { Indexer, archiveRoots, listSources } = await import('../core/search/indexer.js');
+const { Indexer, archiveRoots, listSources, readCompressedLines } = await import('../core/search/indexer.js');
 const { search } = await import('../core/search/query.js');
 
 const j = (o) => JSON.stringify(o) + '\n';
@@ -67,6 +67,38 @@ describe('transcript archives', () => {
     assert.ok(!rows.some((x) => /stale compressed/.test(x.text)));
     const again = await idx.tick({ embed: false });
     assert.equal(again.changed, 0, 'nothing changed: nothing read again');
+  });
+
+  test('a compressed copy is streamed a window at a time; only the last window reports the end', async () => {
+    const f = path.join(dir, 'big.jsonl.zst');
+    const lines = Array.from({ length: 6000 }, (_, i) => JSON.stringify({ i, pad: 'x'.repeat(i % 37) }));
+    await writeFile(f, zstdCompressSync(Buffer.from(lines.join('\n') + '\n')));
+    const { size } = await stat(f);
+    const wins = [];
+    for await (const w of readCompressedLines(f, 0, size, { window: 256 })) wins.push(w);
+    assert.ok(wins.length > 5, `windows ${wins.length}`);
+    assert.deepEqual(wins.flatMap((w) => w.lines), lines, 'every line, in order, none split');
+    assert.deepEqual(wins.map((w) => w.end), [...wins.slice(0, -1).map(() => 0), size]);
+    // A window larger than one decompressed chunk joins several: no line may run into the next where they meet.
+    const joined = [];
+    for await (const w of readCompressedLines(f, 0, size, { window: 100_000 })) joined.push(w);
+    assert.ok(joined.length >= 2 && joined.length < wins.length, `windows ${joined.length}`);
+    assert.deepEqual(joined.flatMap((w) => w.lines), lines);
+    const noNewline = path.join(dir, 'tail.jsonl.zst');
+    await writeFile(noNewline, zstdCompressSync(Buffer.from('a\nb')));
+    const t = []; for await (const w of readCompressedLines(noNewline, 0, (await stat(noNewline)).size)) t.push(...w.lines);
+    assert.deepEqual(t, ['a', 'b'], 'a last line with no newline is kept');
+  });
+
+  test('a compressed copy a pass left partway is read again from the start, with no duplicate chunks', async () => {
+    const zp = path.join(archive, 'box-b', 'claude-projects', '-home-u-code-webapp', 'old2.jsonl.zst');
+    const count = () => store.db.prepare('SELECT COUNT(*) AS n FROM chunks WHERE path = ?').get(zp).n;
+    const before = count();
+    assert.ok(before > 0);
+    store.db.prepare('UPDATE sources SET size = -1, offset = 0 WHERE path = ?').run(zp);
+    await idx.tick({ embed: false });
+    assert.equal(count(), before);
+    assert.equal(store.source(zp).offset, (await stat(zp)).size);
   });
 
   test('a keyword search finds an archived hit and says whose it was; a tenant search admits no archived copy', async () => {
