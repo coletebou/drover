@@ -395,6 +395,11 @@ export class App {
   mouse(ev) {
     const { cols, rows } = this.term.size();
     if (cols < 40 || rows < 10) return;
+    // A key that changed the view (a digit, Tab) may not be drawn yet: the hit regions and the view's own layout are the
+    // last frame's, so a click right after would land on what the old view had there (a sub-tab of the workspace just
+    // left). Draw first when the front view is not the one the last frame showed. Within one view nothing is redrawn
+    // here, so a click on a strip still acts on exactly what was drawn (the answer guard's screen hash).
+    if (this.drawTimer && this.front() !== this.drawnView) { clearTimeout(this.drawTimer); this.drawTimer = null; this.draw(); }
     if (ev.kind === 'move') { this.#move(ev, rows); return; }
     if (this.modal) { if (this.modal.mouse?.(ev)) this.invalidate(); return; }
     const click = ev.kind === 'down' && ev.button === 0;
@@ -440,6 +445,7 @@ export class App {
     const { cols, rows } = this.term.size();
     if (cols < 40 || rows < 10) { this.screen.draw([[[' make the window bigger (40x10 at least)', 'bold']]], { rows, cols }); return; }
     const v = this.front();
+    this.drawnView = v;
     const frame = [this.#tabBar(cols), this.#subBar(cols)];
     let body;
     try { body = v.render(cols, rows - 3); } catch (e) { body = [[[` this view failed to draw: ${e.message}`, 'err']]]; }
