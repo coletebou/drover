@@ -1191,12 +1191,41 @@ async function hostStacks(h, args, { fresh }) {
 }
 
 /**
- * The hosts a fleet-wide search asks: the ones named, or local plus every fleet host that answered the last probe.
- * Never probed on this machine (and no persisted probe): probe once now rather than silently searching only here.
+ * The fleet hosts a machine of this identity may read, from the fleet catalog (core/placement.js): with a catalog,
+ * this identity's catalog machines only (a listed host the catalog leaves out, or gives another identity, is never
+ * asked); a catalog that does not parse leaves only this machine; with none, every known host. named: the hosts a
+ * caller named, refused when the catalog gives one to another identity (an uncatalogued name, a provider's host or
+ * an ssh alias, stays the caller's choice). Pure: { known, refused } (test/search-coverage.test.js).
+ */
+export function fleetScope(known, cat, me, named = []) {
+  if (!cat?.found) {
+    if (cat?.invalid) return { known: known.filter((h) => h.name === hosts.LOCAL), refused: named.filter((n) => n !== hosts.LOCAL).map((n) => ({ host: n, reason: `this machine's fleet catalog is invalid (${cat.errors?.[0] ?? cat.file})` })) };
+    return { known, refused: [] };
+  }
+  const mine = new Set(placement.scoped(cat, me?.identity).flatMap((h) => placement.hostNames(h)));
+  const catalogued = new Set(cat.hosts.flatMap((h) => placement.hostNames(h)));
+  const fleet = me?.identity ? `the ${me.identity} fleet` : 'this machine\'s fleet (this machine has no identity in the catalog)';
+  return {
+    known: known.filter((h) => h.name === hosts.LOCAL || mine.has(String(h.name).toLowerCase())),
+    refused: named.filter((n) => n !== hosts.LOCAL && catalogued.has(String(n).toLowerCase()) && !mine.has(String(n).toLowerCase()))
+      .map((n) => ({ host: n, reason: `${n} is not a host of ${fleet}` })),
+  };
+}
+
+/**
+ * The hosts a fleet-wide search asks: the ones named, or local plus every host of this machine's fleet (fleetScope)
+ * that answered the last probe. Never probed on this machine (and no persisted probe): probe once now rather than
+ * silently searching only here.
  */
 async function fleetTargets(names) {
-  const known = await hosts.knownHosts();
-  if (names?.length) { for (const t of names) await hosts.assertKnownHost(t); return { targets: names, known }; }
+  const cat = await placement.loadCatalog();
+  const me = await placement.whoAmI(cat, hosts.localShortName());
+  const { known, refused } = fleetScope(await hosts.knownHosts(), cat, me, names ?? []);
+  if (names?.length) {
+    if (refused.length) throw new Error(refused[0].reason);
+    for (const t of names) await hosts.assertKnownHost(t);
+    return { targets: names, known };
+  }
   await probeRestored;
   const others = known.filter((h) => h.name !== hosts.LOCAL).map((h) => h.name);
   if (!lastProbe.size) rememberProbe(await hosts.probeAll(others).catch(() => []));
