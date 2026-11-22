@@ -14,6 +14,11 @@ A Manifest V3 extension for Drover, the local daemon that controls Claude Code a
 - Notifications: a desktop notification when a session needs a decision or asks a question. A dialog alert
   has Approve (Enter) and Deny (Esc) (Deliver and Drop for a held peer message), answered on the screen the
   alert was raised for; other alerts have Reply and Open.
+- Side panel Prompts (the Chat | Prompts switch at its top, or the popup's Prompts link): recent prompts from every
+  machine, newest first (`prompts.list`, the daemon's "Mine" set), a search box the daemon answers (every word must
+  match), Older prompts for the next page, a click to read one whole (verbatim, never Markdown), Copy on each, Open
+  for a prompt whose session is on the board (it switches to Chat on that session), and Open in Drover
+  (`#/prompts/mine`, with the search). Pure half: `lib/prompts.js`; drawn by `ui/prompts.js`.
 - Side panel chat: the manager is pinned first and is the default when nothing waits. A session's transcript
   shows its messages, its tool calls grouped with their results ("Ran 3 commands, read 2 files", expandable,
   errors marked) and Markdown text; a session on a dialog gets an answer card with its keys.
@@ -89,7 +94,7 @@ node tools/fake-daemon.mjs       # synthetic daemon on a local port, prints its 
 node tools/make-icons.mjs        # regenerate icons/*.png
 ```
 
-The fake daemon (`--port 7399` by default) prints `token: test-token-not-secret`. That token is fake, not a secret. It serves the fixtures in `test/fixtures`, answers `sessions.answer` (refusing a stale hash) and `native.board`, filters the stream by `?topics=` and streams a `wait: false` manager reply as `manager` and `turn` events.
+The fake daemon (`--port 7399` by default) prints `token: test-token-not-secret`. That token is fake, not a secret. It serves the fixtures in `test/fixtures` (and `prompts.*` from the shared `native/Fixtures`, filtered by via, `q`, `before` and `limit`), answers `sessions.answer` (refusing a stale hash) and `native.board`, filters the stream by `?topics=` and streams a `wait: false` manager reply as `manager` and `turn` events.
 It also answers pairing: for each request it prints the `curl` command that approves the code (the stand-in for
 `drover pair approve`).
 
@@ -98,10 +103,14 @@ The pure modules behind the views: `lib/answer.js` (dialog keys as buttons, the 
 conversation from the send, the stream and transcript reads) and `lib/topics.js`. The `ui/` modules draw them
 with textContent only.
 
-`node tools/headless.mjs --url http://127.0.0.1:7338 --out /tmp/shots [--scene popup|panel|bg|review]` runs the real
+Links into the web UI use its workspace routes (`lib/links.js`: `#/agents/lanes`, `#/manager`, `#/prompts/mine`);
+`test/prompts.test.js` checks each against `web/ui/routes.js` when it is in the checkout.
+
+`node tools/headless.mjs --url http://127.0.0.1:7338 --out /tmp/shots [--scene popup|panel|prompts|bg|review]` runs the real
 popup and side panel in headless Chrome for Testing (branded Chrome no longer loads unpacked extensions from the
 command line) against the dev world (`node web/test/devworld.js --port 7338 --gateway 18799`), presses dialog keys,
-asks the manager and saves light and dark screenshots; `bg` checks the service worker's stream with no page
+asks the manager and saves light and dark screenshots; `prompts` reads the side panel's Prompts on the daemon's real
+`prompts.list` (a page, a search, a prompt whole, Copy read back from the clipboard, the popup's link); `bg` checks the service worker's stream with no page
 asking; `review` presses a fresh dialog alert through the real button handler (and refuses it after a server
 change) and runs the side panel with the stream failing. It refuses the live daemon on 7337. The copy of the extension it loads adds a host permission for that
 one server, since an unpacked extension's optional permission needs a click.

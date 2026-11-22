@@ -3,7 +3,8 @@
 // while open; the service worker's poll is the fallback.
 import { h, render } from './ui/dom.js';
 import { boardModel, replyState } from './lib/board.js';
-import { sessionUrl, boardUrl, managerUrl } from './lib/links.js';
+import { sessionUrl, boardUrl, managerUrl, promptsUrl } from './lib/links.js';
+import { SESSION } from './lib/settings.js';
 import { plural } from './lib/text.js';
 import { normalizeSummary, normalizeBoard, isOwner } from './lib/summary.js';
 import { answerPlan, pressKey } from './lib/answer.js';
@@ -91,9 +92,21 @@ function renderHeader() {
       h('button', { type: 'button', class: 'ghost icon', onclick: refresh, disabled: refreshing, 'aria-label': 'Refresh', title: 'Refresh now' }, '↻'),
       hasPanel ? h('button', { type: 'button', class: 'ghost', onclick: () => panelFor(target) }, 'Side panel') : null,
       h('button', { type: 'button', class: 'ghost icon', 'aria-label': 'Options', title: 'Options', onclick: openOptions }, '⚙'),
+      h('button', { type: 'button', class: 'ghost', onclick: openPrompts, title: hasPanel ? 'Your prompts, in the side panel' : 'Prompts › Mine in Drover' }, 'Prompts'),
       h('button', { type: 'button', onclick: () => openWeb(null) }, 'Open Drover')),
     m.status === 'ok' || m.status === 'stale' ? totalsLine(m) : null,
     h('div', { class: 'status-line', 'aria-live': 'polite', role: 'status' }, refreshing ? 'Refreshing' : live ? '' : (m.updated === 'now' ? 'Updated just now' : m.updated ? `Updated ${m.updated} ago` : '')));
+}
+
+/** Prompts: the side panel's Prompts section where there is one (opened inside the click), else the web UI's. */
+function openPrompts() {
+  if (hasPanel && windowId != null) {
+    chrome.storage.session.set({ [SESSION.PANEL_MODE]: 'prompts' });
+    chrome.sidePanel.open({ windowId });
+    window.close();
+    return;
+  }
+  getOrigin().then((o) => { if (!o) return openOptions(); chrome.tabs.create({ url: promptsUrl(o) }); });
 }
 
 function panelFor(s) {
