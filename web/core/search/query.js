@@ -121,10 +121,13 @@ export async function search(store, engine, q) {
   const legs = { fts: new Map(), vec: new Map(), exact: new Set() };
   const notes = [];
 
+  // Both full-text legs join with CROSS JOIN, which fixes the full-text table as the outer loop. With a plain JOIN
+  // and a kinds filter, SQLite 3.51 (node:sqlite) chose to walk chunks_kind_hash for every chunk of that kind and run
+  // the MATCH once per row: a reflections-only search took minutes and held the daemon (2026-11-22).
   // ---- keyword leg (BM25, one row per hash; the inner LIMIT bounds the work)
   if (mode !== 'semantic' && terms.length) {
     const rows = store.db.prepare(`SELECT hash, MIN(r) AS r FROM (SELECT c.hash AS hash, bm25(chunks_fts, 1.0, 0.4) AS r
-      FROM chunks_fts JOIN chunks c ON c.id = chunks_fts.rowid WHERE chunks_fts MATCH ?${f.sql} ORDER BY r LIMIT ${LEG * 20})
+      FROM chunks_fts CROSS JOIN chunks c ON c.id = chunks_fts.rowid WHERE chunks_fts MATCH ?${f.sql} ORDER BY r LIMIT ${LEG * 20})
       GROUP BY hash ORDER BY r LIMIT ${LEG}`).all(match(ftsExpr(terms)), ...f.args);
     rows.forEach((r, i) => legs.fts.set(r.hash, i + 1));
   }
@@ -133,7 +136,7 @@ export async function search(store, engine, q) {
     const parts = ftsTerms(tok);
     if (!parts.length) continue;
     const rows = store.db.prepare(`SELECT hash, MAX(ts) AS ts FROM (SELECT c.hash AS hash, c.ts AS ts
-      FROM chunks_fts JOIN chunks c ON c.id = chunks_fts.rowid WHERE chunks_fts MATCH ? AND instr(lower(c.text), ?) > 0${f.sql} ORDER BY c.ts DESC LIMIT ${LEG * 20})
+      FROM chunks_fts CROSS JOIN chunks c ON c.id = chunks_fts.rowid WHERE chunks_fts MATCH ? AND instr(lower(c.text), ?) > 0${f.sql} ORDER BY c.ts DESC LIMIT ${LEG * 20})
       GROUP BY hash ORDER BY ts DESC LIMIT ${LEG}`).all(match(parts.map((p) => `"${p}"*`).join(' ')), tok.toLowerCase(), ...f.args);
     for (const r of rows) legs.exact.add(r.hash);
   }
