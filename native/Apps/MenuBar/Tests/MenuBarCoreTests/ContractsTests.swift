@@ -62,7 +62,7 @@ import Testing
         let base = URL(string: "http://127.0.0.1:7337")!
         #expect(Links.webSession(base: base, id: "s 1", host: "", engine: "claude", name: "demo/x").absoluteString
                 == "http://127.0.0.1:7337/#/pop/session/local/s%201/claude/demo%2Fx")
-        #expect(Links.webBoard(base: base).absoluteString == "http://127.0.0.1:7337/#/board")
+        #expect(Links.webBoard(base: base).absoluteString == "http://127.0.0.1:7337/#/agents/lanes")
     }
 }
 
