@@ -34,6 +34,7 @@ import { OWNER } from '../core/owner.js';
 import * as openclaw from '../core/openclaw.js';
 import * as vitals from '../core/vitals.js';
 import * as placement from '../core/placement.js';
+import * as mailbox from '../core/mailbox.js';
 
 const UI_DIR = path.join(dirname(fileURLToPath(import.meta.url)), '..', 'ui');
 const STATE_DIR = stateDir();
@@ -434,6 +435,13 @@ export function startSnapshots({ everyMs = 15_000 } = {}) {
   stops.push(startSearch());
   // The prompt spool (core/prompts.js): every prompt typed here, a pass every minute, sinks every syncEveryMinutes.
   stops.push(startPrompts());
+  // The mailbox puller (core/mailbox.js): only on a host that takes no inbound ssh and sets DROVER_MAILBOX_PULL. It
+  // collects the messages other hosts kept for it and delivers them to its own sessions.
+  stops.push(mailbox.startPuller({
+    hosts: async () => (await hosts.knownHosts()).filter((h) => h.name !== hosts.LOCAL).map((h) => h.name),
+    call: (host, op, args) => dispatch(op, { host, ...args }),
+    deliver: (args) => dispatch('sessions.message', args),
+  }));
   // This machine's vitals every minute; a sustained shortage becomes a resource alert in the ring (never the truth
   // file), which front daemons pull with notify.recent. The fleet catalog says whether it runs here (core/vitals.js).
   stops.push(vitals.startMonitor({ emit: (list) => notifier.emit(list, { record: false }), policy: () => placement.monitorPolicy({ shortName: hosts.localShortName() }) }));
