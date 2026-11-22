@@ -71,7 +71,7 @@ describe('transcript archives', () => {
 
   test('a compressed copy is streamed a window at a time; only the last window reports the end', async () => {
     const f = path.join(dir, 'big.jsonl.zst');
-    const lines = Array.from({ length: 500 }, (_, i) => JSON.stringify({ i, pad: 'x'.repeat(i % 37) }));
+    const lines = Array.from({ length: 6000 }, (_, i) => JSON.stringify({ i, pad: 'x'.repeat(i % 37) }));
     await writeFile(f, zstdCompressSync(Buffer.from(lines.join('\n') + '\n')));
     const { size } = await stat(f);
     const wins = [];
