@@ -16,7 +16,8 @@
 import { readdir, stat, open, readFile } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import { zstdDecompressSync } from 'node:zlib';
+import { createZstdDecompress } from 'node:zlib';
+import { createReadStream } from 'node:fs';
 import { claudeLine, codexLine, codexAttribute, codexState, PENDING, walEvent, memoryDoc, docSections, reflectionItem, projectOf } from './extract.js';
 import { chunkText } from './chunk.js';
 import { quantize } from './vec.js';
@@ -282,14 +283,30 @@ export async function* readNewLines(file, offset, size, { window = READ_WINDOW }
 }
 
 /**
- * readNewLines for a zstd-compressed transcript (<name>.jsonl.zst in an archive): an archived session no longer
- * changes, so it is read whole, as one window ending at the file's (compressed) size, from the start unless it was
- * read to the end already.
+ * readNewLines for a zstd-compressed transcript (<name>.jsonl.zst in an archive). An archived session no longer
+ * changes, so it is read from the start, decompressed as a stream a window at a time (a long Codex rollout runs past
+ * half a gigabyte, more than one string can hold). Only the last window reports the file's (compressed) size as its
+ * end; the ones before it report 0, so a pass that stops partway leaves the file to be read again from the start
+ * (indexSource drops what that partial read added) rather than resumed at a position that means nothing in it.
  */
-export async function* readCompressedLines(file, offset, size) {
+export async function* readCompressedLines(file, offset, size, { window = READ_WINDOW } = {}) {
   if (offset >= size) return;
-  const text = zstdDecompressSync(await readFile(file)).toString('utf8');
-  yield { lines: text.split('\n').filter(Boolean), end: size };
+  let carry = Buffer.alloc(0), pending = [], pendingBytes = 0;
+  for await (const chunk of createReadStream(file).pipe(createZstdDecompress())) {
+    const data = carry.length ? Buffer.concat([carry, chunk]) : chunk;
+    const cut = data.lastIndexOf(0x0a);
+    if (cut < 0) { carry = Buffer.from(data); continue; }
+    pending.push(data.subarray(0, cut));
+    pendingBytes += cut;
+    carry = Buffer.from(data.subarray(cut + 1));
+    if (pendingBytes >= window) {
+      yield { lines: Buffer.concat(pending).toString('utf8').split('\n').filter(Boolean), end: 0 };
+      pending = []; pendingBytes = 0;
+    }
+  }
+  if (carry.length) { pending.push(Buffer.from([0x0a]), carry); }
+  const tail = pending.length ? Buffer.concat(pending).toString('utf8').split('\n').filter(Boolean) : [];
+  yield { lines: tail, end: size };
 }
 
 export class Indexer {
@@ -417,7 +434,10 @@ export class Indexer {
     let n = 0, firstUser = null, end = offset, skipped = null;
     // One transaction per window, and the read position saved after each, so a
     // 100 MB transcript neither sits in memory whole nor holds the event loop.
-    for await (const win of (src.path.endsWith('.zst') ? readCompressedLines : readNewLines)(src.path, offset, src.size)) {
+    // A compressed copy is read whole: one that a pass left partway (offset short of its size) starts over clean.
+    const zst = src.path.endsWith('.zst');
+    if (zst && prev && offset < src.size && (offset > 0 || prev.size === -1)) { this.store.purgeSource(src.path); offset = 0; }
+    for await (const win of (zst ? readCompressedLines : readNewLines)(src.path, offset, src.size)) {
       const rows = [];
       // A run of consecutive tool calls is one command chunk (keyword-only, see store.js KEYWORD_ONLY): a session runs
       // hundreds of commands, and a row each would multiply the index for no better match.
