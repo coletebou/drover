@@ -3,6 +3,8 @@
 # accepted (xcodebuild/swift build refuse without it; swiftc -typecheck does not).
 # usage: script/typecheck.sh <macos|ios|watchos> <swift files or dirs...>
 # It type-checks only: no link, no sign, no run. Say so in your report.
+# A file that imports DroverKit gets it as a module: its sources are compiled to a .swiftmodule for the same SDK
+# and target first (in a temp dir), the way the apps' tools/*.sh link it, so app files that import it are covered.
 set -euo pipefail
 plat="${1:?macos|ios|watchos}"; shift
 X=/Applications/Xcode.app/Contents/Developer/Platforms
@@ -19,5 +21,14 @@ for p in "$@"; do if [ -d "$p" ]; then while IFS= read -r f; do files+=("$f"); d
 # Tools toolchain has Observation's but not SwiftUI's), so point swiftc at the platform's plugin dir.
 plat_dir=$X/$(case "$plat" in macos) echo MacOSX;; ios) echo iPhoneOS;; watchos) echo WatchOS;; esac).platform
 plugins=(); [ -d "$plat_dir/Developer/usr/lib/swift/host/plugins" ] && plugins=(-plugin-path "$plat_dir/Developer/usr/lib/swift/host/plugins")
-env -u DEVELOPER_DIR swiftc -typecheck -parse-as-library -swift-version 6 -sdk "$SDK" -target "$TGT" ${plugins[@]+"${plugins[@]}"} "${files[@]}"
+kit=()
+if grep -lq '^import DroverKit' "${files[@]}" 2>/dev/null; then
+  kit_src="$(cd "$(dirname "$0")/../Packages/DroverKit/Sources/DroverKit" && pwd)"
+  kit_out="$(mktemp -d)"; trap 'rm -rf "$kit_out"' EXIT
+  kit_files=(); while IFS= read -r f; do kit_files+=("$f"); done < <(find "$kit_src" -name '*.swift')
+  env -u DEVELOPER_DIR swiftc -parse-as-library -swift-version 6 -module-name DroverKit -sdk "$SDK" -target "$TGT" \
+    ${plugins[@]+"${plugins[@]}"} -emit-module -emit-module-path "$kit_out/DroverKit.swiftmodule" "${kit_files[@]}"
+  kit=(-I "$kit_out")
+fi
+env -u DEVELOPER_DIR swiftc -typecheck -parse-as-library -swift-version 6 -sdk "$SDK" -target "$TGT" ${plugins[@]+"${plugins[@]}"} ${kit[@]+"${kit[@]}"} "${files[@]}"
 echo "typecheck ok: $plat (${#files[@]} files)"
