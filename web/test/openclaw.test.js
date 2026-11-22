@@ -366,10 +366,19 @@ test('console: check flags launcher switches that are missing and passes a clean
   await mkdir(lay.bin, { recursive: true });
   await writeFile(lay.launcher, install.renderLauncher(lay, { node: '/opt/fake/node', mjs: '/opt/fake/openclaw.mjs' }, install.loadProfile('default')));
   await writeFile(path.join(state, '.env'), `OPENCLAW_GATEWAY_TOKEN=${TOKEN}\nAWS_BEARER_TOKEN_BEDROCK=EXAMPLE_bearer\nEXA_API_KEY=EXAMPLE_exa\nOPENCLAW_HOOKS_TOKEN=EXAMPLE_hooks\n`);
-  await writeFile(path.join(state, 'openclaw.json'), JSON.stringify({ models: { providers: { x: { baseUrl: 'https://bedrock-mantle.us-east-1.api.aws/openai/v1' } } }, update: { checkOnStart: false }, telemetry: { enabled: false }, tools: { web: { fetch: { enabled: false } } } }));
+  // Web fetch on, as the shipped openclaw.json has it: that is a granted power, not a phone-home switch.
+  const clean = { models: { providers: { x: { baseUrl: 'https://bedrock-mantle.us-east-1.api.aws/openai/v1' } } }, update: { checkOnStart: false }, telemetry: { enabled: false }, tools: { web: { fetch: { enabled: true } } } };
+  await writeFile(path.join(state, 'openclaw.json'), JSON.stringify(clean));
   r = await openclaw.check();
   assert.equal(r.ok, true, JSON.stringify(r.unexpected));
   assert.equal(r.profile, 'default');
+  assert.ok(!r.items.some((i) => i.name === 'tools.web.fetch.enabled'), 'web fetch is not checked as a switch');
+  // A phone-home switch left on still fails the check.
+  await writeFile(path.join(state, 'openclaw.json'), JSON.stringify({ ...clean, telemetry: { enabled: true } }));
+  r = await openclaw.check();
+  assert.equal(r.ok, false);
+  assert.ok(r.unexpected.includes('switch: telemetry.enabled (is true)'), JSON.stringify(r.unexpected));
+  await writeFile(path.join(state, 'openclaw.json'), JSON.stringify(clean));
 });
 
 test('console: an install whose profile lives in an overlay is checked against that profile, from the manifest or DROVER_OPENCLAW_OVERLAY', async () => {
