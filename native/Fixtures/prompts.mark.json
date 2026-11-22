@@ -1,0 +1,11 @@
+{
+  "ok": true,
+  "ms": 5,
+  "cache": null,
+  "result": {
+    "ok": true,
+    "ids": ["p_0d1e2f3a4b5c6d7e", "p_1a2b3c4d5e6f7081"],
+    "mine": false,
+    "event": "ev-demo-mark-0001"
+  }
+}

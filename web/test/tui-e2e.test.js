@@ -169,7 +169,7 @@ describe('drover tui against a current daemon', { skip: hasTmux ? false : 'tmux 
     c.tmux.keys('t', 'Escape'); c.tmux.keys('t', '3');
     s = await c.until((x) => x.includes('Prompts · Mine') && x.includes('Keep the old API:'), 'Prompts with the detail');
     assert.match(s, /when host\s+engine\s+project\s+via\s+text/);
-    assert.ok(c.daemon.callsOf('prompts.list').some((x) => Array.isArray(x.args.via) && !x.args.via.includes('peer')), 'Mine asks for what a person sent');
+    assert.ok(c.daemon.callsOf('prompts.list').some((x) => x.args.who === 'mine'), 'Mine asks for what a person sent');
     const row = at(s, 'write the release notes (#2)');
     c.tmux.move('t', row.x, row.y);
     await c.until((x) => x.split('\n')[44].trimEnd().endsWith('write the release notes (#2)'), 'the hovered prompt previewed in the bottom bar');

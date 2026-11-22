@@ -17,13 +17,14 @@ struct PromptsListView: View {
                     Text("Prompts").font(Theme.titleFont(17)).foregroundStyle(Theme.ink)
                     Spacer()
                     Picker("Scope", selection: $p.scope) {
-                        Text("Mine").tag(PromptsQuery.Scope.mine)
-                        Text("All").tag(PromptsQuery.Scope.all)
+                        ForEach(PromptsQuery.Scope.allCases) { s in
+                            Text(s.title).tag(s)
+                        }
                     }
-                    .pickerStyle(.segmented)
+                    .pickerStyle(.menu)
                     .labelsHidden()
                     .fixedSize()
-                    .help("Mine: what you typed, queued or sent through Drover. All: every turn, agents and programs too.")
+                    .help("Mine: what you actually typed, into a session, tmux, Drover, or the manager. Manager: just your messages to the fleet manager. Agents: other sessions and their drover_send messages. Programs: headless launches and scripted runs. Not mine: everything not marked mine. All: every prompt.")
                 }
                 HStack(spacing: 6) {
                     TextField("Search every prompt (all words must match)", text: $p.search)
@@ -122,6 +123,7 @@ struct PromptsListView: View {
                                 listFocused = true
                                 model.prompts.selectedID = r.id
                             }
+                            .contextMenu { markMenu(r, model) }
                             .onAppear { if r.id == p.records.last?.id { model.prompts.loadMore() } }
                     }
                     if p.more || p.loadingMore {
@@ -236,6 +238,9 @@ struct PromptDetailView: View {
                     Button("Open session") { model.prompts.openSession(r) }
                         .disabled(strip == nil)
                         .help(strip.map { "Open \($0.name) on the board" } ?? "That session is not on the board now")
+                    Menu("Mark") { markMenu(r, model) }
+                        .fixedSize()
+                        .help("Mark this prompt mine or not mine (prompts.mark), fleet-wide")
                 }
                 .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 10)
                 Divider().overlay(Theme.line)
@@ -271,6 +276,7 @@ struct PromptDetailView: View {
             ("Folder", r.cwd),
             ("Label", r.label),
             ("Came", r.via.map { $0.label.isEmpty ? "typed" : $0.label } .map { v in r.from.map { "\(v), from \($0)" } ?? v }),
+            ("Mine", r.mine.map { ($0 ? "yes" : "no") + (r.marked == true ? ", marked by \(r.actor ?? "a person")" : "") }),
             ("Session", r.session.map { s in strip.map { "\($0.name) · \(s)" } ?? s }),
             ("Source", r.source),
             ("Id", r.id),
@@ -283,5 +289,18 @@ struct PromptDetailView: View {
                 }
             }
         }
+    }
+}
+
+/// Mark mine / Mark not mine, and Clear mark once a person's mark decided it: `prompts.mark`, fleet-wide. Shared by
+/// the row's context menu and the detail pane's Mark menu.
+@ViewBuilder
+func markMenu(_ r: PromptRecord, _ model: AppModel) -> some View {
+    let isMine = r.mine ?? false
+    Button(isMine ? "Mark not mine" : "Mark mine") {
+        Task { await model.prompts.mark(r, mine: !isMine) }
+    }
+    if r.marked == true {
+        Button("Clear mark") { Task { await model.prompts.mark(r, mine: nil) } }
     }
 }

@@ -7,11 +7,13 @@ shares (docs/specs/2026-11-21-cohesion-overhaul.md):
   health (from `native.summary`). List: every session on every reachable host, grouped by host, with search and a
   state filter. The tab reopens the one shown last; deep links and `--mock-tab board|sessions` pick one.
 - **Prompts**: every prompt typed into Claude Code or Codex on every machine, newest first (`prompts.list`, DroverKit's
-  models; `Sources/Prompts`). Mine or All at the top (All asks for `via: "all"`), a search field asked of the daemon
-  (every word must match, debounced), pull to refresh, the next page at the end of the list (`before`). A prompt opens
-  whole, verbatim, selectable and monospaced (never Markdown), with Copy (also a swipe and the context menu) and Open
-  session (Agents › List, when the session is on the board). The status row is `prompts.status` with Sync now
-  (`prompts.sync`). Needs the main token. `drover://prompts` and `--mock-tab prompts` open it.
+  models; `Sources/Prompts`). A scope picker at the top (Mine, Manager, Agents, Programs, Not mine, All; `who` on the
+  wire, Mine is the daemon's default), a search field asked of the daemon (every word must match, debounced), pull to
+  refresh, the next page at the end of the list (`before`). A prompt opens whole, verbatim, selectable and monospaced
+  (never Markdown), with Copy, Open session (Agents › List, when the session is on the board), and Mark mine / Mark
+  not mine (a swipe, the context menu, or the detail screen's Mark menu; `prompts.mark`, fleet-wide). The status row
+  is `prompts.status` with Sync now (`prompts.sync`). Needs the main token. `drover://prompts` and `--mock-tab
+  prompts` open it.
 - **Manager**: chat with the OpenClaw fleet manager (`sessions.message id:"manager"`), its status, feed and "Sweep now".
 - **Settings**: server address with Pair with Mac, main and widget tokens (Keychain), notification kinds, haptics.
 

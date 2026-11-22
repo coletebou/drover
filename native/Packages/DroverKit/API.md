@@ -11,14 +11,18 @@ add `-Xswiftc -plugin-path -Xswiftc /Library/Developer/CommandLineTools/usr/lib/
 - `NativeSummary` (+ `HostCount`, `WaitingItem`, `WorkingItem`, `Totals`, `ManagerState`), `NativeNotifications`,
   `NotificationItem`, `SessionList`, `SessionInfo`, `Transcript` (+ `Turn`, `ToolUse`, `Summary`), `MessageDelivery`,
   `PaneCapture`, `PaneSendResult`, `HostEntry`, `OpEnvelope<T>`, `JSONValue`.
-- The prompt spool (`Models/Prompts.swift`, added 2026-11-21): `PromptRecord` (one prompt, verbatim `text`; `route` is
-  the `host` arg for other ops, `opHost` falls back to the record's own host), `PromptsList` (+ `HostResult`, `Coverage`;
-  `downHosts`), `PromptsStatus` (+ `Config`, `Sink`; `line(now:)` is the web UI's status line), `PromptsSyncResult`
-  (+ `Sink`; `summary`), `PromptsQuery` (`scope` `.mine` = the daemon's default via set, `.all` = `via: "all"`; `q`,
-  `host`, `engine`, `label`, `before`, `limit`; `arguments`, `after(_:)` for the next page; Encodable as the argument
-  object), `PromptsMerge.merge` (by id, newest first), open enum `PromptVia`. Decoding is tolerant: only `id`, `ts` and
-  `text` are required, unknown fields are ignored, and a record (or perHost row, sink, gap) that does not decode is
-  dropped from its list instead of failing the answer.
+- The prompt spool (`Models/Prompts.swift`, added 2026-11-21, `who`/mark added 2026-11-22): `PromptRecord` (one
+  prompt, verbatim `text`; `mine`/`marked`/`actor` once a mark decides it; `route` is the `host` arg for other ops,
+  `opHost` falls back to the record's own host), `PromptsList` (+ `HostResult`, `Coverage`; `downHosts`),
+  `PromptsStatus` (+ `Config`, `Sink`; `line(now:)` is the web UI's status line), `PromptsSyncResult` (+ `Sink`;
+  `summary`), `PromptsMarkResult` (+ `ok`, `ids`, `mine`, `event`), `PromptsQuery` (`scope`, a `CaseIterable`,
+  `Identifiable` six-case enum sent as `who`: `.mine` the daemon's default, `.manager`, `.agents`, `.programs`,
+  `.notMine` = `"not-mine"`, `.all`; each has a `title` for a picker; `q`, `host`, `engine`, `label`, `before`,
+  `limit`; `arguments`, `after(_:)` for the next page; Encodable as the argument object), `PromptsMerge.merge` (by id,
+  newest first), open enum `PromptVia` (`.typed`, `.queued`, `.drover`, `.manager`, `.peer`, `.agent`, `.headless`,
+  `.sdk`; `.mine` is the via default set `[.typed, .queued, .drover, .manager, .headless]`; `.label` for a row).
+  Decoding is tolerant: only `id`, `ts` and `text` are required, unknown fields are ignored, and a record (or perHost
+  row, sink, gap) that does not decode is dropped from its list instead of failing the answer.
 - `DroverTimestamp`: ISO 8601 string or epoch number (ms if > 1e11, else s); encodes ISO 8601 with fractional seconds.
 - Open enums (unknown raw values decode fine): `Engine`, `AskKind`, `NotificationKind`, `NotificationCategory`, `TurnRole`.
 - `DroverIdentifiers`: App Group, Keychain service/group suffix, summary cache file name, defaults key, URL scheme.
@@ -82,6 +86,7 @@ public struct DroverClient: Sendable {
 
     // the prompt spool: main scope only (a widget-scoped client throws .forbidden before sending anything)
     public func prompts(_ query: PromptsQuery = PromptsQuery()) async throws -> PromptsList    // prompts.list
+    public func markPrompts(ids: [String], mine: Bool?) async throws -> PromptsMarkResult      // prompts.mark (a write; mine: nil sends a literal JSON null, which clears the mark)
     public func promptsStatus(host: String? = nil) async throws -> PromptsStatus               // prompts.status
     public func syncPrompts(sinks: [String]? = nil, host: String? = nil) async throws -> PromptsSyncResult  // prompts.sync (a write, actor = client actor, 150 s)
 }

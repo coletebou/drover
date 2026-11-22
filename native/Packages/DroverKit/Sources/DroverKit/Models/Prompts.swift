@@ -22,13 +22,19 @@ public struct PromptVia: RawRepresentable, Sendable, Hashable, Codable, CustomSt
     public static let peer = PromptVia("peer")
     /// Sent through Drover (`sessions.message`, `tmux.send`).
     public static let drover = PromptVia("drover")
+    /// The owner's message to the fleet manager (engine "openclaw", session "manager").
+    public static let manager = PromptVia("manager")
+    /// An agent's own `drover_send` (as opposed to `.peer`, another session's own message).
+    public static let agent = PromptVia("agent")
     /// The first prompt of a headless launch.
     public static let headless = PromptVia("headless")
     /// A program's run (`claude -p`, the Agent SDK, `codex exec`) that no Drover launch started.
     public static let sdk = PromptVia("sdk")
 
-    /// The daemon's default set ("Mine"): what a person, or Drover for them, sent.
-    public static let mine: [PromptVia] = [.typed, .queued, .drover, .headless]
+    /// What a human actually typed, before marks: into a session, tmux, Drover, or the fleet manager. What
+    /// `who: mine` defaults to for a record with no mark of its own (the daemon's rule; records carry their own
+    /// `mine`/`marked` once a mark decides it).
+    public static let mine: [PromptVia] = [.typed, .queued, .drover, .manager]
 
     /// A short label for a row ("" for typed, the common case).
     public var label: String {
@@ -38,6 +44,8 @@ public struct PromptVia: RawRepresentable, Sendable, Hashable, Codable, CustomSt
         case "drover": "via Drover"
         case "headless": "launch"
         case "peer": "from an agent"
+        case "agent": "via drover_send"
+        case "manager": "to manager"
         case "sdk": "program"
         default: rawValue
         }
@@ -70,15 +78,22 @@ public struct PromptRecord: Sendable, Hashable, Codable, Identifiable {
     public var route: String?
     /// `sink:<name>`: read from a git sink's clone because its host did not answer.
     public var source: String?
+    /// Whether this is "mine" after any mark: a person's mark when `marked`, else the daemon's via default.
+    public var mine: Bool?
+    /// True when a person's mark decided `mine` (`prompts.mark`), rather than the via default.
+    public var marked: Bool?
+    /// Who set the mark, when `marked`.
+    public var actor: String?
 
     public init(v: Int? = 1, id: String, ts: DroverTimestamp, host: String, engine: Engine, session: String? = nil, cwd: String? = nil,
                 project: String? = nil, label: String? = nil, via: PromptVia? = nil, text: String, from: String? = nil,
-                route: String? = nil, source: String? = nil) {
+                route: String? = nil, source: String? = nil, mine: Bool? = nil, marked: Bool? = nil, actor: String? = nil) {
         self.v = v; self.id = id; self.ts = ts; self.host = host; self.engine = engine; self.session = session; self.cwd = cwd
         self.project = project; self.label = label; self.via = via; self.text = text; self.from = from; self.route = route; self.source = source
+        self.mine = mine; self.marked = marked; self.actor = actor
     }
 
-    private enum CodingKeys: String, CodingKey { case v, id, ts, host, engine, session, cwd, project, label, via, text, from, route, source }
+    private enum CodingKeys: String, CodingKey { case v, id, ts, host, engine, session, cwd, project, label, via, text, from, route, source, mine, marked, actor }
 
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -97,6 +112,9 @@ public struct PromptRecord: Sendable, Hashable, Codable, Identifiable {
         // A route is a host alias string; anything else (null, an older daemon's object) means "no alias".
         route = Self.string(c, .route)
         source = Self.string(c, .source)
+        mine = try? c.decodeIfPresent(Bool.self, forKey: .mine)
+        marked = try? c.decodeIfPresent(Bool.self, forKey: .marked)
+        actor = Self.string(c, .actor)
     }
 
     private static func string(_ c: KeyedDecodingContainer<CodingKeys>, _ key: CodingKeys) -> String? {
@@ -365,13 +383,36 @@ public struct PromptsSyncResult: Sendable, Hashable, Codable {
     }
 }
 
-/// What to ask `prompts.list` for. Empty filters are left out; `.mine` leaves `via` to the daemon's default.
+/// What to ask `prompts.list` for. Empty filters are left out; `.mine` leaves `who` to the daemon's default.
 public struct PromptsQuery: Sendable, Hashable, Encodable {
-    public enum Scope: String, Sendable, Hashable, CaseIterable {
-        /// The daemon's default via set (typed, queued, drover, headless).
+    /// `who`: what a person actually typed (`mine`, the default), a slice of that, or everything (`all`).
+    public enum Scope: String, Sendable, Hashable, CaseIterable, Codable, Identifiable {
+        /// What the owner (or Drover, for them) actually typed into a session, tmux, or Drover: the daemon's default.
         case mine
-        /// Every via (`via: "all"`): peer messages and program runs too.
+        /// The owner's own messages to the fleet manager (`via: manager`).
+        case manager
+        /// Another session's message, or an agent's own `drover_send` (`via: peer` or `agent`).
+        case agents
+        /// A headless launch's first prompt, or a program's own run (`via: headless` or `sdk`).
+        case programs
+        /// Everything not marked mine.
+        case notMine = "not-mine"
+        /// Every record, no filter.
         case all
+
+        public var id: String { rawValue }
+
+        /// A picker label ("Mine", "Not mine", ...).
+        public var title: String {
+            switch self {
+            case .mine: "Mine"
+            case .manager: "Manager"
+            case .agents: "Agents"
+            case .programs: "Programs"
+            case .notMine: "Not mine"
+            case .all: "All"
+            }
+        }
     }
 
     public var scope: Scope
@@ -400,7 +441,8 @@ public struct PromptsQuery: Sendable, Hashable, Encodable {
         }
         put("q", q); put("host", host); put("engine", engine); put("label", label); put("before", before)
         if let limit { a["limit"] = .number(Double(min(max(limit, 1), 2000))) }
-        if scope == .all { a["via"] = .string("all") }
+        // Mine is the daemon's default: send who only when asking for something else.
+        if scope != .mine { a["who"] = .string(scope.rawValue) }
         return a
     }
 
@@ -410,6 +452,28 @@ public struct PromptsQuery: Sendable, Hashable, Encodable {
     }
 
     public func encode(to encoder: any Encoder) throws { try JSONValue.object(arguments).encode(to: encoder) }
+}
+
+/// `prompts.mark` result: the ids changed, the mark applied (`nil` means cleared), and the event it wrote.
+public struct PromptsMarkResult: Sendable, Hashable, Codable {
+    public var ok: Bool?
+    public var ids: [String]
+    public var mine: Bool?
+    public var event: String?
+
+    public init(ok: Bool? = nil, ids: [String] = [], mine: Bool? = nil, event: String? = nil) {
+        self.ok = ok; self.ids = ids; self.mine = mine; self.event = event
+    }
+
+    private enum CodingKeys: String, CodingKey { case ok, ids, mine, event }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        ok = try? c.decodeIfPresent(Bool.self, forKey: .ok)
+        ids = (try? c.decodeIfPresent([String].self, forKey: .ids)) ?? []
+        mine = try? c.decodeIfPresent(Bool.self, forKey: .mine)
+        event = try? c.decodeIfPresent(String.self, forKey: .event)
+    }
 }
 
 /// Paging and live refreshes overlap: records by id, newest first (ties by id, as the web UI sorts them).

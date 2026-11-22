@@ -16,7 +16,7 @@ sub-view of the one it serves, never a new top-level tab.
 |---|---|---|---|---|
 | 1 | **Manager** | "What should I do next?" | (threads) | Manager |
 | 2 | **Agents** | "What is every agent doing, and who waits on me?" | Lanes · List · Windows · Wall · Space | Board, Sessions, Tmux, Terminals (web), Survey (web) |
-| 3 | **Prompts** | "What did I ask, where, and when?" | Mine · All (peer and queued turns too) | new |
+| 3 | **Prompts** | "What did I ask, where, and when?" | Mine · Manager · Agents · Programs · Not mine · All | new |
 | 4 | **Work** | "What is shipping?" | Pulls · Features (+ plugin MRs) | PRs, Features, a plugin's MRs |
 | 5 | **Fleet** | "Which machines are up and what runs on them?" | Hosts · Stacks · Launch | Fleet, Stacks, Launch |
 | 6 | **Find** | "Where did that happen?" | Search · Memory · Events | Search, Memory, Events, Files (web) |
@@ -84,8 +84,15 @@ first, searchable, kept forever in git.
   inbox message whose sender is `drover (<actor>)`), `headless` (the first prompt of a headless launch: a `launch`
   event, mode headless; a tmux launch's prompt is `drover`), `sdk` (added in the build: a program's run, `claude -p`,
   the Agent SDK, `codex exec`, that no Drover launch started; on one machine over a month they were about two thirds of all user turns,
-  and "Mine" would drown in them). The Prompts workspace shows `typed`, `queued`, `drover` and `headless` by default
-  ("Mine"). A peer record also carries `from` (the sending session's name).
+  and "Mine" would drown in them). A peer record also carries `from` (the sending session's name).
+- Update 2026-11-22 (the owner: "default filter should not include headless runs because I never type them ... when
+  in doubt, consider it mine but give me ability to easily mark false positives as well, and false negatives"):
+  `drover` is split by the truth-file event's actor into `drover` (a person: an owner client or `cli`) and `agent`
+  (`mcp`, the manager, a bot, an automation), records keep `actor`, and the owner's messages to the fleet manager are
+  collected as `manager` (engine `openclaw`). A read record carries `mine` (a `prompt-mark` event decides, else
+  `typed`, `queued`, `drover`, `manager` and any unknown via are mine) and `marked`. `prompts.list` takes `who`: mine
+  (default), manager, agents, programs, not-mine, all; every client shows the same six, and All is everything
+  everywhere. `prompts.mark { ids, mine: true | false | null }` writes the mark. See web/README.md "Prompts".
 - `label` classifies each prompt for routing (`work`, `personal`, or any string): the first matching rule in the
   prompts config (every cwd glob rule first, then the remote rules: a regular expression over the git remote URLs
   of the cwd's repository, read from its `.git/config`, a worktree's through its `commondir`, cached per repository

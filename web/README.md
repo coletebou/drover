@@ -745,10 +745,23 @@ What is collected: the daemon reads what each transcript gained since its last p
 and `~/.codex/sessions/**/rollout-*.jsonl`. The first pass reads all history, a file at a time, yielding often. A user
 turn's words are what search keeps (`search/extract.js` `userText`, `tidy`, `codexLine`): reminders stripped, a peer
 envelope unwrapped, secrets redacted. Each record says where it came from in `via`: `typed`, `queued` (typed while a turn
-ran), `peer` (another session's `<cross-session-message>`, with `from`), `drover` (relayed by Drover, or text a `message`
-event in the truth file sent to that host within 5 minutes: `tmux.send`, a Codex turn), `headless` (a headless launch's
-first prompt; a tmux launch's is `drover`) and `sdk` (`claude -p`, the Agent SDK, `codex exec`, that no launch started).
-The default list ("mine") is `typed`, `queued`, `drover` and `headless`.
+ran), `peer` (another session's `<cross-session-message>`, with `from`), `drover` (a person sent it through Drover: relayed
+by Drover, or text a `message` event in the truth file sent to that host within 5 minutes, `tmux.send` or a Codex turn,
+or a tmux launch's first prompt), `manager` (a person's message to the fleet manager on this host, from the truth file's
+`message` events to it: engine `openclaw`, session `manager`, `thread` when not main), `agent` (the same as `drover` or
+`manager`, sent by an agent), `headless` (a headless launch's first prompt) and `sdk` (`claude -p`, the Agent SDK,
+`codex exec`, that no launch started). Records sent through Drover carry `actor`: a person is no actor, one of the
+owner's clients (`owner`, `web`, `tui`, the apps and extensions) or `cli`; `mcp`, the manager, a Grok bot and an
+automation's own name are agents.
+
+Whose it is: reading a record adds `mine` and `marked`. A mark decides first: `prompts.mark { ids, mine }` (`drover prompts
+mark ID... --mine | --not-mine | --clear`, the TUI's `m`, the web's Mine / Not mine button) appends a `prompt-mark`
+event to the truth file, so dotsync takes it to every host; the newest mark of an id wins, and `mine: null` takes it
+back. Without a mark, `typed`, `queued`, `drover` and `manager` are mine, the rest are not, and a `via` the code does not
+know is mine: when in doubt, it is yours. A `drover` record collected before actors were kept is matched against the
+truth file again when read. `prompts.list` sends its own host's marks along to every host, so a mark counts at once
+everywhere, and classifies and filters again what a host on older code returns. `who` picks the list: `mine` (the
+default), `manager`, `agents` (`peer`, `agent`), `programs` (`headless`, `sdk`), `not-mine` and `all` (everything).
 
 What is skipped: subagent transcripts and Codex subagent threads, sessions in a temp working directory and sessions
 whose first prompt is a generator's (`search/indexer.js` `skipReason`, with its `DROVER_SEARCH_SKIP_PROMPTS`), tool
@@ -791,15 +804,19 @@ not answer from it, as of its last pull. A `command` sink runs its argv (no shel
 `{file}` replaced by a file of just those records (`{dayfile}`: the sink's whole copy of that day, `{day}`, `{host}`).
 An argument `{dayfiles}` instead runs it once per sync with every changed day's copy as separate arguments (a backfill
 of months is one run; an encrypted sync tool that pushes per run then pushes once).
-A sink moves past a record only once it reached it; a failing sink retries after 1 minute, then 2, 4, up to 6 hours
+A sink's `skipVia` (a list of vias) keeps those records out of it: `["sdk"]` leaves program runs (`claude -p`, the Agent
+SDK, `codex exec`) in the local spool only, which on a busy host are nineteen of every twenty bytes. A sink moves past
+a record only once it reached it; a failing sink retries after 1 minute, then 2, 4, up to 6 hours
 (`prompts.sync` tries at once). Sinks sync every `syncEveryMinutes` (default 30) and on `prompts.sync`.
 
-Ops: `prompts.list` (front-only, the fan-out: `q`, `host`/`hosts`, `engine`, `label`, `via` (a list, or `all`), `since`,
+Ops: `prompts.list` (front-only, the fan-out: `q`, `host`/`hosts`, `who`, `engine`, `label`, `via` (a list, or `all`;
+alone it replaces `who`, for clients from before it), `since`,
 `until` (ISO, epoch ms or a span such as `7d`), `session` (prefix), `cwd` (or under it), `limit` (200, at most 2000),
 `before` (an id: the next page) -> `{ prompts: [record + route, source?], more, perHost: [{ host, ok, count, error?,
 source? }], coverage, total? }`), `prompts.local` (one host's spool, what the fan-out asks each host; also `id`, and
-`beforeTs`), `prompts.status`, `prompts.sync` (a write). MCP: `drover_prompts_list`, `drover_prompts_local`,
-`drover_prompts_status`, `drover_prompts_sync`. In `~/.local/state/drover/env`: `DROVER_PROMPTS=off` turns collection
+`beforeTs`, `marks`), `prompts.status`, `prompts.sync` (a write), `prompts.mark` (a write: `id` or `ids`, `mine` true,
+false or null). MCP: `drover_prompts_list`, `drover_prompts_local`, `drover_prompts_status`, `drover_prompts_sync`,
+`drover_prompts_mark`. In `~/.local/state/drover/env`: `DROVER_PROMPTS=off` turns collection
 off on a host (it is off under `node --test` unless a test sets `DROVER_PROMPTS=on`).
 
 ## Plugins

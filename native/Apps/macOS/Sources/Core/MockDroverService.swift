@@ -302,14 +302,24 @@ final class MockDroverService: DroverService, @unchecked Sendable {
         return list
     }()
 
+    /// Marks applied by this mock's markPrompts, id -> mine (nil entries are never stored; a clear removes the id).
+    private var marks: [String: Bool] = [:]
+    /// Who marked each id, for the actor the harness can check.
+    private var markActors: [String: String] = [:]
+
     func prompts(_ query: PromptsQuery) async throws -> PromptsList {
         lock.withLock { promptQueries.append(query) }
         if promptsUnknown { throw DroverError.server("unknown op prompts.list") }
         if promptsDelay > 0 { try? await Task.sleep(for: .seconds(promptsDelay)) }
         let words = (query.q ?? "").lowercased().split(separator: " ").map(String.init)
-        let mine = Set(PromptVia.mine)
-        var all = Self.promptFixture.prompts.filter { p in
-            (query.scope == .all || p.via.map(mine.contains) ?? true)
+        let marked = lock.withLock { marks }
+        let markedBy = lock.withLock { markActors }
+        let withMarks = Self.promptFixture.prompts.map { p -> PromptRecord in
+            guard let m = marked[p.id] else { return p }
+            var r = p; r.mine = m; r.marked = true; r.actor = markedBy[p.id]; return r
+        }
+        var all = withMarks.filter { p in
+            Self.matches(p, scope: query.scope)
                 && (query.host.map { $0 == p.host } ?? true)
                 && words.allSatisfy { p.text.lowercased().contains($0) }
         }
@@ -317,6 +327,19 @@ final class MockDroverService: DroverService, @unchecked Sendable {
         let limit = query.limit ?? PromptsQuery.pageSize
         return PromptsList(ms: 1, prompts: Array(all.prefix(limit)), more: all.count > limit, perHost: Self.promptFixture.perHost,
                            coverage: Self.promptFixture.coverage)
+    }
+
+    /// The daemon's `who` filter: mine is `record.mine` (via default, or a mark); the others are via groups.
+    private static func matches(_ p: PromptRecord, scope: PromptsQuery.Scope) -> Bool {
+        let isMine = p.mine ?? p.via.map { PromptVia.mine.contains($0) } ?? false
+        switch scope {
+        case .mine: return isMine
+        case .notMine: return !isMine
+        case .manager: return p.via == .manager
+        case .agents: return p.via == .peer || p.via == .agent
+        case .programs: return p.via == .headless || p.via == .sdk
+        case .all: return true
+        }
     }
 
     func promptsStatus() async throws -> PromptsStatus {
@@ -330,5 +353,20 @@ final class MockDroverService: DroverService, @unchecked Sendable {
         guard let data = Fixtures.data("prompts.sync.json"), let r = try? JSONDecoder().decode(OpEnvelope<PromptsSyncResult>.self, from: data).result
         else { throw DroverError.decoding("prompts.sync fixture") }
         return r
+    }
+
+    private var markCalls: [(ids: [String], mine: Bool?)] = []
+    /// Every prompts.mark call this mock answered (ids, mine).
+    var marksAsked: [(ids: [String], mine: Bool?)] { lock.withLock { markCalls } }
+
+    func markPrompts(ids: [String], mine: Bool?) async throws -> PromptsMarkResult {
+        lock.withLock {
+            markCalls.append((ids, mine))
+            for id in ids {
+                if let mine { marks[id] = mine; markActors[id] = "owner" }
+                else { marks.removeValue(forKey: id); markActors.removeValue(forKey: id) }
+            }
+        }
+        return PromptsMarkResult(ok: true, ids: ids, mine: mine, event: "ev-mark-\(ids.joined(separator: "-"))")
     }
 }

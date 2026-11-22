@@ -73,7 +73,8 @@ struct HTTPDroverAPI: DroverAPI {
         var error: String?
     }
 
-    private struct ErrorEnvelope: Decodable { var error: String? }
+    // Not private: PromptsAPI.swift's HTTPDroverAPI extension (prompts.mark) decodes it from its own request too.
+    struct ErrorEnvelope: Decodable { var error: String? }
 
     func op<R: Decodable & Sendable>(_ name: String, _ args: [String: JSONValue] = [:], as _: R.Type = R.self,
                                      timeout: TimeInterval = 30) async throws -> R {

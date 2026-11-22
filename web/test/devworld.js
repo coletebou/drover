@@ -199,7 +199,7 @@ for (const r of remotes) {
   const at = (minutesAgo) => new Date(Date.now() - minutesAgo * 60_000).toISOString();
   const rec = (host, engine, session, cwd, minutesAgo, text, extra = {}) => {
     const ts = at(minutesAgo);
-    return { v: 1, id: pid(host, engine, session, ts, text), ts, host, engine, session, cwd: tilde(cwd), project: cwd ? path.basename(cwd) : null, label: extra.label ?? 'work', via: extra.via ?? 'typed', text };
+    return { v: 1, id: pid(host, engine, session, ts, text), ts, host, engine, session, cwd: tilde(cwd), project: cwd ? path.basename(cwd) : null, label: extra.label ?? 'work', via: extra.via ?? 'typed', text, ...(extra.actor ? { actor: extra.actor } : {}) };
   };
   const prompts = [];
   for (const a of AGENTS) prompts.push(rec('@front', 'claude', a.sid, a.cwd ?? path.join(DIR, 'work', a.name), 40, `Make the demo parser keep line numbers in its errors, then run the tests. (${a.name})`));
@@ -227,8 +227,12 @@ for (const r of remotes) {
     ['claude', 'code/demo', 'yes', { via: 'drover' }],
     ['claude', 'code/webapp', 'Write release notes for 0.4 from the merged pull requests since 0.3: features first, then fixes, one line each.'],
     ['codex', 'code/api', 'The nightly job timed out twice this week. Look at its last three runs and tell me what is slow.'],
+    ['claude', 'code/demo', 'Review the diff on this branch and report findings as a JSON list.', { via: 'agent', actor: 'mcp' }],
+    ['claude', 'code/api', 'You are a test generator. Given the module below, write property tests for every exported function.', { via: 'sdk' }],
   ];
   SAMPLES.forEach(([engine, cwd, text, extra = {}], i) => prompts.push(rec(hostAt(i), engine, null, path.join(home, cwd), 60 + i * 175 + (i % 4) * 23, text, extra)));
+  // The owner's messages to the fleet manager (collected from the truth file: engine openclaw, session manager).
+  for (const [m, text] of [[25, 'What is everyone working on? Anything waiting on me?'], [310, 'Pause the reviewers on the demo repo until the parser lands.']]) prompts.push(rec('@front', 'openclaw', 'manager', null, m, text, { via: 'manager', actor: 'owner' }));
   // Older history, so the list pages (Prompts scrolls with `before`): a week of short asks.
   for (let i = 0; i < 260; i++) prompts.push(rec(hostAt(i + 3), ['claude', 'codex', 'claude', 'hermes'][i % 4], null, path.join(home, ['code/demo', 'code/webapp', 'code/api', 'notes'][i % 4]), 3600 + i * 37, `${['Run the tests again', 'Check the build on the last commit', 'Tidy the imports in', 'Summarise the open issues for'][i % 4]} ${['the parser', 'the web app', 'the API', 'the notes'][i % 4]} (${i + 1})`, { label: i % 4 === 3 ? 'personal' : 'work', via: i % 11 === 0 ? 'queued' : 'typed' }));
   // Written where each host's daemon keeps its spool ($DROVER_STATE/prompts/<day>.jsonl, core/prompts.js), so the real

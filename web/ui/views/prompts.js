@@ -1,29 +1,42 @@
 // Prompts › Mine and Prompts › All: every prompt typed into Claude Code, Codex or Hermes on any machine, verbatim
 // (secrets redacted at collection), newest first (docs/specs/2026-11-21-cohesion-overhaul.md, "Prompts: the spool").
 // prompts.list on the front daemon fans out to every host; the search box is its `q` (every word must match, asked of
-// the daemons, debounced), the filters its host, engine and label; Mine is the daemon's default via set (typed,
-// queued, sent through Drover, launch prompts), All adds peer messages between agents. Scrolling to the end pages with
-// `before`. A click shows the whole prompt beside the list as plain text (never Markdown), with copy, open its session
-// (when it is on the board) and launch with it (Fleet › Launch, prefilled). New turns and writes refresh the top, at
-// most every few seconds. The status line is prompts.status (records, newest, each sink's last sync or error);
-// Sync now is prompts.sync. Pure half: prompts-model.js.
-import { h, clear, engine, fmtTime, fmtAgo, empty, loading, debounce, copyBtn, btn, kv, shortPath, plural } from '../dom.js';
-import { listArgs, mergePrompts, stripForPrompt, statusLine, firstLine, PAGE } from '../prompts-model.js';
+// the daemons, debounced), the filters its host, engine, label and `who` — the same six chips everywhere (Mine,
+// Manager, Agents, Programs, Not mine, All; prompts-model.js FILTERS). Mine is what a person actually typed (into a
+// session, tmux, Drover, or the fleet manager); Manager narrows to the fleet manager; Agents is peer/agent turns
+// between agents; Programs is a headless launch or sdk run; Not mine is everything mine isn't; All drops the filter.
+// Scrolling to the end pages with `before`. A click shows the whole prompt beside the list as plain text (never
+// Markdown), with copy, open its session (when it is on the board), launch with it (Fleet › Launch, prefilled), and a
+// Mine/Not mine toggle (prompts.mark — fixes a false positive or negative, stored fleet-wide, `marked` once a person
+// decided it). New turns and writes refresh the top, at most every few seconds. The status line is prompts.status
+// (records, newest, each sink's last sync or error); Sync now is prompts.sync. Pure half: prompts-model.js.
+import { h, clear, engine, fmtTime, fmtAgo, empty, loading, debounce, copyBtn, btn, seg, kv, shortPath, plural } from '../dom.js';
+import { listArgs, markArgs, mergePrompts, stripForPrompt, statusLine, firstLine, FILTERS, FILTER_LABEL, PAGE } from '../prompts-model.js';
 
 const LIVE_MS = 4000;
 const unknownOp = (e) => /unknown op/i.test(e?.message ?? '');
-const VIA_LABEL = { typed: 'typed', queued: 'queued', drover: 'via Drover', headless: 'launch', peer: 'from an agent' };
+const VIA_LABEL = { typed: 'typed', queued: 'queued', drover: 'via Drover', manager: 'to the manager', headless: 'launch', sdk: 'a program', peer: 'from an agent', agent: 'from an agent' };
+const SCOPE_DESC = {
+  mine: 'what you typed — into a session, tmux, Drover, or the fleet manager',
+  manager: 'what you sent the fleet manager',
+  agents: 'turns agents sent each other',
+  programs: 'prompts a program sent (a headless launch, claude -p, codex exec)',
+  'not-mine': "everything that isn't yours",
+  all: 'everything, filters off',
+};
 
 function promptsView({ id, label, scope }) {
   return {
     id, label, scope,
     mount(root, ctx, params) {
       let alive = true; let list = []; let done = false; let busy = false; let sel = null; let supported = true; let seq = 0;
-      const F = { q: params[0] ?? '', host: '', engine: '', label: '' };
+      const F = { q: params[0] ?? '', host: '', engine: '', label: '', scope };
       const statusEl = h('span', { class: 'muted small prompts-status' });
       const syncBtn = btn('Sync now', () => sync(), { cls: 'sm', title: 'Scan transcripts now, then push every sink (prompts.sync)' });
-      root.append(h('div', { class: 'view-head' }, h('h1', null, 'Prompts'), h('span', { class: 'muted small' }, scope === 'all' ? 'everything sent to an agent, peers too' : 'what you asked, everywhere'), h('span', { class: 'spacer' }), statusEl, syncBtn));
+      const descEl = h('span', { class: 'muted small' }, SCOPE_DESC[F.scope]);
+      root.append(h('div', { class: 'view-head' }, h('h1', null, 'Prompts'), descEl, h('span', { class: 'spacer' }), statusEl, syncBtn));
 
+      const scopeSeg = seg(FILTERS.map((f) => [f, FILTER_LABEL[f]]), F.scope, (v) => { F.scope = v; descEl.textContent = SCOPE_DESC[v]; reload(); });
       const qIn = h('input', { type: 'search', class: 'search-q', placeholder: 'Search every prompt on every machine (all words must match)', 'aria-label': 'Search prompts', value: F.q, autocomplete: 'off', spellcheck: 'false' });
       const sel_ = (name, opts) => h('select', { 'aria-label': name, onchange: (e) => { F[name] = e.target.value; reload(); } }, ...opts.map(([v, l]) => h('option', { value: v }, l)));
       const hostSel = sel_('host', [['', 'every host']]);
@@ -31,7 +44,7 @@ function promptsView({ id, label, scope }) {
       const labelSel = sel_('label', [['', 'every label']]);
       qIn.addEventListener('input', debounce(() => { F.q = qIn.value; reload(); }, 300));
       qIn.addEventListener('keydown', (e) => { if (e.key === 'Escape') { qIn.blur(); } });
-      root.append(h('div', { class: 'toolbar prompts-bar' }, qIn, hostSel, engSel, labelSel));
+      root.append(h('div', { class: 'toolbar prompts-bar' }, scopeSeg, qIn, hostSel, engSel, labelSel));
       const notice = h('div', { class: 'notice', hidden: true });
       const listEl = h('div', { class: 'prompt-list', role: 'listbox', 'aria-label': 'Prompts' });
       const sentinel = h('div', { class: 'prompt-more muted small' });
@@ -53,9 +66,15 @@ function promptsView({ id, label, scope }) {
       }
 
       // ------------------------------------------------------------ the list
+      /** A small marker: a person's mark (any filter), else — only in All, where mine fades into the crowd — not mine. */
+      function markEl(p) {
+        if (p.marked) return h('span', { class: 'prompt-mark marked', title: 'marked by a person' }, '●');
+        if (F.scope === 'all' && p.mine === false) return h('span', { class: 'prompt-mark not-mine', title: 'not yours' }, '○');
+        return null;
+      }
       function row(p) {
         const el = h('div', { class: 'prompt-row', role: 'option', tabindex: 0, 'data-id': p.id, 'aria-selected': p.id === sel ? 'true' : 'false', 'data-peek': String(p.text ?? '').slice(0, 900), onclick: () => choose(p.id), onkeydown: (e) => { if (e.key === 'Enter') choose(p.id); } },
-          h('div', { class: 'prompt-meta' }, h('time', { datetime: p.ts, title: new Date(p.ts).toLocaleString() }, fmtTime(p.ts)), h('span', { class: 'prompt-host' }, p.host ?? ''), engine(p.engine), p.project ? h('span', { class: 'prompt-project trunc', title: p.cwd ?? '' }, p.project) : null, p.via && p.via !== 'typed' ? h('span', { class: `prompt-via via-${p.via}` }, VIA_LABEL[p.via] ?? p.via) : null),
+          h('div', { class: 'prompt-meta' }, markEl(p), h('time', { datetime: p.ts, title: new Date(p.ts).toLocaleString() }, fmtTime(p.ts)), h('span', { class: 'prompt-host' }, p.host ?? ''), engine(p.engine), p.project ? h('span', { class: 'prompt-project trunc', title: p.cwd ?? '' }, p.project) : null, p.via && p.via !== 'typed' ? h('span', { class: `prompt-via via-${p.via}` }, VIA_LABEL[p.via] ?? p.via) : null),
           h('div', { class: 'prompt-text clamp2' }, p.text ?? ''));
         return el;
       }
@@ -63,12 +82,12 @@ function promptsView({ id, label, scope }) {
         if (!alive) return;
         clear(listEl);
         if (!supported) { listEl.append(empty('This daemon keeps no prompts yet', 'prompts.list comes with the prompts collector (drover prompts). Update the daemon, then the spool fills from every transcript on the machine.')); sentinel.textContent = ''; return; }
-        if (!list.length) { listEl.append(empty(F.q || F.host || F.engine || F.label ? 'Nothing matches' : 'No prompts yet', F.q ? 'Every word must appear in the prompt.' : 'They appear here as you type them into Claude Code, Codex or Hermes.')); sentinel.textContent = ''; return; }
+        if (!list.length) { listEl.append(empty(F.q || F.host || F.engine || F.label ? 'Nothing matches' : `No ${FILTER_LABEL[F.scope].toLowerCase()} prompts yet`, F.q ? 'Every word must appear in the prompt.' : 'They appear here as you type them into Claude Code, Codex or Hermes.')); sentinel.textContent = ''; return; }
         for (const p of list) listEl.append(row(p));
         sentinel.textContent = done ? `${plural(list.length, 'prompt')}, the oldest is ${fmtAgo(list.at(-1).ts, { short: false }).replace(/ ago$/, '')} old` : 'loading older prompts as you scroll';
       }
       async function fetchPage(before) {
-        const r = await ctx.callQuiet('prompts.list', listArgs({ scope, ...F, before }), { host: 'local' });
+        const r = await ctx.callQuiet('prompts.list', listArgs({ ...F, before }), { host: 'local' });
         const down = (r?.perHost ?? []).filter((x) => x && x.ok === false);
         notice.hidden = !down.length;
         notice.textContent = down.length ? `${down.map((x) => `${x.host}${x.error ? ` (${x.error})` : ''}`).join(', ')} did not answer: ${down.length > 1 ? 'their' : 'its'} prompts come from the last sync.` : '';
@@ -130,15 +149,25 @@ function promptsView({ id, label, scope }) {
         const p = list.find((x) => x.id === sel);
         if (!p) { detail.append(h('div', { class: 'muted small prompt-hint' }, 'Pick a prompt to read it whole. Hover one for a preview; y copies the selected one, n launches an agent with it.')); return; }
         const s = stripOf(p);
+        const isMine = p.mine !== false;
         detail.append(
           h('div', { class: 'prompt-detail-head' },
             h('button', { class: 'btn sm quiet prompt-back', type: 'button', onclick: () => choose(null) }, '← List'),
             engine(p.engine), h('strong', null, p.project ?? p.host ?? ''), h('span', { class: 'spacer' }),
             copyBtn(p.text ?? '', 'Copy'),
             btn('Open session', () => { if (s) ctx.open({ kind: s.kind, id: s.id, host: s.host, engine: s.engine, name: s.name, tmux: s.tmux, sessionId: s.sessionId }); }, { cls: 'sm', disabled: !s, title: s ? `Open ${s.name} in the drawer` : 'That session is not on the board now' }),
-            btn('Launch with this prompt', () => launchWith(p), { cls: 'sm', title: 'Fleet › Launch, with this prompt (and its folder) filled in' })),
+            btn('Launch with this prompt', () => launchWith(p), { cls: 'sm', title: 'Fleet › Launch, with this prompt (and its folder) filled in' }),
+            btn(isMine ? 'Mark not mine' : 'Mark mine', () => mark(p, !isMine), { cls: 'sm', title: 'prompts.mark — fixes a false positive or negative, stored fleet-wide' })),
           h('pre', { class: 'prompt-full', tabindex: 0, 'aria-label': 'The prompt, verbatim' }, p.text ?? ''),
-          kv([['when', `${new Date(p.ts).toLocaleString()} (${fmtAgo(p.ts, { short: false })})`], ['host', p.host], ['engine', p.engine], ['folder', p.cwd ? h('code', null, shortPath(p.cwd, 80)) : null], ['label', p.label], ['came', VIA_LABEL[p.via] ?? p.via], ['session', p.session ? h('code', null, p.session) : null], ['route', p.route ? (typeof p.route === 'string' ? p.route : JSON.stringify(p.route)) : null], ['id', h('code', null, p.id)]]));
+          kv([['when', `${new Date(p.ts).toLocaleString()} (${fmtAgo(p.ts, { short: false })})`], ['host', p.host], ['engine', p.engine], ['folder', p.cwd ? h('code', null, shortPath(p.cwd, 80)) : null], ['label', p.label], ['came', VIA_LABEL[p.via] ?? p.via], ['mine', `${isMine ? 'yes' : 'no'}${p.marked ? ' (marked)' : ''}`], ['actor', p.actor], ['session', p.session ? h('code', null, p.session) : null], ['route', p.route ? (typeof p.route === 'string' ? p.route : JSON.stringify(p.route)) : null], ['id', h('code', null, p.id)]]));
+      }
+      /** prompts.mark, then reload (the toggled prompt may leave the current filter); the toast says exactly what happened. */
+      async function mark(p, mine) {
+        try {
+          await ctx.call('prompts.mark', markArgs(p.id, mine), { host: 'local' });
+          ctx.toast(mine ? 'marked mine' : 'marked not mine', 'ok');
+          await reload();
+        } catch { /* ctx.call already toasted the error */ }
       }
 
       // ------------------------------------------------------------ status and sync

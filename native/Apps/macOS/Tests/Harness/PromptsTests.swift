@@ -37,13 +37,47 @@ enum PromptsTests {
             await until { m.prompts.loaded && m.prompts.status != nil }
             T.eq(m.prompts.records.count, 4, "Mine leaves the peer message out")
             T.check(m.prompts.records.allSatisfy { $0.via != .peer })
-            T.eq(mock.promptsAsked.last?.arguments, ["limit": 200], "Mine sends no via: the daemon's default")
+            T.eq(mock.promptsAsked.last?.arguments, ["limit": 200], "Mine sends no who: the daemon's default")
             T.check(m.prompts.status?.line().hasPrefix("1,204 prompts") == true, "status line")
             m.prompts.scope = .all
             await until { m.prompts.records.count == 5 }
             T.eq(m.prompts.records.count, 5, "All brings the peer message")
-            T.eq(mock.promptsAsked.last?.arguments["via"], "all")
+            T.eq(mock.promptsAsked.last?.arguments["who"], "all")
             T.eq(m.prompts.records.map(\.id), m.prompts.records.sorted { $0.ts > $1.ts }.map(\.id), "newest first")
+        }
+        await T.suite("Prompts: Manager, Agents, Programs and Not mine") {
+            let mock = MockDroverService()
+            let m = await model(mock)
+            m.prompts.appear()
+            await until { m.prompts.loaded }
+            m.prompts.scope = .notMine
+            await until { mock.promptsAsked.last?.arguments["who"] == "not-mine" }
+            T.eq(m.prompts.records.map(\.id), ["p_4d5e6f708192a3b4"], "not mine: the peer message (the headless launch is marked mine)")
+            m.prompts.scope = .agents
+            await until { mock.promptsAsked.last?.arguments["who"] == "agents" }
+            T.eq(m.prompts.records.map(\.id), ["p_4d5e6f708192a3b4"], "agents: via peer or agent")
+            m.prompts.scope = .manager
+            await until { mock.promptsAsked.last?.arguments["who"] == "manager" }
+            T.eq(m.prompts.records.count, 0, "manager: none in the fixture")
+            m.prompts.scope = .programs
+            await until { mock.promptsAsked.last?.arguments["who"] == "programs" }
+            T.eq(m.prompts.records.map(\.id), ["p_3c4d5e6f708192a3"], "programs: via headless or sdk")
+        }
+        await T.suite("Prompts: mark mine and not mine, then clear") {
+            let mock = MockDroverService()
+            let m = await model(mock)
+            m.prompts.appear()
+            await until { m.prompts.loaded }
+            let id = "p_4d5e6f708192a3b4"   // the peer message, mine: false in the fixture
+            await m.prompts.mark([id], mine: true)
+            T.eq(mock.marksAsked.last?.ids, [id])
+            T.eq(mock.marksAsked.last?.mine, true)
+            m.prompts.scope = .all
+            await until { m.prompts.records.first { $0.id == id }?.mine == true }
+            T.eq(m.prompts.records.first { $0.id == id }?.marked, true, "the mark set marked too")
+            await m.prompts.mark([id], mine: nil)
+            await until { m.prompts.records.first { $0.id == id }?.mine == false }
+            if let last = mock.marksAsked.last { T.check(last.mine == nil, "nil clears the mark") } else { T.fail("no prompts.mark call recorded") }
         }
         await T.suite("Prompts: search is debounced and asks the daemon") {
             let mock = MockDroverService()

@@ -35,7 +35,7 @@ enum DevConfig {
     static let mutatingOps: Set<String> = [
         "sessions.message", "sessions.answer", "tmux.send", "tmux.keys", "tmux.answer", "tmux.new", "tmux.kill",
         "tmux.rename", "uploads.put", "openclaw.sweep", "launch.start", "headless.send", "headless.stop",
-        "events.append", "features.upsert", "prompts.sync",
+        "events.append", "features.upsert", "prompts.sync", "prompts.mark",
     ]
 }
 

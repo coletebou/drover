@@ -37,13 +37,15 @@ describe('config', () => {
       { name: 'ok', type: 'git', remote: 'git@forge.example:me/dotfiles.git' },
       { name: 'ok', type: 'git', remote: 'x' }, { name: '../evil', type: 'git', remote: 'x' }, { name: 'opt', type: 'git', remote: '--upload-pack=touch /tmp/x' },
       { name: 'ext', type: 'git', remote: 'ext::sh -c x' }, { name: 'br', type: 'git', remote: 'x', branch: '../main' }, { name: 'dir', type: 'git', remote: 'x', dir: '../up' },
-      { name: 'cmd', type: 'command', argv: ['sync-tool', 'push', '{file}'], labels: ['work'] }, { name: 'nocmd', type: 'command', argv: 'sh -c x' }, { name: 'what', type: 'ftp' },
+      { name: 'cmd', type: 'command', argv: ['sync-tool', 'push', '{file}'], labels: ['work'], skipVia: ['sdk'] }, { name: 'nocmd', type: 'command', argv: 'sh -c x' }, { name: 'what', type: 'ftp' },
+      { name: 'skip', type: 'git', remote: 'x', skipVia: 'sdk' },
     ] }));
     const c = await S.loadConfig({ ...process.env, DROVER_PROMPTS_CONFIG: path.join(tmp, 'bad.json') });
     assert.deepEqual(c.sinks, [
-      { name: 'ok', type: 'git', labels: ['*'], remote: 'git@forge.example:me/dotfiles.git', branch: 'drover-prompts', dir: 'prompts', sign: false },
-      { name: 'cmd', type: 'command', labels: ['work'], argv: ['sync-tool', 'push', '{file}'] }]);
-    assert.equal(c.errors.length, 8, c.errors.join('\n'));
+      { name: 'ok', type: 'git', labels: ['*'], skipVia: [], remote: 'git@forge.example:me/dotfiles.git', branch: 'drover-prompts', dir: 'prompts', sign: false },
+      { name: 'cmd', type: 'command', labels: ['work'], skipVia: ['sdk'], argv: ['sync-tool', 'push', '{file}'] }]);
+    assert.equal(c.errors.length, 9, c.errors.join('\n'));
+    assert.match(c.errors.at(-1), /skipVia: a list of vias/);
     assert.equal(c.syncEveryMinutes, 5); assert.deepEqual(c.rules, [{ cwd: '~/w', label: 'work' }]);
   });
 });
@@ -154,6 +156,19 @@ describe('a command sink', () => {
     assert.deepEqual(got, [{ h: 'box-d', days: ['2026-11-21.jsonl', '2026-11-22.jsonl', '2026-11-23.jsonl'], lines: [2, 1, 1] }]);
     const [again] = await d.sinks.syncAll({ sinks: [many] }, { force: true });
     assert.equal(again.runs, 0, 'nothing new: no run');
+  });
+
+  test('skipVia: those records never reach the sink, and the sink still moves past them', async () => {
+    const e = host('box-f');
+    const seen = path.join(tmp, 'skip-out.jsonl'), t3 = path.join(tmp, 'tool3.mjs');
+    await writeFile(t3, `import { appendFileSync, readFileSync } from 'node:fs';\nfor (const f of process.argv.slice(2)) appendFileSync(${J(seen)}, readFileSync(f, 'utf8'));\n`);
+    const skip = { name: 'nosdk', type: 'command', labels: ['*'], skipVia: ['sdk'], argv: [process.execPath, t3, '{dayfiles}'] };
+    await e.add(rec('box-a', 21), { ...rec('box-a', 22), via: 'sdk' }, { ...rec('box-a', 23), via: 'peer' });
+    const [r] = await e.sinks.syncAll({ sinks: [skip] });
+    assert.equal(r.ok, true, r.error); assert.equal(r.added, 2);
+    assert.deepEqual((await readFile(seen, 'utf8')).trim().split('\n').map((l) => JSON.parse(l).id), ['p_a000000000000021', 'p_a000000000000023']);
+    const [st] = await e.sinks.status({ sinks: [skip] });
+    assert.equal(st.pending, 0, 'the sdk record is not pending forever');
   });
 
   test('a failing command keeps its records for the next try', async () => {

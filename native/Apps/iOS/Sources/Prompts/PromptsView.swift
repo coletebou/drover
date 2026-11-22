@@ -2,9 +2,11 @@ import DroverKit
 import SwiftUI
 import UIKit
 
-/// The Prompts tab: every prompt typed into Claude Code or Codex on any machine, newest first. Mine or All at the
-/// top, a search field (every word must match, asked of the daemon), pull to refresh, the next page at the end. A
-/// prompt opens whole, verbatim and selectable (never Markdown), with Copy and Open session.
+/// The Prompts tab: every prompt typed into Claude Code or Codex on any machine, newest first. A scope picker
+/// (Mine, Manager, Agents, Programs, Not mine, All) at the top, a search field (every word must match, asked of
+/// the daemon), pull to refresh, the next page at the end. A prompt opens whole, verbatim and selectable (never
+/// Markdown), with Copy, Open session, and Mark mine / Mark not mine (a swipe action, the context menu, or the
+/// detail screen's Mark menu; `prompts.mark`, fleet-wide).
 struct PromptsView: View {
     @Environment(AppModel.self) private var model
     @State private var selection: String?
@@ -47,13 +49,18 @@ struct PromptsView: View {
                             .swipeActions(edge: .trailing) {
                                 Button("Copy") { copy(p) }.tint(Theme.working)
                             }
+                            .swipeActions(edge: .leading) {
+                                markButton(p)
+                            }
                             .contextMenu {
                                 Button("Copy", systemImage: "doc.on.doc") { copy(p) }
                                 if let ref = store.sessionRef(for: p) {
                                     Button("Open session", systemImage: "arrow.up.right.square") { open(ref) }
                                 }
+                                markMenu(p, model: model)
                             }
                             .accessibilityAction(named: "Copy") { copy(p) }
+                            .accessibilityAction(named: (p.mine ?? false) ? "Mark not mine" : "Mark mine") { markPrompt(p, mine: !(p.mine ?? false), model: model) }
                             .task { if p.id == store.records.last?.id { await store.loadMore() } }
                     }
                     if store.more || store.loadingMore {
@@ -82,13 +89,13 @@ struct PromptsView: View {
             .toolbar {
                 ToolbarItem(placement: .principal) {
                     Picker("Prompts", selection: $store.scope) {
-                        Text("Mine").tag(PromptsQuery.Scope.mine)
-                        Text("All").tag(PromptsQuery.Scope.all)
+                        ForEach(PromptsQuery.Scope.allCases) { s in
+                            Text(s.title).tag(s)
+                        }
                     }
-                    .pickerStyle(.segmented)
-                    .fixedSize()
+                    .pickerStyle(.menu)
                     .accessibilityLabel("Which prompts")
-                    .accessibilityHint("Mine: what you typed or sent through Drover. All: agents and programs too.")
+                    .accessibilityHint("Mine: what you actually typed, into a session, tmux, Drover, or the manager. Manager: just your messages to the fleet manager. Agents: other sessions and their drover_send messages. Programs: headless launches and scripted runs. Not mine: everything not marked mine. All: every prompt.")
                 }
             }
             .overlay { overlay(store) }
@@ -150,6 +157,33 @@ struct PromptsView: View {
     private func open(_ ref: SessionRef) {
         Haptics.tap()
         model.open(ref, in: .sessions)
+    }
+
+    private func markButton(_ p: PromptRecord) -> some View {
+        let isMine = p.mine ?? false
+        return Button(isMine ? "Not mine" : "Mine") { markPrompt(p, mine: !isMine, model: model) }
+            .tint(isMine ? Theme.error : Theme.working)
+    }
+}
+
+/// Mark mine or not (`prompts.mark`, fleet-wide), with feedback; the list or detail refreshes under the store
+/// itself. A free function so both the list row and the detail screen share it; main actor, as the views calling it.
+@MainActor
+func markPrompt(_ p: PromptRecord, mine: Bool?, model: AppModel) {
+    Haptics.tap()
+    Task {
+        await model.prompts.mark(p, mine: mine)
+        A11y.announce(mine == true ? "Marked mine" : mine == false ? "Marked not mine" : "Mark cleared")
+    }
+}
+
+/// Mark mine / Mark not mine, and Clear mark once a person's mark decided it.
+@MainActor @ViewBuilder
+func markMenu(_ p: PromptRecord, model: AppModel) -> some View {
+    let isMine = p.mine ?? false
+    Button(isMine ? "Mark not mine" : "Mark mine", systemImage: isMine ? "person.fill.xmark" : "person.fill.checkmark") { markPrompt(p, mine: !isMine, model: model) }
+    if p.marked == true {
+        Button("Clear mark", systemImage: "xmark.circle") { markPrompt(p, mine: nil, model: model) }
     }
 }
 
@@ -223,6 +257,13 @@ struct PromptDetailView: View {
         .buttonStyle(.bordered)
         .disabled(ref == nil)
         .accessibilityHint(ref == nil ? "That session is not on the board now" : "Opens it under Agents, List")
+        Menu {
+            markMenu(record, model: model)
+        } label: {
+            Label((record.mine ?? false) ? "Mark not mine" : "Mark mine", systemImage: "person.crop.circle")
+        }
+        .buttonStyle(.bordered)
+        .accessibilityHint("Marks this prompt fleet-wide")
     }
 
     private func facts(_ ref: SessionRef?) -> some View {
@@ -233,6 +274,7 @@ struct PromptDetailView: View {
             ("Folder", record.cwd),
             ("Label", record.label),
             ("Came", record.via.map { $0.label.isEmpty ? "typed" : $0.label }.map { v in record.from.map { "\(v), from \($0)" } ?? v }),
+            ("Mine", record.mine.map { ($0 ? "yes" : "no") + (record.marked == true ? ", marked by \(record.actor ?? "a person")" : "") }),
             ("Session", record.session),
             ("Source", record.source),
         ]

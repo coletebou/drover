@@ -114,7 +114,7 @@ test('app: the sub-tab row shows the workspace\'s sub-views and its question; cl
     fr = f.frame();
     f.app.mouse(click(rowText(fr[1]).indexOf('All') + 1, 1));
     assert.equal(f.app.where(), 'prompts/all');
-    assert.equal(f.app.views.get('prompts').mode, 'all', 'Mine and All are one view in two modes');
+    assert.equal(f.app.views.get('prompts').who, 'all', 'Mine and All are one view, two of its six filters');
   } finally { f.stop(); }
 });
 

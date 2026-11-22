@@ -17,8 +17,10 @@ export const CAPTURE = 'synthetic pane line one\nsynthetic pane line two\n$ npm 
 // The owner actor a current daemon names in GET /api/ops and records on the owner's own turns (core/owner.js OWNER).
 export const OWNER_ACTOR = 'dana';
 
-// The prompt spool (prompts.list): synthetic prompts on this machine and box-a, newest first, every via.
-const VIAS = ['typed', 'typed', 'queued', 'drover', 'peer', 'headless'];
+// The prompt spool (prompts.list): synthetic prompts on this machine and box-a, newest first, every via. `mine` is
+// typed, queued, drover and manager, before any mark (core/prompts.js MINE); prompts.mark overrides it per id.
+const VIAS = ['typed', 'typed', 'queued', 'drover', 'manager', 'peer', 'agent', 'headless', 'sdk'];
+const MINE_VIA = new Set(['typed', 'queued', 'drover', 'manager']);
 const WORDS = ['make the parser keep line numbers', 'run the tests and fix what fails', 'write the release notes', 'why is the build slow', 'rename the config flag', 'add a retry to the uploader'];
 export function promptRecords(n = 230) {
   return Array.from({ length: n }, (_, i) => {
@@ -74,13 +76,25 @@ export async function startFakeDaemon({ token = 'test-token', mode = 'new', port
   const emit = (type, data) => { for (const c of streams) if (!c.topics || c.topics.has(type)) c.res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`); };
   const unknown = new Set(old ? ['native.board', 'sessions.answer', 'openclaw.threads', 'prompts.list', 'tmux.captureMany'] : []);
   const prompts = promptRecords();
-  function listPrompts({ q, hosts, via, limit = 200, before }) {
-    const vias = Array.isArray(via) ? via : ['typed', 'queued', 'drover', 'headless'];
+  const marks = new Map();   // id -> true | false, from prompts.mark; absent = automatic (MINE_VIA)
+  const mineOf = (p) => (marks.has(p.id) ? marks.get(p.id) : MINE_VIA.has(p.via));
+  const WHO = {
+    mine: (p) => mineOf(p), manager: (p) => p.via === 'manager', agents: (p) => p.via === 'peer' || p.via === 'agent',
+    programs: (p) => p.via === 'headless' || p.via === 'sdk', 'not-mine': (p) => !mineOf(p), all: () => true,
+  };
+  function listPrompts({ q, hosts, who, via, limit = 200, before }) {
     const words = String(q ?? '').toLowerCase().split(/\s+/).filter(Boolean);
-    let list = prompts.filter((p) => vias.includes(p.via) && (!hosts?.length || hosts.includes(p.host)) && words.every((w) => p.text.toLowerCase().includes(w)));
+    const pred = who ? WHO[who] ?? WHO.mine : Array.isArray(via) ? (p) => via.includes(p.via) : WHO.mine;
+    let list = prompts.map((p) => ({ ...p, mine: mineOf(p), marked: marks.has(p.id) }))
+      .filter((p) => pred(p) && (!hosts?.length || hosts.includes(p.host)) && words.every((w) => p.text.toLowerCase().includes(w)));
     const total = list.length;
     if (before) { const i = list.findIndex((p) => p.id === before); list = i >= 0 ? list.slice(i + 1) : list; }
     return { prompts: list.slice(0, Math.min(2000, limit)).map((p) => ({ ...p, route: 'local' })), perHost: [{ host: 'fakehost', ok: true, count: total }, { host: 'box-a', ok: true, count: 0 }], coverage: { covered: ['fakehost', 'box-a'], notCovered: [] }, total };
+  }
+  function markPrompts({ ids, mine }) {
+    const list = Array.isArray(ids) ? ids : [ids];
+    for (const id of list) { if (mine === null) marks.delete(id); else marks.set(id, Boolean(mine)); }
+    return { ok: true, ids: list, mine, event: `ev-mark-${++seq}` };
   }
 
   function managerMessage({ text, thread = 'main', wait }) {
@@ -126,6 +140,7 @@ export async function startFakeDaemon({ token = 'test-token', mode = 'new', port
     'tmux.captureMany': ({ targets = [], escapes = true }) => ({ captures: targets.slice(0, 64).map((target) => (target === 'gone:9' ? { target, ok: false, error: "can't find window: gone" } : { target, ok: true, text: escapes ? `${COLOR_PANE}\x1b[2m${target}\x1b[0m` : `${CAPTURE}\n${target}`, hash: `h-${target}` })) }),
     'prompts.list': (a) => listPrompts(a),
     'prompts.status': () => ({ files: 2, records: prompts.length, oldest: prompts.at(-1).ts, newest: prompts[0].ts, lastScan: now(), scanning: false, sinks: [] }),
+    'prompts.mark': (a) => markPrompts(a),
     'launch.start': ({ engine, mode = 'tmux' }) => ({ ok: true, mode, target: 'work:@7', name: `${engine}-launch` }),
     'events.tail': () => [{ id: 'e1', ts: ago(60), host: 'fakehost', actor: 'owner', type: 'note', about: 'demo', text: 'a synthetic note' }],
     'openclaw.status': () => ({ configured: true, host: 'fakehost', actor: 'manager-test', unit: { active: 'active', uptimeSec: 7200 }, gateway: { up: true, url: 'http://127.0.0.1:1' }, health: { ok: true }, model: { primary: 'fake/manager' }, automations: {}, cost: { todayUsd: 0.12 }, wal24h: { notes: 3, pins: 1, chats: 2 } }),

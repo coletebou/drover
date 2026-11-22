@@ -243,11 +243,11 @@ data: "line"}
   "result": {
     "ms": 38,
     "prompts": [
-      { "v": 1, "id": "p_0d1e2f3a4b5c6d7e", "ts": "2026-11-21T22:03:11.000Z", "host": "demo-mac", "engine": "claude", "session": "00000000-demo-4000-8000-000000000001", "cwd": "~/code/demo", "project": "demo", "label": "work", "via": "typed", "text": "Make the demo parser keep line numbers in its errors, then run the tests.", "route": "local" },
+      { "v": 1, "id": "p_0d1e2f3a4b5c6d7e", "ts": "2026-11-21T22:03:11.000Z", "host": "demo-mac", "engine": "claude", "session": "00000000-demo-4000-8000-000000000001", "cwd": "~/code/demo", "project": "demo", "label": "work", "via": "typed", "text": "Make the demo parser keep line numbers in its errors, then run the tests.", "route": "local", "mine": true },
       { "v": 1, "id": "p_1a2b3c4d5e6f7081", "ts": "2026-11-21T21:58:40.000Z", "host": "demo-box", "engine": "codex", "session": "019a0000-demo-7000-8000-000000000002", "cwd": "~/code/webapp", "project": "webapp", "label": "work", "via": "queued", "text": "Review the login form for accessibility:\n\n- labels\n- focus order\n- error messages read by a screen reader", "route": "demo-box" },
       { "v": 1, "id": "p_2b3c4d5e6f708192", "ts": "2026-11-21T21:40:02.000Z", "host": "demo-mac", "engine": "claude", "session": "00000000-demo-4000-8000-000000000004", "cwd": "~/code/docs", "project": "docs", "label": "work", "via": "drover", "text": "continue", "route": "local" },
-      { "v": 1, "id": "p_3c4d5e6f708192a3", "ts": "2026-11-21T20:12:55.000Z", "host": "demo-spare", "engine": "claude", "session": null, "cwd": "~/notes", "project": "notes", "label": "personal", "via": "headless", "text": "Sort the notes into projects, people and reference; leave anything unsure in an inbox folder.", "route": null, "source": "sink:personal" },
-      { "v": 1, "id": "p_4d5e6f708192a3b4", "ts": "2026-11-21T19:30:00.000Z", "host": "demo-mac", "engine": "claude", "session": "00000000-demo-4000-8000-000000000002", "cwd": "~/code/demo", "project": "demo", "label": "work", "via": "peer", "from": "demo-review", "text": "The review found two nits in the lexer; see the notes at the end of the diff.", "route": "local", "future": { "anything": true } }
+      { "v": 1, "id": "p_3c4d5e6f708192a3", "ts": "2026-11-21T20:12:55.000Z", "host": "demo-spare", "engine": "claude", "session": null, "cwd": "~/notes", "project": "notes", "label": "personal", "via": "headless", "text": "Sort the notes into projects, people and reference; leave anything unsure in an inbox folder.", "route": null, "source": "sink:personal", "mine": true, "marked": true },
+      { "v": 1, "id": "p_4d5e6f708192a3b4", "ts": "2026-11-21T19:30:00.000Z", "host": "demo-mac", "engine": "claude", "session": "00000000-demo-4000-8000-000000000002", "cwd": "~/code/demo", "project": "demo", "label": "work", "via": "peer", "from": "demo-review", "text": "The review found two nits in the lexer; see the notes at the end of the diff.", "route": "local", "mine": false, "marked": true, "actor": "owner", "future": { "anything": true } }
     ],
     "more": true,
     "perHost": [
@@ -260,6 +260,19 @@ data: "line"}
       "notCovered": [{ "host": "demo-spare", "reason": "down at the last probe" }],
       "partial": [{ "host": "demo-spare", "reason": "from the personal sink clone (as of its last pull)" }]
     }
+  }
+}
+"""#,
+        "prompts.mark.json": #"""
+{
+  "ok": true,
+  "ms": 5,
+  "cache": null,
+  "result": {
+    "ok": true,
+    "ids": ["p_0d1e2f3a4b5c6d7e", "p_1a2b3c4d5e6f7081"],
+    "mine": false,
+    "event": "ev-demo-mark-0001"
   }
 }
 """#,

@@ -1,10 +1,13 @@
 // Prompts (workspace 3): every prompt typed into an agent on any machine, verbatim, newest first, from prompts.list
-// (docs/specs/2026-11-21-cohesion-overhaul.md, "Prompts: the spool"). Mine shows what a person sent (typed, queued,
-// through Drover, a headless launch); All adds what agents sent each other. `/` filters by words on the daemon (its q,
-// so older prompts match too) and on what is loaded while typing; `[` `]` one host or every host; j past the last row
-// reads the next page (before: the last id). Enter opens the session the prompt was typed in, `y` copies the text
-// (OSC 52), `l` launches a new agent with it. The list follows `mutation` and `turn` events, at most every 5 s while
-// shown. The text is shown as it was typed: wrapped, never rendered as Markdown.
+// (docs/specs/2026-11-21-cohesion-overhaul.md, "Prompts: the spool"). `who` picks one of six filters (FILTERS, never
+// `via`): Mine is what a person actually typed (into a session, tmux, Drover, or the fleet manager — record.mine,
+// after any mark); Manager narrows to via manager; Agents is via peer|agent; Programs is via headless|sdk; Not mine is
+// !record.mine; All drops the filter. `v` cycles through the six; `m` marks the selected prompt mine or not mine
+// (prompts.mark — fixes a false positive or negative, stored fleet-wide) and refreshes. `/` filters by words on the
+// daemon (its q, so older prompts match too) and on what is loaded while typing; `[` `]` one host or every host; j
+// past the last row reads the next page (before: the last id). Enter opens the session the prompt was typed in, `y`
+// copies the text (OSC 52), `l` launches a new agent with it. The list follows `mutation` and `turn` events, at most
+// every 5 s while shown. The text is shown as it was typed: wrapped, never rendered as Markdown.
 import { TableView } from './table.js';
 import { LaunchPrompt } from './overlays.js';
 import { title, kv } from './tables.js';
@@ -12,10 +15,13 @@ import { stripFor } from '../board.js';
 import { ago, tilde } from '../ui.js';
 import { wrap, oneLine, sanitize } from '../width.js';
 
-export const VIA = { mine: ['typed', 'queued', 'drover', 'headless'], all: ['typed', 'queued', 'peer', 'drover', 'headless'] };
+/** The six filters, in cycling order; who prompts.list/prompts.local take (never via). */
+export const FILTERS = ['mine', 'manager', 'agents', 'programs', 'not-mine', 'all'];
+export const FILTER_LABEL = { mine: 'Mine', manager: 'Manager', agents: 'Agents', programs: 'Programs', 'not-mine': 'Not mine', all: 'All' };
+const WHO_DESC = { mine: 'what you sent', manager: 'sent to the fleet manager', agents: 'agents to agents', programs: 'launched or run by a program', 'not-mine': 'not yours', all: 'every turn' };
 export const PAGE = 200;
 export const LIVE_MS = 5000;
-const VIA_STYLE = { typed: null, queued: 'work', peer: 'mgr', drover: 'accent', headless: 'dim' };
+const VIA_STYLE = { typed: null, queued: 'work', peer: 'mgr', agent: 'mgr', manager: 'accent', drover: 'accent', headless: 'dim', sdk: 'dim' };
 
 /** The host a record names, as the TUI addresses it: this machine is 'local'. */
 const hostOf = (r, app) => (!r?.host || r.host === 'local' || r.host === app.frontHost ? 'local' : r.host);
@@ -23,6 +29,7 @@ const hostOf = (r, app) => (!r?.host || r.host === 'local' || r.host === app.fro
 export const PROMPTS = {
   id: 'prompts', title: 'Prompts', ttl: 60_000,
   columns: [
+    { title: ' ', w: 1, get: (r, v) => (r.marked ? ['●', 'accent'] : v.who === 'all' && r.mine === false ? ['○', 'dim'] : ['']) },
     { title: 'when', w: 5, align: 'right', get: (r) => [ago(r.ts), 'dim'] },
     { title: 'host', w: 12, get: (r) => [r.host ?? '', 'dim'] },
     { title: 'engine', w: 7, get: (r) => [r.engine ?? '', 'dim'] },
@@ -34,38 +41,47 @@ export const PROMPTS = {
   preview: (r) => oneLine(r.text ?? ''),
   detail: (r, w) => {
     const out = [title(r.project || r.session?.slice(0, 8) || 'prompt', `${r.engine ?? ''} · ${r.via ?? ''} · ${r.host ?? ''}`), []];
-    out.push(...kv([['when', r.ts ? new Date(r.ts).toLocaleString() : null], ['session', r.session], ['cwd', r.cwd ? tilde(r.cwd) : null], ['label', r.label], ['route', typeof r.route === 'object' ? JSON.stringify(r.route) : r.route], ['id', r.id]], w));
+    const mine = r.mine !== false;
+    out.push(...kv([['when', r.ts ? new Date(r.ts).toLocaleString() : null], ['session', r.session], ['cwd', r.cwd ? tilde(r.cwd) : null], ['label', r.label], ['mine', `${mine ? 'yes' : 'no'}${r.marked ? ' (marked)' : ''}`], ['actor', r.actor], ['route', typeof r.route === 'object' ? JSON.stringify(r.route) : r.route], ['id', r.id]], w));
     out.push([]);
     // Verbatim: line breaks and indentation stay, long lines wrap; nothing is read as Markdown.
     const lines = wrap(sanitize(String(r.text ?? '')), Math.max(8, w - 2));
     for (const l of lines.slice(0, 400)) out.push([[' ', null], [l, null]]);
     if (lines.length > 400) out.push([[` … ${lines.length - 400} more lines (y copies all of it)`, 'dim']]);
-    out.push([], [[' Enter', 'key'], [' open the session · ', 'dim'], ['y', 'key'], [' copy · ', 'dim'], ['l', 'key'], [' launch a new agent with it', 'dim']]);
+    out.push([], [[' Enter', 'key'], [' open the session · ', 'dim'], ['y', 'key'], [' copy · ', 'dim'], ['l', 'key'], [' launch · ', 'dim'], ['m', 'key'], [mine ? ' mark not mine' : ' mark mine', 'dim']]);
     return out;
   },
   meta: (_d, v) => v.meta(),
   enterHint: 'open the session',
-  hintKeys: [['y', 'copy'], ['l', 'launch'], ['v', 'mine/all'], ['[ ]', 'host']],
+  hintKeys: [['y', 'copy'], ['l', 'launch'], ['m', 'mine/not mine'], ['v', 'filter'], ['[ ]', 'host']],
 };
 
 export class PromptsView extends TableView {
   constructor(app) {
     super(app, PROMPTS);
-    this.mode = 'mine'; this.hostFilter = null; this.more = false; this.shown = false; this.lastLoad = 0; this.liveTimer = null; this.typeTimer = null;
+    this.who = 'mine'; this.hostFilter = null; this.more = false; this.shown = false; this.lastLoad = 0; this.liveTimer = null; this.typeTimer = null;
     this.asked = '';   // the q the rows on screen were read with
   }
-  get title() { return `Prompts · ${this.mode === 'all' ? 'All' : 'Mine'}`; }
+  get title() { return `Prompts · ${FILTER_LABEL[this.who] ?? 'Mine'}`; }
   set title(_) { /* the sub-view names it */ }
 
-  /** Mine or All (the sub-view picks it); a change reads the list again. */
-  setMode(m) { const next = m === 'all' ? 'all' : 'mine'; if (next === this.mode) return; this.mode = next; this.data = null; this.rowsAll = []; this.sel = 0; this.top = 0; if (this.shown) this.load(); }
+  /** The sub-view's entry filter (Mine or All); `v` then cycles through all six from here. A change reads the list again. */
+  setMode(m) { const next = FILTERS.includes(m) ? m : 'mine'; if (next === this.who) return; this.who = next; this.data = null; this.rowsAll = []; this.sel = 0; this.top = 0; if (this.shown) this.load(); }
+  /** `v`: Mine → Manager → Agents → Programs → Not mine → All → Mine. */
+  cycleWho(dir) {
+    const i = FILTERS.indexOf(this.who);
+    this.who = FILTERS[(i + dir + FILTERS.length) % FILTERS.length];
+    this.data = null; this.rowsAll = []; this.sel = 0; this.top = 0;
+    this.app.toast(`prompts: ${FILTER_LABEL[this.who]}`, 'dim', 1500);
+    this.load();
+  }
   show() { this.shown = true; if (!this.data || Date.now() - this.at > this.def.ttl) this.load(); }
   hide() { this.shown = false; clearTimeout(this.liveTimer); this.liveTimer = null; clearTimeout(this.typeTimer); }
 
-  /** The prompts.list arguments for what is shown: words, the via set, one host, a page. */
+  /** The prompts.list arguments for what is shown: words, who, one host, a page. */
   args({ before = null } = {}) {
     const q = this.filter.trim();
-    return { ...(q ? { q } : {}), via: VIA[this.mode], ...(this.hostFilter ? { hosts: [this.hostFilter] } : {}), limit: PAGE, ...(before ? { before } : {}) };
+    return { ...(q ? { q } : {}), who: this.who, ...(this.hostFilter ? { hosts: [this.hostFilter] } : {}), limit: PAGE, ...(before ? { before } : {}) };
   }
 
   /**
@@ -107,7 +123,7 @@ export class PromptsView extends TableView {
     const d = this.data ?? {};
     const down = (d.perHost ?? []).filter((x) => x.ok === false).map((x) => x.host);
     const n = this.visible().length;
-    return `${n}${d.total != null ? ` of ${d.total}` : ''} prompts, ${this.mode === 'all' ? 'every turn (agents to agents too)' : 'what you sent'}, newest first${this.hostFilter ? ` on ${this.hostFilter}` : ' on every host'}${this.asked ? ` matching "${this.asked}"` : ''}${down.length ? ` · not answering: ${down.join(', ')}` : ''}${this.more ? ' · j past the end reads more' : ''}${this.loading && this.data ? ' · reading…' : ''}`;
+    return `${n}${d.total != null ? ` of ${d.total}` : ''} prompts, ${WHO_DESC[this.who] ?? this.who}, newest first${this.hostFilter ? ` on ${this.hostFilter}` : ' on every host'}${this.asked ? ` matching "${this.asked}"` : ''}${down.length ? ` · not answering: ${down.join(', ')}` : ''}${this.more ? ' · j past the end reads more' : ''}${this.loading && this.data ? ' · reading…' : ''}`;
   }
 
   key(ev) {
@@ -124,7 +140,8 @@ export class PromptsView extends TableView {
       case 'enter': case 'o': this.open(r); return true;
       case 'y': if (r) this.app.copy(String(r.text ?? ''), 'the prompt'); return true;
       case 'l': this.launch(r); return true;
-      case 'v': this.app.go(this.mode === 'mine' ? 'prompts/all' : 'prompts/mine'); return true;
+      case 'm': this.mark(r); return true;
+      case 'v': this.cycleWho(1); return true;
       case '[': case ']': this.cycleHost(ev.id === ']' ? 1 : -1); return true;
       case 'escape': if (this.filter) { this.filter = ''; this.load(); return true; } return false;
       default: break;
@@ -148,6 +165,17 @@ export class PromptsView extends TableView {
     this.hostFilter = names[(i + dir + names.length) % names.length];
     this.app.toast(this.hostFilter ? `prompts on ${this.hostFilter}` : 'prompts on every host', 'dim', 1500);
     this.sel = 0; this.top = 0; this.load();
+  }
+
+  /** prompts.mark: toggle the selected prompt's mine flag, stored fleet-wide, then refresh. Fixes a false positive or negative. */
+  async mark(r) {
+    if (!r) return;
+    const mine = !(r.mine !== false);
+    try {
+      await this.app.client.call('prompts.mark', { ids: [r.id], mine }, { timeoutMs: 30_000 });
+      this.app.toast(mine ? 'marked mine' : 'marked not mine', 'ok', 2000);
+      this.load();
+    } catch (e) { this.app.toast(`mark: ${e.message}`, 'err', 6000); }
   }
 
   /** The session the prompt was typed in: its strip when the board has it (answer card, pane), else by its id. */

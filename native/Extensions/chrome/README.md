@@ -15,8 +15,9 @@ A Manifest V3 extension for Drover, the local daemon that controls Claude Code a
   has Approve (Enter) and Deny (Esc) (Deliver and Drop for a held peer message), answered on the screen the
   alert was raised for; other alerts have Reply and Open.
 - Side panel Prompts (the Chat | Prompts switch at its top, or the popup's Prompts link): recent prompts from every
-  machine, newest first (`prompts.list`, the daemon's "Mine" set), a search box the daemon answers (every word must
-  match), Older prompts for the next page, a click to read one whole (verbatim, never Markdown), Copy on each, Open
+  machine, newest first (`prompts.list`), a who select (Mine, the daemon's default, Manager, Agents, Programs, Not
+  mine, All), a search box the daemon answers (every word must match), Older prompts for the next page, a click to
+  read one whole (verbatim, never Markdown), Copy on each, a mine/not-mine toggle (`prompts.mark`, fleet-wide), Open
   for a prompt whose session is on the board (it switches to Chat on that session), and Open in Drover
   (`#/prompts/mine`, with the search). Pure half: `lib/prompts.js`; drawn by `ui/prompts.js`.
 - Side panel chat: the manager is pinned first and is the default when nothing waits. A session's transcript
@@ -94,7 +95,7 @@ node tools/fake-daemon.mjs       # synthetic daemon on a local port, prints its 
 node tools/make-icons.mjs        # regenerate icons/*.png
 ```
 
-The fake daemon (`--port 7399` by default) prints `token: test-token-not-secret`. That token is fake, not a secret. It serves the fixtures in `test/fixtures` (and `prompts.*` from the shared `native/Fixtures`, filtered by via, `q`, `before` and `limit`), answers `sessions.answer` (refusing a stale hash) and `native.board`, filters the stream by `?topics=` and streams a `wait: false` manager reply as `manager` and `turn` events.
+The fake daemon (`--port 7399` by default) prints `token: test-token-not-secret`. That token is fake, not a secret. It serves the fixtures in `test/fixtures` (and `prompts.*` from the shared `native/Fixtures`, `prompts.list` filtered by `who` (or an older client's `via`), `q`, `before` and `limit`, `prompts.mark` tracked in-memory), answers `sessions.answer` (refusing a stale hash) and `native.board`, filters the stream by `?topics=` and streams a `wait: false` manager reply as `manager` and `turn` events.
 It also answers pairing: for each request it prints the `curl` command that approves the code (the stand-in for
 `drover pair approve`).
 

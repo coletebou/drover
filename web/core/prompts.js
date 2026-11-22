@@ -17,11 +17,21 @@
 //   typed     a person at the agent's prompt
 //   queued    typed while a turn ran (Claude Code writes it as a queued_command attachment, or promptSource queued)
 //   peer      a <cross-session-message> from another session
-//   drover    sent through Drover: a Claude inbox message Drover relayed (from "drover (<actor>)"), or text that a
-//             `message` event in the truth file sent to this host within MESSAGE_WINDOW_MS (tmux.send, a Codex turn)
-//   headless  the prompt a headless launch started with (a `launch` event, mode headless); a tmux launch's is drover
+//   drover    sent through Drover by a person: a Claude inbox message Drover relayed (from "drover (<actor>)"), or
+//             text that a `message` event in the truth file sent to this host within MESSAGE_WINDOW_MS (tmux.send, a
+//             Codex turn), or a tmux launch's first prompt, when the event's actor is a person (humanActor)
+//   manager   a person's message to the fleet manager: a `message` event to the OpenClaw manager on this host (engine
+//             openclaw, session manager). The manager keeps no transcript Drover reads, so the truth file is the source
+//   agent     the same, sent by an agent: actor mcp, the manager, a Grok bot, an automation's own name
+//   headless  the prompt a headless launch started with (a `launch` event, mode headless)
 //   sdk       a program's run (claude -p / the Agent SDK, codex exec) that no Drover launch started
-// "Mine" (the default of prompts.list) is typed, queued, drover and headless.
+// Records carry actor when an event or a relay named one.
+//
+// Mine. Reading a record adds mine (and marked): whether the owner typed it. A mark decides first (a `prompt-mark`
+// event in the truth file, fleet-wide, the newest per id wins: prompts.mark); else typed, queued, drover and manager
+// are mine, and peer, agent, headless and sdk are not; a via this code does not know is mine ("when in doubt, it is
+// mine"). A drover record collected before actors were kept is matched against the truth file again when read.
+// prompts.list's who picks: mine (the default), manager, agents (peer, agent), programs (headless, sdk), not-mine, all.
 import { readdir, stat, readFile, writeFile, appendFile, mkdir, rename, chmod } from 'node:fs/promises';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -35,10 +45,23 @@ import { localShortName } from './hosts.js';
 import * as events from './events.js';
 import { daemonEndpoint, callDaemon } from './daemon-client.js';
 import { loadConfig, Sinks, cloneHostDirs } from './prompt-sinks.js';
+import { isOwnerClient, OWNER } from './owner.js';
 
-export const VIA = ['typed', 'queued', 'peer', 'drover', 'headless', 'sdk'];
-export const MINE = ['typed', 'queued', 'drover', 'headless'];
-export const ENGINES = ['claude', 'codex'];
+export const VIA = ['typed', 'queued', 'drover', 'manager', 'peer', 'agent', 'headless', 'sdk'];
+/** The vias that are the owner's own words unless a mark says otherwise. */
+export const MINE = ['typed', 'queued', 'drover', 'manager'];
+/** prompts.list's who: each a test of a read record (mine and via set). */
+export const WHO = {
+  mine: (r) => r.mine === true,
+  manager: (r) => r.via === 'manager',
+  agents: (r) => r.via === 'peer' || r.via === 'agent',
+  programs: (r) => r.via === 'headless' || r.via === 'sdk',
+  'not-mine': (r) => r.mine !== true,
+  all: () => true,
+};
+export const ENGINES = ['claude', 'codex', 'openclaw'];
+/** At most this many ids in one prompts.mark. */
+export const MARK_MAX = 500;
 export const LIMIT = 200, MAX_LIMIT = 2000;
 /** A `message` event counts for a prompt within this of its time, either side (clocks, delivery, the paste). */
 export const MESSAGE_WINDOW_MS = 5 * 60_000;
@@ -94,7 +117,7 @@ export function claudePrompt(line) {
     const q = queuedMessage(d);
     if (!q || q.kind === 'coordinator') return out;
     const text = tidy(userText(q.text));
-    if (text) out.prompt = { via: q.via, from: q.from ?? null, text };
+    if (text) out.prompt = { via: q.via, from: q.from ?? null, text, ...(q.actor ? { actor: q.actor } : {}) };
     return out;
   }
   if (d.isCompactSummary || d.isVisibleInTranscriptOnly) return out;
@@ -110,7 +133,7 @@ export function claudePrompt(line) {
   if (peer) {
     const a = raw.match(PEER_ATTRS)?.[1] ?? '';
     const who = peerSender({ kind: 'peer', name: attr(a, 'from-name') ?? attr(a, 'from'), body: '' });
-    out.prompt = { via: who?.via ?? 'peer', from: who?.from ?? null, text };
+    out.prompt = { via: who?.via ?? 'peer', from: who?.from ?? null, text, ...(who?.actor ? { actor: who.actor } : {}) };
   } else {
     const sdk = origin === 'sdk' || d.promptSource === 'sdk' || /^sdk/.test(String(d.entrypoint ?? ''));
     out.prompt = { via: d.promptSource === 'queued' ? 'queued' : sdk ? 'sdk' : 'typed', from: null, text };
@@ -235,34 +258,119 @@ export class Labeler {
 
 const matchKey = (s) => tidy(String(s ?? '')).replace(/\s+/g, ' ').trim().slice(0, 1500);
 
-/** The truth file's `message` and `launch` events for this host, by their text: which prompts Drover sent. */
+/**
+ * Whether a truth-file actor is a person: none named, one of the owner's clients (the owner, web, tui, the apps and
+ * extensions: owner.js isOwnerClient) or cli (drover send at a shell: a person, or a script; when in doubt, a person).
+ * Everything else is an agent: mcp, the manager (manager, manager-<host>), a Grok bot, the coordinator, an automation's
+ * own name (an MCP server keeps the actor a call names, but never an owner client's: mcp/server.js writeActor).
+ */
+export function humanActor(actor) {
+  if (actor === undefined || actor === null || actor === '') return true;
+  return isOwnerClient(actor) || String(actor).toLowerCase() === 'cli';
+}
+
+/** A prompt-mark event's prompt ids (prompts: a list; the event's own id is its id). */
+const markIds = (ev) => (Array.isArray(ev.prompts) ? ev.prompts : []);
+
+/**
+ * The truth file as the prompts read it: its `message` and `launch` events for this host by their text (which prompts
+ * Drover sent, and who sent them), its messages to the fleet manager here (manager prompts), and the marks.
+ */
 export class TruthIndex {
-  constructor({ file = events.EVENTS_PATH, host } = {}) { this.file = file; this.host = host; this.map = new Map(); this.sig = null; }
+  constructor({ file = events.EVENTS_PATH, host } = {}) { this.file = file; this.host = host; this.map = new Map(); this.marks = new Map(); this.manager = []; this.sig = null; }
   async refresh() {
     const all = await events.readAll(this.file).catch(() => null);
     if (!all) return;
     const sig = `${all.length}|${all.at(-1)?.id ?? ''}`;
     if (sig === this.sig) return;
     this.sig = sig;
-    const map = new Map();
+    const map = new Map(), marks = new Map(), manager = [];
     const add = (text, e) => { const k = matchKey(text); if (!k) return; let l = map.get(k); if (!l) map.set(k, (l = [])); l.push(e); };
     for (const ev of all) {
+      if (ev?.type === 'prompt-mark') {
+        // all is in ts order: a later mark replaces an earlier one.
+        const mine = ev.mine === true ? true : ev.mine === false ? false : null;
+        for (const id of markIds(ev)) if (typeof id === 'string') { if (mine === null) marks.delete(id); else marks.set(id, { mine, actor: ev.actor ?? null, ts: ev.ts }); }
+        continue;
+      }
       const ms = Date.parse(ev?.ts ?? '');
       if (!Number.isFinite(ms)) continue;
-      if (ev.type === 'message' && typeof ev.text === 'string' && ev.delivery?.ok !== false && (!ev.to?.host || ev.to.host === this.host)) add(ev.text, { ms, via: 'drover', launch: false });
-      else if (ev.type === 'launch' && typeof ev.prompt === 'string' && (!ev.host || ev.host === this.host)) add(ev.prompt, { ms, via: ev.mode === 'headless' ? 'headless' : 'drover', launch: true });
+      const human = humanActor(ev.actor);
+      const actor = typeof ev.actor === 'string' && ev.actor ? ev.actor : null;
+      if (ev.type === 'message' && typeof ev.text === 'string' && ev.delivery?.ok !== false) {
+        const to = ev.to && typeof ev.to === 'object' ? ev.to : null;
+        if (to?.kind === 'openclaw') { if (to.host === this.host) manager.push(ev); continue; }
+        if (!to?.host || to.host === this.host) add(ev.text, { ms, via: human ? 'drover' : 'agent', actor, launch: false });
+      } else if (ev.type === 'launch' && typeof ev.prompt === 'string' && (!ev.host || ev.host === this.host)) {
+        add(ev.prompt, { ms, via: ev.mode === 'headless' ? 'headless' : human ? 'drover' : 'agent', actor, launch: true });
+      }
     }
-    this.map = map;
+    this.map = map; this.marks = marks; this.manager = manager;
   }
-  /** 'drover' or 'headless' when Drover sent this text near this time, else null. */
-  match(text, ms) {
+  /** { via, actor } when Drover sent this text near this time (via drover, agent or headless), else null. */
+  find(text, ms) {
     const l = this.map.get(matchKey(text));
     if (!l || !Number.isFinite(ms)) return null;
     for (const e of l) {
-      if (e.launch ? ms >= e.ms - 60_000 && ms - e.ms <= LAUNCH_WINDOW_MS : Math.abs(ms - e.ms) <= MESSAGE_WINDOW_MS) return e.via;
+      if (e.launch ? ms >= e.ms - 60_000 && ms - e.ms <= LAUNCH_WINDOW_MS : Math.abs(ms - e.ms) <= MESSAGE_WINDOW_MS) return { via: e.via, actor: e.actor };
     }
     return null;
   }
+  /** The via alone (find's), or null. */
+  match(text, ms) { return this.find(text, ms)?.via ?? null; }
+}
+
+// One index per truth file for readers (prompts.local and the front's prompts.list, in any process), refreshed at
+// most every READ_REFRESH_MS: readAll is incremental, but the index is rebuilt whenever the file changed.
+const READ_REFRESH_MS = 5_000;
+const views = new Map(); // file -> { index, at, pending }
+/** The truth index for reading records (marks, and drover records collected before actors were kept). */
+export async function truthView({ file = events.EVENTS_PATH, host = localShortName() } = {}) {
+  const key = `${file}\0${host}`;
+  let v = views.get(key);
+  if (!v) views.set(key, (v = { index: new TruthIndex({ file, host }), at: 0, pending: null }));
+  if (Date.now() - v.at > READ_REFRESH_MS) {
+    v.pending ??= v.index.refresh().catch(() => {}).finally(() => { v.at = Date.now(); v.pending = null; });
+    await v.pending;
+  }
+  return v.index;
+}
+/** Tests: forget the readers' indexes. */
+export function _resetViews() { views.clear(); }
+
+const KNOWN_VIA = new Set(VIA);
+const MINE_SET = new Set(MINE);
+const classMemo = new WeakMap(); // record -> { sig, via, actor }
+
+/**
+ * A stored record as read: via and actor (a drover record without an actor is matched again against the truth file),
+ * then mine and marked: a mark (marks overlay, then the index's) decides, else MINE, else an unknown via is mine.
+ * Never changes the record: returns a copy.
+ */
+export function classify(r, index = null, overlay = null) {
+  let via = r.via, actor = r.actor ?? null;
+  if (via === 'drover' && !actor && index) {
+    let m = classMemo.get(r);
+    if (!m || m.sig !== index.sig) {
+      const hit = index.find(r.text, Date.parse(r.ts ?? ''));
+      m = { sig: index.sig, via: hit?.via ?? via, actor: hit?.actor ?? null };
+      classMemo.set(r, m);
+    }
+    via = m.via; actor = m.actor;
+  }
+  const own = overlay && Object.prototype.hasOwnProperty.call(overlay, r.id) ? overlay[r.id] : undefined;
+  const mark = own === true || own === false ? { mine: own } : own === null ? null : index?.marks.get(r.id) ?? null;
+  const mine = mark ? mark.mine : MINE_SET.has(via) || !KNOWN_VIA.has(via);
+  const out = { ...r, via, mine, marked: Boolean(mark) };
+  if (actor) out.actor = actor;
+  return out;
+}
+
+/** The marks of a truth index as prompts.list hands them to hosts: { id: mine }, the newest max. */
+export function marksOverlay(index, max = 5000) {
+  const all = [...(index?.marks ?? new Map())];
+  if (all.length > max) all.sort((a, b) => (a[1].ts < b[1].ts ? 1 : -1)).length = max;
+  return Object.fromEntries(all.map(([id, m]) => [id, m.mine]));
 }
 
 // ---------------------------------------------------------------- the collector (the daemon's one writer)
@@ -356,6 +464,7 @@ export class Collector {
         if (Date.now() - lastSave > 2000) { await this.#saveOffsets(); lastSave = Date.now(); }
         await yieldNow();
       }
+      run.added += await this.#readManager();
       this.state.lastError = null;
     } catch (e) {
       this.state.lastError = String(e.message ?? e).slice(0, 300);
@@ -411,13 +520,36 @@ export class Collector {
     const cwd = r.cwd ?? st.cwd ?? null;
     const ts = isoOf(r.ts) ?? fallbackTs ?? new Date().toISOString();
     const { text } = r.prompt;
-    let via = r.prompt.via;
-    if (via === 'typed' || via === 'queued' || via === 'sdk') via = this.truth.match(text, Date.parse(ts)) ?? via;
+    let via = r.prompt.via, actor = r.prompt.actor ?? null;
+    if (via === 'drover' && actor) via = humanActor(actor) ? 'drover' : 'agent';
+    else if (via === 'typed' || via === 'queued' || via === 'sdk' || via === 'drover') {
+      const hit = this.truth.find(text, Date.parse(ts));
+      if (hit) { via = hit.via; actor ??= hit.actor; }
+    }
     const session = st.session ?? null;
     const rec = { v: 1, id: promptId({ host: this.host, engine, session, ref: r.ref ?? ts, text }), ts, host: this.host, engine, session,
       cwd: tilde(cwd, this.home), project: projectOf(cwd), label: this.labeler?.label(cwd) ?? (this.identity || 'default'), via, text };
     if (r.prompt.from) rec.from = r.prompt.from;
+    if (actor) rec.actor = actor;
     return rec;
+  }
+
+  /** Messages to the fleet manager on this host (the truth file's; the manager keeps no transcript read here). */
+  async #readManager() {
+    const recs = [];
+    for (const ev of this.truth.manager) {
+      const text = tidy(ev.text);
+      if (!text) continue;
+      const ts = isoOf(ev.ts);
+      if (!ts) continue;
+      const session = typeof ev.to?.id === 'string' && ev.to.id ? ev.to.id : 'manager';
+      const rec = { v: 1, id: promptId({ host: this.host, engine: 'openclaw', session, ref: ev.id ?? ts, text }), ts, host: this.host, engine: 'openclaw', session,
+        cwd: null, project: null, label: this.identity || 'default', via: humanActor(ev.actor) ? 'manager' : 'agent', text };
+      if (typeof ev.thread === 'string' && ev.thread) rec.thread = ev.thread;
+      if (typeof ev.actor === 'string' && ev.actor) rec.actor = ev.actor;
+      recs.push(rec);
+    }
+    return this.#append(recs);
   }
 
   /** Append the records not in the spool yet, each to its own UTC day's file. Returns how many were new. */
@@ -475,10 +607,12 @@ const setOf = (v) => {
 };
 
 /**
- * The filters of prompts.list and prompts.local as one test: q (words, every one in the text, any case), engine,
- * label and via (a value or a list; via defaults to MINE, 'all' or '*' is every via; an id filter alone takes every
- * via), since and until (whenMs), session (an id or its prefix), cwd (the directory or one under it; ~ allowed), id
- * (one or a list). Also the days to read and the paging cursor (before + beforeTs: what comes after that record).
+ * The filters of prompts.list and prompts.local as one test of a read record (classify): q (words, every one in the
+ * text, any case), who (a WHO name: mine, manager, agents, programs, not-mine, all; the default is mine unless via or
+ * id is given), via (a value or a list, for clients from before who: alone it replaces who; 'all' or '*' is every
+ * via), engine, label, since and until (whenMs), session (an id or its prefix), cwd (the directory or one under it;
+ * ~ allowed), id (one or a list; alone it takes every record). Also the days to read and the paging cursor (before +
+ * beforeTs: what comes after that record), and marks (prompts.list's overlay of the front's marks, { id: mine }).
  */
 export function compileFilter(a = {}, { env = process.env } = {}) {
   const home = homeOf(env);
@@ -486,7 +620,9 @@ export function compileFilter(a = {}, { env = process.env } = {}) {
   const engine = setOf(a.engine), label = setOf(a.label), ids = setOf(a.id ?? a.ids);
   let via = setOf(a.via);
   if (via && (via.has('all') || via.has('*'))) via = null;
-  else if (!via && !ids) via = new Set(MINE);
+  const whoName = typeof a.who === 'string' && a.who ? a.who.trim().toLowerCase() : null;
+  if (whoName && !WHO[whoName]) throw new Error(`who: one of ${Object.keys(WHO).join(', ')}`);
+  const who = whoName ? WHO[whoName] : via || ids || a.via ? null : WHO.mine;
   const since = whenMs(a.since), until = whenMs(a.until);
   const session = typeof a.session === 'string' && a.session ? a.session : null;
   let cwd = typeof a.cwd === 'string' && a.cwd ? a.cwd.replace(/\/+$/, '') : null;
@@ -495,6 +631,7 @@ export function compileFilter(a = {}, { env = process.env } = {}) {
   const test = (r) => {
     if (!r || typeof r.id !== 'string' || typeof r.ts !== 'string') return false;
     if (ids && !ids.has(r.id)) return false;
+    if (who && !who(r)) return false;
     if (via && !via.has(r.via)) return false;
     if (engine && !engine.has(r.engine)) return false;
     if (label && !label.has(r.label)) return false;
@@ -505,7 +642,15 @@ export function compileFilter(a = {}, { env = process.env } = {}) {
     if (words.length) { const t = String(r.text ?? '').toLowerCase(); if (!words.every((w) => t.includes(w))) return false; }
     return true;
   };
-  return { test, sinceDay: sinceIso?.slice(0, 10) ?? null, untilDay: untilIso?.slice(0, 10) ?? null, before: typeof a.before === 'string' && a.before ? a.before : null, beforeTs: typeof a.beforeTs === 'string' && a.beforeTs ? a.beforeTs : null };
+  const marks = a.marks && typeof a.marks === 'object' && !Array.isArray(a.marks) ? a.marks : null;
+  return { test, classify: (r) => classify(r, null, marks), marks, sinceDay: sinceIso?.slice(0, 10) ?? null, untilDay: untilIso?.slice(0, 10) ?? null, before: typeof a.before === 'string' && a.before ? a.before : null, beforeTs: typeof a.beforeTs === 'string' && a.beforeTs ? a.beforeTs : null };
+}
+
+/** compileFilter, with records read against this host's truth file (its marks; old drover records' senders). */
+async function readFilter(a, env) {
+  const f = compileFilter(a, { env });
+  const index = await truthView({ file: _deps.eventsFile ?? events.EVENTS_PATH }).catch(() => null);
+  return { ...f, classify: (r) => classify(r, index, f.marks) };
 }
 
 /** Newest first: ts, then id (so a page boundary between two prompts of the same millisecond is still exact). */
@@ -560,7 +705,8 @@ export async function readDirs(dirs, f, { limit = LIMIT } = {}) {
     for (const file of byDay.get(day)) for (const r of await dayRecords(file)) if (!seen.has(r.id)) { seen.add(r.id); recs.push(r); }
     // The cursor's own record names its time: found here, the rest of this day and every earlier day come after it.
     if (cursor === null) { const hit = recs.find((r) => r.id === f.before); if (hit) cursor = { ts: hit.ts, id: hit.id }; else continue; }
-    const hits = recs.filter(f.test).sort(newestFirst);
+    const read = f.classify ? recs.map(f.classify) : recs;
+    const hits = read.filter(f.test).sort(newestFirst);
     total += hits.length;
     for (const r of hits) {
       if (cursor && !afterCursor(r, cursor.ts, cursor.id)) continue;
@@ -576,7 +722,7 @@ export async function readDirs(dirs, f, { limit = LIMIT } = {}) {
 /** prompts.local: this host's records. */
 export async function listLocal(args = {}, { env = process.env } = {}) {
   const t0 = Date.now();
-  const f = compileFilter(args, { env });
+  const f = await readFilter(args, env);
   const r = await readDirs([spoolDir(env)], f, { limit: args.limit });
   return { host: localShortName(), ...r, ms: Date.now() - t0 };
 }
@@ -587,7 +733,7 @@ export async function listLocal(args = {}, { env = process.env } = {}) {
  */
 export async function listClones(args = {}, { env = process.env, include = null, exclude = new Set() } = {}) {
   const cfg = await loadConfig(env);
-  const f = compileFilter(args, { env });
+  const f = await readFilter(args, env);
   const byHost = new Map();
   for (const { sink, host, dir } of await cloneHostDirs(cfg, env)) {
     if (exclude.has(host) || (include && !include.has(host))) continue;
@@ -617,7 +763,7 @@ export async function findTs(id, { env = process.env } = {}) {
 
 let daemon = false;
 let svc = null;
-export const _deps = { env: process.env };
+export const _deps = { env: process.env, eventsFile: null };
 /** Called by the HTTP server: this process is the host's daemon and owns the collector and the sinks. */
 export function markDaemon() { daemon = true; }
 
@@ -678,8 +824,27 @@ const viaDaemon = (op, fn, timeoutMs) => async (args = {}) => {
   return fn(args);
 };
 
+/**
+ * prompts.mark: the owner says these prompts are theirs (mine true) or not (false), or takes a mark back (null: the
+ * automatic answer again). One `prompt-mark` event in the truth file, which dotsync carries to every host; the
+ * newest mark of an id wins. Returns { ok, ids, mine, event }.
+ */
+async function markPrompts({ id, ids, mine, actor = OWNER } = {}) {
+  const list = [...new Set((Array.isArray(ids) ? ids : typeof ids === 'string' ? ids.split(',') : []).concat(typeof id === 'string' ? [id] : []).map((x) => String(x).trim()).filter(Boolean))];
+  if (!list.length) throw new Error('prompts.mark: id or ids required');
+  if (list.length > MARK_MAX) throw new Error(`prompts.mark: at most ${MARK_MAX} ids`);
+  const bad = list.find((x) => !/^p_[0-9a-f]{16}$/.test(x));
+  if (bad) throw new Error(`prompts.mark: ${JSON.stringify(bad.slice(0, 40))} is no prompt id`);
+  const v = mine === true || mine === 'true' ? true : mine === false || mine === 'false' ? false : mine === null || mine === 'null' || mine === 'auto' ? null : undefined;
+  if (v === undefined) throw new Error('prompts.mark: mine must be true, false or null (clear)');
+  const event = await events.append({ type: 'prompt-mark', prompts: list, mine: v }, { actor, file: _deps.eventsFile ?? events.EVENTS_PATH });
+  for (const view of views.values()) view.at = 0;
+  return { ok: true, ids: list, mine: v, event };
+}
+
 export const ops = {
   'prompts.local': (args = {}) => listLocal(args, { env: _deps.env }),
+  'prompts.mark': markPrompts,
   'prompts.status': viaDaemon('prompts.status', statusHere, 15_000),
   'prompts.sync': viaDaemon('prompts.sync', syncHere, 600_000),
 };

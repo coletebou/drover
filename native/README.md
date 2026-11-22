@@ -17,7 +17,8 @@ Work, Fleet, Find, Settings), and shows only the ones it has screens for:
 | iOS (`Apps/iOS`) | Manager tab | Agents tab, Lanes or List at its top | Prompts tab | hosts on Lanes | Settings tab |
 | Chrome and Safari (`Extensions/`) | popup, side panel | popup, side panel Chat | side panel Prompts (popup: a Prompts link) | | options page |
 
-Prompts are `prompts.list` (newest first, every machine, the daemon's default "Mine" set unless a client asks for
-`via: "all"`), `prompts.status` and `prompts.sync`, in DroverKit's models (`Packages/DroverKit/API.md`). Links into the
-web UI use its workspace routes (`#/agents/lanes`, `#/prompts/mine`, `#/manager`; `web/ui/routes.js`).
+Prompts are `prompts.list` (newest first, every machine, `who`: the daemon's default "Mine", or Manager, Agents,
+Programs, Not mine, All) and `prompts.mark` (mark one mine or not, fleet-wide), plus `prompts.status` and
+`prompts.sync`, in DroverKit's models (`Packages/DroverKit/API.md`). Links into the web UI use its workspace routes
+(`#/agents/lanes`, `#/prompts/mine`, `#/manager`; `web/ui/routes.js`).
 

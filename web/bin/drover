@@ -76,10 +76,12 @@ const help = `drover: browser control plane for the agent fleet
   drover transcripts [--engine claude|codex|openclaw] [--kind K] [--days N] [--limit N] [--parent ID] [--host H] [--json]
                                                             every transcript on a machine: sessions, subagents, headless, reflection and dotsync
                                                             runs, Codex exec, OpenClaw heartbeats and cron runs
-  drover prompts [words...] [--host H] [--all] [--via typed,peer,...] [--engine E] [--label L] [--since 7d] [--until T]
+  drover prompts [words...] [--host H] [--who W | --all] [--engine E] [--label L] [--since 7d] [--until T]
                  [--session ID] [--cwd DIR] [--limit N] [--full] [--json]
-                                                            every prompt typed into Claude Code or Codex on every machine, newest first
-                                                            (--all: peer and sdk turns too); words after -- are always search words
+                                                            every prompt you typed into Claude Code, Codex or the manager on every
+                                                            machine, newest first; --who manager, agents, programs, not-mine or all
+                                                            (--all); words after -- are always search words
+  drover prompts mark ID... --mine | --not-mine | --clear     say a prompt is yours or not (fleet-wide), or take the mark back
   drover prompts status [--host H] [--json]                   this machine's prompt spool, last scan and sinks
   drover prompts sync [--sinks a,b] [--host H] [--json]       scan now, then push every sink (prompts.json)
   drover stacks [--here | --host H] [--project P] [--fresh] [--no-git] [--all] [--json]
@@ -439,8 +441,8 @@ async function main() {
 async function promptsCli() {
   const dash = argv.indexOf('--');
   const head = dash < 0 ? argv.slice(1) : argv.slice(1, dash);
-  const sub = ['status', 'sync'].includes(head[0]) ? head[0] : null;
-  const valued = new Set(['host', 'limit', 'via', 'engine', 'label', 'since', 'until', 'session', 'cwd', 'sinks', 'before']);
+  const sub = ['status', 'sync', 'mark'].includes(head[0]) ? head[0] : null;
+  const valued = new Set(['host', 'limit', 'via', 'who', 'engine', 'label', 'since', 'until', 'session', 'cwd', 'sinks', 'before']);
   const words = [];
   for (let i = sub ? 1 : 0; i < head.length; i++) { if (head[i].startsWith('--')) { if (valued.has(head[i].slice(2))) i++; continue; } words.push(head[i]); }
   if (dash >= 0) words.push(...argv.slice(dash + 1));
@@ -470,16 +472,26 @@ async function promptsCli() {
     }
     return stop();
   }
+  if (sub === 'mark') {
+    const mine = has('mine') ? true : has('not-mine') ? false : has('clear') ? null : undefined;
+    if (mine === undefined || !words.length) { console.error('usage: drover prompts mark ID... --mine | --not-mine | --clear'); process.exitCode = 2; return; }
+    const { cliOp } = await import(path.join(ROOT, 'core', 'cli-op.js'));
+    const r = await cliOp('prompts.mark', { ids: words, mine, actor: 'cli', ...(host ? { host } : {}) });
+    if (has('json')) console.log(JSON.stringify(r, null, 2));
+    else console.log(`${r.ids.length} prompt${r.ids.length === 1 ? '' : 's'} ${r.mine === null ? 'unmarked (automatic again)' : r.mine ? 'marked mine' : 'marked not mine'}`);
+    return stop();
+  }
   const { dispatch } = await import(path.join(ROOT, 'core', 'api.js'));
   const args = { limit: Number(flag('limit', 50)), ...(words.length ? { q: words.join(' ') } : {}), ...(host ? { host } : {}) };
-  for (const k of ['engine', 'label', 'since', 'until', 'session', 'cwd', 'before']) if (flag(k)) args[k] = flag(k);
-  if (has('all')) args.via = 'all'; else if (flag('via')) args.via = flag('via').split(',');
+  for (const k of ['engine', 'label', 'since', 'until', 'session', 'cwd', 'before', 'who']) if (flag(k)) args[k] = flag(k);
+  if (has('all')) args.who = 'all'; else if (flag('via')) args.via = flag('via').split(',');
   const r = await dispatch('prompts.list', args);
   if (has('json')) { console.log(JSON.stringify(r, null, 2)); return stop(); }
   const width = process.stdout.isTTY ? process.stdout.columns || 120 : 0;
   for (const p of [...r.prompts].reverse()) {
     const when = p.ts.replace('T', ' ').slice(0, 16);
-    const head = `${when}  ${p.host}  ${p.engine}  ${p.via}${p.from ? `:${p.from}` : ''}  ${p.project ?? '-'}  `;
+    const whose = p.mine === false ? ' not-mine' : '';
+    const head = `${when}  ${p.host}  ${p.engine}  ${p.via}${p.from ? `:${p.from}` : ''}${whose}${p.marked ? '*' : ''}  ${p.project ?? '-'}  `;
     if (has('full')) { console.log(`${head}${p.id}\n${p.text}\n`); continue; }
     const lines = p.text.split('\n');
     let line = `${head}${lines[0]}${lines.length > 1 ? `  (+${lines.length - 1} lines)` : ''}`;

@@ -26,6 +26,8 @@ import Testing
         #expect(first.route == "local")
         #expect(first.opHost == "local")
         #expect(first.ts.isoString == "2026-11-21T22:03:11.000Z")
+        #expect(first.mine == true)
+        #expect(first.marked == nil)
         // Newest first, as the daemon sends them.
         #expect(l.prompts.map(\.ts) == l.prompts.map(\.ts).sorted(by: >))
         // A multi-line prompt keeps every line, verbatim.
@@ -41,6 +43,10 @@ import Testing
         // A peer message names its sender; an unknown field is ignored.
         #expect(l.prompts[4].via == .peer)
         #expect(l.prompts[4].from == "demo-review")
+        // A mark can agree with the via default and still be recorded: someone confirmed this one is not theirs.
+        #expect(l.prompts[4].mine == false)
+        #expect(l.prompts[4].marked == true)
+        #expect(l.prompts[4].actor == "owner")
         #expect(l.perHost.count == 3)
         #expect(l.downHosts.isEmpty, "the down host's records came from a sink clone")
         #expect(l.coverage?.searched == ["demo-mac", "demo-box"])
@@ -110,16 +116,28 @@ import Testing
     @Test func queryArguments() {
         #expect(PromptsQuery().arguments == ["limit": 200])
         #expect(PromptsQuery(scope: .all, q: "  build failed ", host: "demo-box", engine: "codex", label: "", before: "p_1", limit: 5000).arguments
-            == ["q": "build failed", "host": "demo-box", "engine": "codex", "before": "p_1", "limit": 2000, "via": "all"])
+            == ["q": "build failed", "host": "demo-box", "engine": "codex", "before": "p_1", "limit": 2000, "who": "all"])
         #expect(PromptsQuery(q: "   ", limit: nil).arguments == [:])
         let page = PromptsQuery(q: "x").after(PromptRecord(id: "p_last", ts: DroverTimestamp(Date(timeIntervalSince1970: 0)), host: "h", engine: .claude, text: "t"))
         #expect(page.arguments["before"] == "p_last")
         #expect(page.arguments["q"] == "x")
+        // The other four scopes, by rawValue (not-mine has a hyphen the enum case cannot).
+        #expect(PromptsQuery(scope: .manager).arguments["who"] == "manager")
+        #expect(PromptsQuery(scope: .agents).arguments["who"] == "agents")
+        #expect(PromptsQuery(scope: .programs).arguments["who"] == "programs")
+        #expect(PromptsQuery(scope: .notMine).arguments["who"] == "not-mine")
     }
 
     @Test func queryEncodesAsTheArgumentObject() throws {
         let data = try JSONEncoder().encode(PromptsQuery(scope: .all, q: "tests"))
-        #expect(try JSONDecoder().decode(JSONValue.self, from: data) == ["q": "tests", "limit": 200, "via": "all"])
+        #expect(try JSONDecoder().decode(JSONValue.self, from: data) == ["q": "tests", "limit": 200, "who": "all"])
+    }
+
+    @Test func scopeCasesAndTitles() {
+        #expect(PromptsQuery.Scope.allCases == [.mine, .manager, .agents, .programs, .notMine, .all])
+        #expect(PromptsQuery.Scope.notMine.rawValue == "not-mine")
+        #expect(PromptsQuery.Scope.notMine.id == "not-mine")
+        #expect(PromptsQuery.Scope.allCases.map(\.title) == ["Mine", "Manager", "Agents", "Programs", "Not mine", "All"])
     }
 
     @Test func mergeByIdNewestFirst() {
@@ -138,7 +156,25 @@ import Testing
         #expect(PromptVia.typed.label == "")
         #expect(PromptVia.drover.label == "via Drover")
         #expect(PromptVia.headless.label == "launch")
-        #expect(PromptVia.mine == [.typed, .queued, .drover, .headless])
+        #expect(PromptVia.manager.label == "to manager")
+        #expect(PromptVia.agent.label == "via drover_send")
+        #expect(PromptVia.peer.label == "from an agent")
+        #expect(PromptVia.mine == [.typed, .queued, .drover, .manager])
+    }
+
+    @Test func markResultFixture() throws {
+        let r: PromptsMarkResult = try envelope("prompts.mark.json")
+        #expect(r.ok == true)
+        #expect(r.ids == ["p_0d1e2f3a4b5c6d7e", "p_1a2b3c4d5e6f7081"])
+        #expect(r.mine == false)
+        #expect(r.event == "ev-demo-mark-0001")
+    }
+
+    @Test func markResultDecodesOddPayloads() throws {
+        let cleared: PromptsMarkResult = try decode(#"{"ok":true,"ids":["p_1"],"mine":null,"event":"ev-1"}"#)
+        #expect(cleared.mine == nil)
+        let empty: PromptsMarkResult = try decode("{}")
+        #expect(empty.ids.isEmpty && empty.ok == nil && empty.mine == nil)
     }
 
     @Test func widgetScopedClientNeverSendsPromptOps() async {
@@ -147,5 +183,6 @@ import Testing
         await #expect(throws: DroverError.forbidden("prompts.sync needs the main token")) { try await c.syncPrompts() }
         await #expect(throws: DroverError.forbidden("prompts.list needs the main token")) { try await c.prompts() }
         await #expect(throws: DroverError.forbidden("prompts.status needs the main token")) { try await c.promptsStatus() }
+        await #expect(throws: DroverError.forbidden("prompts.mark needs the main token")) { try await c.markPrompts(ids: ["p_1"], mine: true) }
     }
 }
