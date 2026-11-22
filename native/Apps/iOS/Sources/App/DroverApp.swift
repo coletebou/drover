@@ -55,20 +55,23 @@ struct DroverApp: App {
     }
 }
 
-/// Four tabs. On iPad each tab hosts its own split view, so the tab bar stays and the content adapts.
+/// Four tabs, the workspaces every client shares: Agents (Lanes or List, picked at its top), Prompts, Manager,
+/// Settings. On iPad each tab hosts its own split view, so the tab bar stays and the content adapts.
 struct RootView: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
         @Bindable var model = model
-        TabView(selection: $model.selectedTab) {
-            BoardView()
-                .tabItem { Label("Board", systemImage: "square.grid.2x2") }
-                .badge(model.summary?.totals.waiting ?? 0)
-                .tag(AppModel.Tab.board)
-            SessionsView()
-                .tabItem { Label("Sessions", systemImage: "list.bullet.rectangle") }
-                .tag(AppModel.Tab.sessions)
+        TabView(selection: $model.tabBarSelection) {
+            Group {
+                if model.selectedTab == .sessions { SessionsView() } else { BoardView() }
+            }
+            .tabItem { Label("Agents", systemImage: "square.grid.2x2") }
+            .badge(model.summary?.totals.waiting ?? 0)
+            .tag(AppModel.Tab.board)
+            PromptsView()
+                .tabItem { Label("Prompts", systemImage: "text.bubble") }
+                .tag(AppModel.Tab.prompts)
             ManagerView()
                 .tabItem { Label("Manager", systemImage: "person.crop.circle.badge.checkmark") }
                 .tag(AppModel.Tab.manager)
@@ -77,6 +80,23 @@ struct RootView: View {
                 .tag(AppModel.Tab.settings)
         }
         .tint(Theme.textPrimary)
+    }
+}
+
+/// Lanes or List at the top of the Agents tab (the sidebar's navigation bar), bound to the tab it shows.
+struct AgentsPicker: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        Picker("Agents", selection: Binding(get: { model.selectedTab == .sessions ? AppModel.Tab.sessions : .board },
+                                            set: { model.selectedTab = $0 })) {
+            Text("Lanes").tag(AppModel.Tab.board)
+            Text("List").tag(AppModel.Tab.sessions)
+        }
+        .pickerStyle(.segmented)
+        .fixedSize()
+        .accessibilityLabel("Agents view")
+        .accessibilityHint("Lanes shows what waits on you and what works; List shows every session")
     }
 }
 

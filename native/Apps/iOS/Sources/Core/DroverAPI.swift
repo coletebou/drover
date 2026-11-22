@@ -1,8 +1,9 @@
 import Foundation
 
 /// Everything the iOS app asks of Drover. `HTTPDroverAPI` is the live implementation, `MockDroverAPI` serves
-/// previews and logic tests. Views never build URLs themselves.
-protocol DroverAPI: Sendable {
+/// previews and logic tests. Views never build URLs themselves. The prompt spool's calls are `PromptsAPI`
+/// (Prompts/PromptsAPI.swift, DroverKit's models).
+protocol DroverAPI: PromptsAPI {
     func summary() async throws -> NativeSummary
     /// Items newer than `cursor`, oldest first. `wait` (seconds, max 25) long-polls on the daemon.
     func notifications(since cursor: String?, wait: Int?) async throws -> NotificationFeed

@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Every session on every up host, grouped by host, with search and a state filter.
+/// Agents › List: every session on every up host, grouped by host, with search and a state filter.
 struct SessionsView: View {
     @Environment(AppModel.self) private var model
     @State private var filter: SessionsFilter = .live
@@ -10,7 +10,9 @@ struct SessionsView: View {
         @Bindable var model = model
         NavigationSplitView {
             sidebar(selection: $model.sessionsSelection)
-                .navigationTitle("Sessions")
+                .navigationTitle("Agents")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .principal) { AgentsPicker() } }
         } detail: {
             if let ref = model.sessionsSelection {
                 // A new identity per session, so chat, screen and draft state never carry over.
