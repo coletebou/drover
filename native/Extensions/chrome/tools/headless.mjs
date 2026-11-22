@@ -1,7 +1,7 @@
 // Run the extension in a headless Chrome against a daemon, drive its pages over CDP (Node's built-in WebSocket)
 // and save screenshots. For the dev world (web/test/devworld.js), never for the live daemon: it presses keys and
 // asks the manager. The token is read from the daemon's state folder and only travels to the browser.
-//   node tools/headless.mjs --url http://127.0.0.1:7338 --out /tmp/drover-ext [--scene popup|panel|all] [--keep]
+//   node tools/headless.mjs --url http://127.0.0.1:7338 --out /tmp/drover-ext [--scene popup|panel|prompts|all] [--keep]
 // The copy of the extension it loads differs from this folder in one line: host_permissions for that one server
 // (an unpacked extension's optional permissions need a click to grant). The pinned key keeps the extension id.
 import { mkdtempSync, cpSync, readFileSync, writeFileSync, mkdirSync, rmSync, readdirSync, existsSync } from 'node:fs';
@@ -239,6 +239,56 @@ async function panelScene(dark) {
   await send('Target.closeTarget', { targetId: page.targetId });
 }
 
+/**
+ * The side panel's Prompts section on the daemon's real prompts.list: the first page, a search the daemon answers,
+ * a prompt shown whole, Copy (read back from the clipboard), the next page, and the popup's Prompts link.
+ */
+async function promptsScene(dark) {
+  const tag = dark ? 'dark' : 'light';
+  const page = await openPage('sidepanel.html?mode=prompts', { width: 460, height: 1000, dark });
+  if (!dark) await send('Browser.grantPermissions', { permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'], origin: `chrome-extension://${ID}` }).catch(() => {});
+  await until(page, `document.querySelectorAll('.pr-list .pr-row').length > 0`, 20000);
+  const rows = `[...document.querySelectorAll('.pr-list .pr-row')]`;
+  log('prompts section shown:', await evaluate(page.sessionId, `!document.querySelector('.prompts').hidden && document.querySelector('.sp-tab[aria-pressed="true"]').textContent`),
+    '| rows:', await evaluate(page.sessionId, `${rows}.length`), '| status:', JSON.stringify(await evaluate(page.sessionId, `document.querySelector('.pr-status').textContent`)));
+  log('first rows:', JSON.stringify(await evaluate(page.sessionId, `${rows}.slice(0, 3).map((li) => li.querySelector('.pr-meta time').textContent + ' | ' + li.querySelector('.pr-text').textContent.slice(0, 70))`)));
+  await shot(page, `prompts-${tag}-1-list`, { full: false });
+  if (!dark) {
+    const before = await evaluate(page.sessionId, `${rows}.length`);
+    const moreShown = await evaluate(page.sessionId, `!document.querySelector('.pr-more').hidden`);
+    if (moreShown) {
+      await evaluate(page.sessionId, `document.querySelector('.pr-more').click()`, { gesture: true });
+      await until(page, `${rows}.length > ${before}`, 15000);
+    }
+    log('older prompts button:', moreShown, '| rows after a page:', await evaluate(page.sessionId, `${rows}.length`));
+    // A search the daemon answers (every word must match).
+    await evaluate(page.sessionId, `(() => { const q = document.querySelector('#prompts-q'); q.value = 'line numbers'; q.dispatchEvent(new Event('input')); return true; })()`);
+    await until(page, `${rows}.length > 0 && ${rows}.every((li) => li.querySelector('.pr-text').textContent.toLowerCase().includes('line numbers'))`, 15000);
+    log('search "line numbers":', await evaluate(page.sessionId, `${rows}.length`), 'rows, all matching:',
+      await evaluate(page.sessionId, `${rows}.every((li) => li.querySelector('.pr-text').textContent.toLowerCase().includes('line numbers'))`));
+    // A prompt whole, then Copy.
+    await evaluate(page.sessionId, `${rows}[0].click()`, { gesture: true });
+    await until(page, `document.querySelector('.pr-row.open pre.pr-text') !== null`, 5000);
+    const whole = await evaluate(page.sessionId, `document.querySelector('.pr-row.open pre.pr-text').textContent`);
+    await evaluate(page.sessionId, `document.querySelector('.pr-row.open .pr-copy').click()`, { gesture: true });
+    await until(page, `document.querySelector('.pr-row.open .pr-copy')?.textContent !== 'Copy'`, 5000);
+    const copyState = await evaluate(page.sessionId, `document.querySelector('.pr-row.open .pr-copy').textContent`);
+    const clip = await evaluate(page.sessionId, `navigator.clipboard.readText().catch((e) => 'read failed: ' + e.message)`, { gesture: true });
+    log('whole prompt:', JSON.stringify(whole.slice(0, 90)), '| copy button:', copyState, '| clipboard matches:', clip === whole);
+    log('open buttons (sessions on the board):', await evaluate(page.sessionId, `document.querySelectorAll('.pr-row .pr-open').length`));
+    await shot(page, `prompts-${tag}-2-search-open`, { full: false });
+    // The web UI link.
+    log('web link target:', await evaluate(page.sessionId, `import('/lib/links.js').then((m) => m.promptsUrl('${new URL(BASE).origin}', document.querySelector('#prompts-q').value))`));
+  }
+  await send('Target.closeTarget', { targetId: page.targetId });
+  if (!dark) {
+    const pop = await openPage('popup.html');
+    await until(pop, `[...document.querySelectorAll('.pop-head button')].some((b) => b.textContent === 'Prompts')`, 10000);
+    log('popup has a Prompts link:', await evaluate(pop.sessionId, `[...document.querySelectorAll('.pop-head button')].map((b) => b.textContent).join(' | ')`));
+    await send('Target.closeTarget', { targetId: pop.targetId });
+  }
+}
+
 const settingsExpr = (base) => `chrome.storage.local.get('settings').then((g) => chrome.storage.local.set({ settings: { ...g.settings, baseUrl: ${JSON.stringify(base)} } }))`;
 
 /**
@@ -363,6 +413,7 @@ try {
   if (SCENE === 'popup' || SCENE === 'all') { await popupScene(false); await popupScene(true); }
   if (SCENE === 'panel' || SCENE === 'all') { await panelScene(false); await panelScene(true); }
   if (SCENE === 'bg') await backgroundScene();
+  if (SCENE === 'prompts' || SCENE === 'all') { await promptsScene(false); await promptsScene(true); }
   const ex = exceptions();
   log('page exceptions:', ex.length ? ex : 'none');
 } catch (e) {

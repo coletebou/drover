@@ -1,7 +1,9 @@
+import DroverKit
 import SwiftUI
 
-/// Sidebar: the manager first, then views (All, Waiting on you, Working, Idle) and hosts with counts.
-/// Binds `model.sidebarSelection`.
+/// Sidebar, grouped by the workspaces every client shares (docs/specs/2026-11-21-cohesion-overhaul.md): the Manager
+/// first; Agents (List: every agent, then the Lanes: Waiting on you, Working, Idle); Prompts; Fleet (each host with its
+/// counts). Settings is the app's Settings window. Binds `model.sidebarSelection`.
 struct SidebarView: View {
     @Environment(AppModel.self) private var model
 
@@ -15,15 +17,20 @@ struct SidebarView: View {
             Section {
                 managerRow.tag(SidebarItem.manager)
             }
-            Section("Views") {
-                row("All sessions", count: model.board.sessions.count, color: Theme.ink3)
+            Section("Agents") {
+                row("All agents", count: model.board.sessions.count, color: Theme.ink3)
                     .tag(SidebarItem.all)
+                    .help("Agents › List: every agent on every host")
                 ForEach(Lane.allCases) { lane in
                     row(lane.title, count: counts[lane] ?? 0, color: Theme.color(for: lane))
                         .tag(SidebarItem.lane(lane))
+                        .help("Agents › Lanes")
                 }
             }
-            Section("Hosts") {
+            Section {
+                promptsRow.tag(SidebarItem.prompts)
+            }
+            Section("Fleet") {
                 ForEach(model.board.hosts) { host in
                     HStack(alignment: .top, spacing: 8) {
                         StateDot(color: host.up ? Theme.moss : Theme.brick).padding(.top, 5)
@@ -72,6 +79,20 @@ struct SidebarView: View {
         .padding(.vertical, 3)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Manager, \(m.statusText)")
+    }
+
+    private var promptsRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "text.bubble").foregroundStyle(Theme.ink3).accessibilityHidden(true)
+            Text("Prompts").font(Theme.titleFont(15)).foregroundStyle(Theme.ink)
+            Spacer()
+            if let n = model.prompts.status?.records, n > 0 {
+                Text(PromptsStatus.grouped(n)).font(Theme.mono).foregroundStyle(Theme.ink4)
+            }
+        }
+        .help("Every prompt you typed into Claude Code or Codex, on every machine")
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Prompts")
     }
 
     private func row(_ title: String, count: Int, color: Color) -> some View {

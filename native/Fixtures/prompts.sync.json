@@ -1,0 +1,15 @@
+{
+  "ok": true,
+  "ms": 2210,
+  "cache": null,
+  "result": {
+    "host": "demo-mac",
+    "scanned": 412,
+    "added": 3,
+    "sinks": [
+      { "name": "personal", "type": "git", "ok": true, "added": 3, "pushed": true, "ms": 1800 },
+      { "name": "work", "type": "git", "ok": false, "error": "push failed: remote rejected", "nextAttempt": "2026-11-21T22:36:00.000Z", "ms": 300 }
+    ],
+    "ms": 2205
+  }
+}

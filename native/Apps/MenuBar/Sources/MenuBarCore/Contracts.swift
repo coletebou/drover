@@ -253,8 +253,9 @@ enum Links {
         return URL(string: base.absoluteString + "/#/" + segs.joined(separator: "/"))!
     }
 
+    /// Agents › Lanes, the web UI's board (its workspace route; the old `#/board` only redirects there).
     static func webBoard(base: URL) -> URL {
-        URL(string: base.absoluteString + "/#/board")!
+        URL(string: base.absoluteString + "/#/agents/lanes")!
     }
 
     private static func encodeSegment(_ s: String) -> String {

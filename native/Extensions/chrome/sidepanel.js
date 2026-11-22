@@ -1,7 +1,8 @@
-// The side panel: one conversation at a time. The manager is pinned first in the picker and is the default when
-// nothing waits. Transcripts render by the chat rule (lib/chat.js: tool calls grouped with their results,
-// Markdown text, errors marked, no turn twice); a session waiting on a dialog gets an answer card with its own
-// keys. Live over SSE (topics turn, manager, board); polling is the fallback.
+// The side panel: Chat, one conversation at a time, or Prompts (ui/prompts.js: recent prompts from every machine,
+// search, copy). In Chat the manager is pinned first in the picker and is the default when nothing waits.
+// Transcripts render by the chat rule (lib/chat.js: tool calls grouped with their results, Markdown text, errors
+// marked, no turn twice); a session waiting on a dialog gets an answer card with its own keys. Live over SSE (topics
+// turn, manager, board); polling is the fallback.
 import { h, render, clear } from './ui/dom.js';
 import { SESSION, LOCAL } from './lib/settings.js';
 import { targetSessions, normalizeBoard } from './lib/summary.js';
@@ -16,6 +17,7 @@ import { getClient, needsOptions } from './ext/client.js';
 import { readSummary, onSummary, requestRefresh } from './ext/summary-store.js';
 import { chatNodes } from './ui/chat.js';
 import { answerButtons, answerStatus } from './ui/answer.js';
+import { promptsSection } from './ui/prompts.js';
 
 const LIMIT = 120;
 const POLL_MS = 5000;
@@ -51,13 +53,19 @@ const isManager = (t) => t?.id === MANAGER_ID;
 const keyOf = (s) => `${s.host}\u0000${s.id}`;
 
 // Static layout: the compose box is never rebuilt, so typed text survives everything.
+let mode = 'chat';          // 'chat' | 'prompts'
+const chatTab = h('button', { type: 'button', class: 'sp-tab', 'aria-pressed': 'true', onclick: () => setMode('chat', true) }, 'Chat');
+const promptsTab = h('button', { type: 'button', class: 'sp-tab', 'aria-pressed': 'false', onclick: () => setMode('prompts', true) }, 'Prompts');
+const tabs = h('div', { class: 'sp-tabs', role: 'group', 'aria-label': 'Section' }, chatTab, promptsTab);
 const select = h('select', { id: 'picker', onchange: onPick });
 const connEl = h('span', { class: 'conn' });
 const refreshBtn = h('button', { type: 'button', onclick: () => refresh(true) }, 'Refresh');
 const openBtn = h('button', { type: 'button', onclick: openWeb }, 'Open in Drover');
+const pickRow = h('div', { class: 'sp-pick' }, h('label', { for: 'picker' }, 'Session'), select);
 const header = h('header', { class: 'sp-head' },
-  h('div', { class: 'sp-pick' }, h('label', { for: 'picker' }, 'Session'), select),
-  h('div', { class: 'sp-actions' }, refreshBtn, openBtn, h('span', { class: 'spacer' }), connEl));
+  h('div', { class: 'sp-actions' }, tabs, h('span', { class: 'spacer' }), connEl),
+  pickRow,
+  h('div', { class: 'sp-actions sp-chat-actions' }, refreshBtn, openBtn));
 const notice = h('div', { class: 'sp-notice', hidden: true });
 const log = h('div', { class: 'log', role: 'log', 'aria-live': 'polite', 'aria-label': 'Transcript' });
 const card = h('div', { class: 'answer-card', hidden: true, role: 'region', 'aria-label': 'Answer the dialog' });
@@ -67,7 +75,27 @@ const status = h('span', { class: 'compose-status', role: 'status', 'aria-live':
 const composeLabel = h('label', { for: 'msg' }, 'Message');
 const compose = h('form', { class: 'compose', onsubmit: (e) => e.preventDefault() },
   composeLabel, input, h('div', { class: 'compose-row' }, status, sendBtn));
-render(document.getElementById('app'), header, notice, log, card, compose);
+const prompts = promptsSection({
+  getClient,
+  openTab: (url) => chrome.tabs.create({ url }),
+  board: () => board,
+  openSession: (strip) => { setMode('chat', true); if (!same(strip, target)) setTarget({ host: strip.host || 'local', id: strip.id, name: strip.name ?? '', engine: strip.engine ?? '' }, true); },
+  openOptions: () => chrome.runtime.openOptionsPage(),
+  needsOptions,
+});
+render(document.getElementById('app'), header, notice, log, card, compose, prompts.el);
+
+/** Chat or Prompts: one shows, the other hides (the chat keeps its state, the compose box its text). */
+function setMode(m, persist) {
+  mode = m === 'prompts' ? 'prompts' : 'chat';
+  const chat = mode === 'chat';
+  chatTab.setAttribute('aria-pressed', String(chat));
+  promptsTab.setAttribute('aria-pressed', String(!chat));
+  for (const el of [pickRow, header.querySelector('.sp-chat-actions'), log, compose]) el.hidden = !chat;
+  if (chat) { renderNotice(); renderCard(); } else { notice.hidden = true; card.hidden = true; }
+  if (chat) prompts.hide(); else prompts.show();
+  if (persist) chrome.storage.session.set({ [SESSION.PANEL_MODE]: mode });
+}
 
 function openOptions() { chrome.runtime.openOptionsPage(); }
 
@@ -240,7 +268,7 @@ function applyTurn(turn) {
 }
 
 function renderNotice() {
-  if (!loadError) { notice.hidden = true; clear(notice); return; }
+  if (!loadError || mode !== 'chat') { notice.hidden = true; if (!loadError) clear(notice); return; }
   notice.hidden = false;
   notice.className = 'notice error sp-notice';
   notice.setAttribute('role', 'alert');
@@ -284,7 +312,7 @@ function renderCard() {
   const plan = strip ? answerPlan(strip, { supported: answersSupported }) : { mode: 'none', buttons: [] };
   const st = answerState();
   const awaiting = st && !st.pressing && !st.error && st.hash && st.hash === strip?.hash;
-  if (plan.mode !== 'keys' && !st) { card.hidden = true; clear(card); return; }
+  if ((plan.mode !== 'keys' && !st) || mode !== 'chat') { card.hidden = true; if (mode === 'chat') clear(card); return; }
   card.hidden = false;
   render(card,
     h('div', { class: 'card-q' }, h('span', { class: 'dot waiting', 'aria-hidden': 'true' }), plan.question || strip?.headline || 'A dialog is open'),
@@ -409,6 +437,7 @@ async function loadBoard() {
     const { client } = await getClient();
     board = normalizeBoard(await client.op('native.board'));
     lastBoard = Date.now();
+    prompts.boardChanged();
   } catch (e) {
     if (isUnknownOp(e, 'native.board')) board = null;
     else boardFailedAt = Date.now();
@@ -424,6 +453,7 @@ function onStreamEvent(name, data) {
     case 'board':
       board = normalizeBoard(r.data);
       lastBoard = Date.now();
+      prompts.boardChanged();
       renderPicker();
       renderCard();
       if (!target) { const t = pickDefault(); if (t) setTarget(t, false); }
@@ -481,9 +511,12 @@ chrome.storage.onChanged.addListener((changes, area) => {
     startStream();
     loadBoard();
     refresh(false);
+    if (mode === 'prompts') prompts.refresh();
     return;
   }
   if (area !== 'session') return;
+  const pm = changes[SESSION.PANEL_MODE]?.newValue;
+  if (pm && pm !== mode) setMode(pm, false);
   const pt = changes[SESSION.PANEL_TARGET]?.newValue;
   if (pt && pt.id && !same(pt, target)) setTarget({ host: pt.host || 'local', id: pt.id, name: pt.name ?? '', engine: pt.engine ?? '' }, false);
   const d = changes[SESSION.DRAFT]?.newValue;
@@ -516,7 +549,9 @@ renderConn();
 renderStatus();
 getClient().then(({ settings }) => { myActor = settings.actor; }).catch(() => {});
 summaryEntry = await readSummary();
-const stored = (await chrome.storage.session.get([SESSION.PANEL_TARGET, SESSION.DRAFT]));
+const stored = (await chrome.storage.session.get([SESSION.PANEL_TARGET, SESSION.DRAFT, SESSION.PANEL_MODE]));
+// ?mode=prompts (the popup's Prompts link where there is no side panel) or the stored section.
+if ((new URLSearchParams(location.search).get('mode') ?? stored[SESSION.PANEL_MODE]) === 'prompts') setMode('prompts', false);
 await loadBoard();
 const initial = queryTarget() ?? stored[SESSION.PANEL_TARGET] ?? pickDefault();
 renderPicker();

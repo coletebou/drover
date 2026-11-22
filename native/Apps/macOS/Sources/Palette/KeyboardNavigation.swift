@@ -55,9 +55,15 @@ struct KeyboardNavigation: ViewModifier {
         case .next: model.selectNext()
         case .previous: model.selectPrevious()
         case .open:
+            if model.sidebarSelection == .prompts {
+                // Enter opens the prompt's session, the same session view as everywhere (when it is on the board).
+                if let p = model.prompts.selected { model.prompts.openSession(p) } else { model.prompts.selectNext() }
+                return
+            }
             if model.selectedSession == nil { model.selectNext() }
             model.detailTab = .chat
         case .reply:
+            if model.sidebarSelection == .prompts { return }
             if model.selectedSession == nil { model.selectNext() }
             model.focusComposer()
         }

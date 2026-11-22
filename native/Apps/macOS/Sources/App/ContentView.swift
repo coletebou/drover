@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// Three columns like the web board: sidebar (manager, views, hosts), board (lanes), detail (Chat, Screen, Info, or the
-/// manager).
+/// Three columns like the web board: sidebar (the workspaces: Manager, Agents, Prompts, Fleet), board (lanes) or the
+/// prompt list, detail (Chat, Screen, Info, the manager, or a prompt).
 struct ContentView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openWindow) private var openWindow
@@ -12,11 +12,15 @@ struct ContentView: View {
             SidebarView()
                 .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 290)
         } content: {
-            BoardView()
-                .navigationSplitViewColumnWidth(min: 300, ideal: 380, max: 520)
+            Group {
+                if model.sidebarSelection == .prompts { PromptsListView() } else { BoardView() }
+            }
+            .navigationSplitViewColumnWidth(min: 300, ideal: 380, max: 520)
         } detail: {
-            DetailView()
-                .navigationSplitViewColumnWidth(min: 440, ideal: 700)
+            Group {
+                if model.sidebarSelection == .prompts { PromptDetailView() } else { DetailView() }
+            }
+            .navigationSplitViewColumnWidth(min: 440, ideal: 700)
         }
         .modifier(KeyboardNavigation())
         .sheet(isPresented: $model.isPaletteOpen) {

@@ -1,9 +1,17 @@
 # Drover for iOS (Apps/iOS)
 
-SwiftUI app for Drover, iOS 17+, iPhone first, iPad adaptive. Four tabs:
+SwiftUI app for Drover, iOS 17+, iPhone first, iPad adaptive. Four tabs, named for the workspaces every client
+shares (docs/specs/2026-11-21-cohesion-overhaul.md):
 
-- **Board**: what is waiting on you, what is working, host health, manager health (from `native.summary`).
-- **Sessions**: every session on every reachable host, grouped by host, with search and a state filter.
+- **Agents**, with Lanes or List at its top. Lanes: what is waiting on you, what is working, host health, manager
+  health (from `native.summary`). List: every session on every reachable host, grouped by host, with search and a
+  state filter. The tab reopens the one shown last; deep links and `--mock-tab board|sessions` pick one.
+- **Prompts**: every prompt typed into Claude Code or Codex on every machine, newest first (`prompts.list`, DroverKit's
+  models; `Sources/Prompts`). Mine or All at the top (All asks for `via: "all"`), a search field asked of the daemon
+  (every word must match, debounced), pull to refresh, the next page at the end of the list (`before`). A prompt opens
+  whole, verbatim, selectable and monospaced (never Markdown), with Copy (also a swipe and the context menu) and Open
+  session (Agents › List, when the session is on the board). The status row is `prompts.status` with Sync now
+  (`prompts.sync`). Needs the main token. `drover://prompts` and `--mock-tab prompts` open it.
 - **Manager**: chat with the OpenClaw fleet manager (`sessions.message id:"manager"`), its status, feed and "Sweep now".
 - **Settings**: server address with Pair with Mac, main and widget tokens (Keychain), notification kinds, haptics.
 
@@ -17,7 +25,8 @@ pane, on-device voice dictation and image attach (photo library, paste, Files) t
 |---|---|
 | `Sources/App` | `@main` app, tab shell, scene phase, background task hook, deep links |
 | `Sources/Core` | models, `DroverAPI` protocol + `HTTPDroverAPI` (ops over `POST /api/op/<op>`, SSE on `/api/stream`), `TokenVault` (Keychain), `SharedSettings` (App Group defaults), `SummaryCache` (widget handoff), `AppModel`, theme, haptics, `MockDroverAPI` (synthetic previews) |
-| `Sources/Board`, `Sources/Sessions` | board and sessions tabs |
+| `Sources/Board`, `Sources/Sessions` | Agents › Lanes and Agents › List |
+| `Sources/Prompts` | the Prompts tab: `PromptsAPI` (DroverKit models), `PromptsStore`, views |
 | `Sources/Detail` | session detail: chat, screen peek, keys, composer, dictation, attachments |
 | `Sources/Manager`, `Sources/Settings` | manager and settings tabs |
 | `Sources/Background` | `BGAppRefreshTask`, local notifications from `native.notifications`, token sync to the watch |
@@ -37,7 +46,7 @@ pane, on-device voice dictation and image attach (photo library, paste, Files) t
   the team prefix is never hardcoded. Items use `AfterFirstUnlockThisDeviceOnly` so background refresh works while
   locked and tokens never leave the device in backups.
 - Watch: `WCSession.transferUserInfo` with `drover.baseURL`, `drover.token`, `drover.widgetToken` (empty string = revoke).
-- Deep links: `drover://session/<id>?host=<host>`, `drover://board`, `drover://manager`, `drover://settings`,
+- Deep links: `drover://session/<id>?host=<host>`, `drover://board`, `drover://prompts`, `drover://manager`, `drover://settings`,
   `drover://pair?url=<percent-encoded http(s) base URL>` (Settings with the address filled in; the link must carry
   nothing else, so never a token). Only pairing again with the daemon already set up starts by itself; any other
   address, and every address on a fresh install, waits for a tap on Pair with Mac under a note naming it.
@@ -47,9 +56,9 @@ pane, on-device voice dictation and image attach (photo library, paste, Files) t
 Pair with Mac (next to the address) asks the daemon for a 6-digit code (`POST /api/pair/request`, no token), shows
 it, and polls until it is approved on the Mac (`drover pair approve <code>` or Approve in the browser UI). The two
 tokens then go through the same path as Save and connect (Keychain, App Group address, watch sync). DroverKit's
-`PairingController` runs it; only `Settings/SettingsView.swift` and `Settings/PairingRows.swift` import DroverKit, so
-`Tests/run-logic-tests.sh` (plain swiftc) is unaffected, while `script/typecheck.sh ios Apps/iOS/Sources` no longer
-covers those two files.
+`PairingController` runs it. The Settings files and `Sources/Prompts` import DroverKit (`DroverAPI` refines
+`PromptsAPI`); `Tests/run-logic-tests.sh` and `script/typecheck.sh ios Apps/iOS/Sources` compile DroverKit as a module
+first, so they cover every file.
 
 ## Notifications: no push server
 

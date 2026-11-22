@@ -4,12 +4,14 @@ import Foundation
 ///
 /// - `drover://session/<id>?host=<h>`: that session in the main window (host optional, default local).
 /// - `drover://board`: the board in the main window.
+/// - `drover://prompts`: the Prompts screen in the main window (an optional `?q=` fills its search).
 /// - `drover://manager`: the floating manager panel; `drover://manager?in=window` the manager in the main window.
 /// - `drover://pair?url=<base URL>`: the main window's pairing sheet for that address (PairLinkPolicy).
 /// The dev build's own scheme, `droverdev`, maps the same way, so it never needs the real app's `drover`.
 enum AppRoute: Equatable, Sendable {
     case session(id: String, host: String?)
     case board
+    case prompts(query: String?)
     case manager(inWindow: Bool)
     case pair(URL)
     /// Dev build only: test hooks (`droverdev://debug/<action>`).
@@ -30,6 +32,8 @@ enum AppRoute: Equatable, Sendable {
             return .session(id: id, host: host)
         case "manager":
             return .manager(inWindow: query["in"] == "window" || first == "window")
+        case "prompts":
+            return .prompts(query: query["q"].flatMap { $0.isEmpty ? nil : $0 })
         case "pair":
             guard let u = pairAddress(url) else { return .board }
             return .pair(u)

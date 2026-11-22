@@ -4,12 +4,15 @@ import Foundation
 import Observation
 import SwiftUI
 
-/// What the sidebar filters the board by. `.manager` keeps the whole board and puts the manager in the detail column.
+/// What the sidebar shows, grouped by the workspaces every client shares (docs/specs/2026-11-21-cohesion-overhaul.md):
+/// Manager; Agents (`.all` is its List, `.lane` its Lanes); Prompts; Fleet (`.host`). `.manager` keeps the whole board
+/// and puts the manager in the detail column; `.prompts` puts the prompt list and a prompt in those columns instead.
 enum SidebarItem: Hashable, Sendable {
     case all
     case lane(Lane)
     case host(String)
     case manager
+    case prompts
 }
 
 enum DetailTab: String, CaseIterable, Identifiable, Sendable {
@@ -90,6 +93,8 @@ final class AppModel {
     var isMainWindowVisible = true
 
     let manager: ManagerModel
+    /// The Prompts screen (`SidebarItem.prompts`).
+    let prompts: PromptsModel
 
     @ObservationIgnored let notifications: NotificationCoordinator
     /// The server URL the current `service` was built for (Settings text may already say something else).
@@ -120,8 +125,10 @@ final class AppModel {
         self.activeServerURL = settings.serverURL?.absoluteString ?? ""
         self.notifications = NotificationCoordinator()
         self.manager = ManagerModel(defaults: managerDefaults ?? .standard)
+        self.prompts = PromptsModel()
         notifications.model = self
         manager.app = self
+        prompts.app = self
     }
 
     // MARK: derived
@@ -148,7 +155,7 @@ final class AppModel {
     var visibleSessions: [SessionItem] {
         board.sessions.filter { s in
             switch sidebarSelection {
-            case .all, .manager: true
+            case .all, .manager, .prompts: true
             case .lane(let l): s.lane == l
             case .host(let h): s.host == h
             }
@@ -211,6 +218,7 @@ final class AppModel {
         approvalReviews = [:]
         settledApprovals = [:]
         manager.reset()
+        prompts.reset()
         start()
         Task { await manager.refresh() }
     }
@@ -309,12 +317,15 @@ final class AppModel {
             pendingRefresh?.cancel(); pendingRefresh = nil
             apply(board: snap)
         case .mutation:
+            prompts.noteActivity()
             // The daemon warms and sends the board soon after a mutation; refresh only if it does not.
             scheduleRefresh(after: usesBoardEvents ? 3 : 1, minGap: usesBoardEvents ? 0 : 5)
         case .alerts(let items):
             notifications.handle(items)
             if !usesBoardEvents { scheduleRefresh(after: 1, minGap: 5) }
         case .turn(let e):
+            // A new user turn is a new prompt somewhere: the Prompts screen reads its top again (throttled).
+            if e.turn?.role == .user { prompts.noteActivity() }
             route(e)
         case .manager(let m):
             manager.apply(m)
@@ -620,7 +631,7 @@ final class AppModel {
 
     func select(_ session: SessionItem?) {
         selectedSessionKey = session?.key
-        if session != nil && sidebarSelection == .manager { sidebarSelection = .all }
+        if session != nil && (sidebarSelection == .manager || sidebarSelection == .prompts) { sidebarSelection = .all }
     }
 
     /// j / k: move the selection through `visibleSessions`, wrapping is off.
@@ -628,6 +639,7 @@ final class AppModel {
     func selectPrevious() { moveSelection(by: -1) }
 
     private func moveSelection(by delta: Int) {
+        if sidebarSelection == .prompts { delta > 0 ? prompts.selectNext() : prompts.selectPrevious(); return }
         let list = visibleSessions
         guard !list.isEmpty else { return }
         if sidebarSelection == .manager { sidebarSelection = .all }
@@ -665,7 +677,7 @@ final class AppModel {
             let byId = board.sessions.filter { $0.id == sessionId || $0.sessionId == sessionId }
             if byId.count == 1 { match = byId[0] }
         }
-        if sidebarSelection == .manager { sidebarSelection = .all }
+        if sidebarSelection == .manager || sidebarSelection == .prompts { sidebarSelection = .all }
         guard let match else {
             sidebarSelection = .all
             selectedSessionKey = "\(host)|\(sessionId)"
@@ -689,7 +701,10 @@ final class AppModel {
         case .session(let id, let host):
             reveal(sessionId: id, host: host)
         case .board:
-            if sidebarSelection == .manager { sidebarSelection = .all }
+            if sidebarSelection == .manager || sidebarSelection == .prompts { sidebarSelection = .all }
+        case .prompts(let q):
+            sidebarSelection = .prompts
+            if let q { prompts.search = q }
         case .manager(let inWindow):
             if inWindow { showManagerInWindow() } else { manager.focusComposer() }
         case .pair(let url):

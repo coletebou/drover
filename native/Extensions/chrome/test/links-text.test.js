@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { sessionUrl, boardUrl } from '../lib/links.js';
+import { sessionUrl, boardUrl, managerUrl, promptsUrl } from '../lib/links.js';
 import { truncate, ago, plural } from '../lib/text.js';
 
 const O = 'http://127.0.0.1:7337';
@@ -20,8 +20,12 @@ test('sessionUrl encodes slash, space and hash in segments', () => {
   assert.ok(!u.slice(u.indexOf('#') + 1).includes('#'));
 });
 
-test('boardUrl', () => {
-  assert.equal(boardUrl(O), `${O}/#/board`);
+test('web UI links use the workspace routes (web/ui/routes.js)', () => {
+  assert.equal(boardUrl(O), `${O}/#/agents/lanes`);
+  assert.equal(managerUrl(O), `${O}/#/manager`);
+  assert.equal(promptsUrl(O), `${O}/#/prompts/mine`);
+  assert.equal(promptsUrl(O, '  '), `${O}/#/prompts/mine`);
+  assert.equal(promptsUrl(O, 'fix the #2 bug/now'), `${O}/#/prompts/mine/fix%20the%20%232%20bug%2Fnow`);
 });
 
 test('truncate: short strings untouched, whitespace collapsed', () => {

@@ -82,6 +82,34 @@ import Testing
         #expect(r.refused == true)
     }
 
+    @Test func promptOps() async throws {
+        let (c, s) = make()
+        let l = try await c.prompts(PromptsQuery(scope: .all, q: "lexer"))
+        #expect(l.prompts.count == 5)
+        var r = try #require(MockURLProtocol.lastRequest(in: s))
+        #expect(r.method == "POST")
+        #expect(r.url.path == "/api/op/prompts.list")
+        #expect(r.bodyJSON == ["q": "lexer", "limit": 200, "via": "all"])
+        _ = try await c.prompts(PromptsQuery().after(l.prompts.last))
+        #expect(MockURLProtocol.lastRequest(in: s)?.bodyJSON == ["limit": 200, "before": "p_4d5e6f708192a3b4"])
+        let st = try await c.promptsStatus()
+        #expect(st.records == 1204)
+        #expect(MockURLProtocol.lastRequest(in: s)?.bodyJSON == .object([:]))
+        let sync = try await c.syncPrompts(sinks: ["work"], host: "demo-box")
+        #expect(sync.added == 3)
+        r = try #require(MockURLProtocol.lastRequest(in: s))
+        #expect(r.url.path == "/api/op/prompts.sync")
+        #expect(r.bodyJSON == ["actor": "owner", "host": "demo-box", "sinks": ["work"]])
+        #expect(r.header("Authorization") == "Bearer mock-token")
+        #expect(r.timeout == 150)
+    }
+
+    @Test func promptOpsRefuseTheWidgetToken() async {
+        let (c, s) = make(scope: .widget)
+        await #expect(throws: DroverError.forbidden("prompts.sync needs the main token")) { try await c.syncPrompts() }
+        #expect(MockURLProtocol.lastRequest(in: s) == nil, "nothing was sent")
+    }
+
     @Test func emptyStoreIsNotConfigured() async {
         let s = MockServer.session()
         let c = DroverClient(baseURL: MockServer.baseURL, tokens: InMemoryTokenStore(), session: s)

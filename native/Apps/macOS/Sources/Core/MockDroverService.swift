@@ -1,3 +1,4 @@
+import DroverKit
 import Foundation
 
 /// Synthetic data for previews, the harness and `--mock` launches. Names are invented (CONTRACT.md: no company data).
@@ -281,4 +282,53 @@ final class MockDroverService: DroverService, @unchecked Sendable {
     }
 
     func ping() async throws -> String { "studio" }
+
+    // MARK: prompts (DroverKit's synthetic fixtures, filtered here the way the daemon filters)
+
+    private var promptQueries: [PromptsQuery] = []
+    /// Every prompts.list query this mock answered (the harness checks search, scope and paging).
+    var promptsAsked: [PromptsQuery] { lock.withLock { promptQueries } }
+    /// Seconds a prompts.list read takes (the harness: an older answer landing after a newer one).
+    var promptsDelay: Double = 0
+    /// Answer prompts.* as a daemon from before the spool does ("unknown op").
+    var promptsUnknown = false
+    private var syncs = 0
+    /// How many prompts.sync calls this mock answered.
+    var promptSyncs: Int { lock.withLock { syncs } }
+
+    static let promptFixture: PromptsList = {
+        guard let data = Fixtures.data("prompts.list.json"),
+              let list = try? JSONDecoder().decode(OpEnvelope<PromptsList>.self, from: data).result else { return PromptsList(prompts: []) }
+        return list
+    }()
+
+    func prompts(_ query: PromptsQuery) async throws -> PromptsList {
+        lock.withLock { promptQueries.append(query) }
+        if promptsUnknown { throw DroverError.server("unknown op prompts.list") }
+        if promptsDelay > 0 { try? await Task.sleep(for: .seconds(promptsDelay)) }
+        let words = (query.q ?? "").lowercased().split(separator: " ").map(String.init)
+        let mine = Set(PromptVia.mine)
+        var all = Self.promptFixture.prompts.filter { p in
+            (query.scope == .all || p.via.map(mine.contains) ?? true)
+                && (query.host.map { $0 == p.host } ?? true)
+                && words.allSatisfy { p.text.lowercased().contains($0) }
+        }
+        if let before = query.before, let i = all.firstIndex(where: { $0.id == before }) { all = Array(all[(i + 1)...]) }
+        let limit = query.limit ?? PromptsQuery.pageSize
+        return PromptsList(ms: 1, prompts: Array(all.prefix(limit)), more: all.count > limit, perHost: Self.promptFixture.perHost,
+                           coverage: Self.promptFixture.coverage)
+    }
+
+    func promptsStatus() async throws -> PromptsStatus {
+        guard let data = Fixtures.data("prompts.status.json"), let s = try? JSONDecoder().decode(OpEnvelope<PromptsStatus>.self, from: data).result
+        else { throw DroverError.decoding("prompts.status fixture") }
+        return s
+    }
+
+    func syncPrompts() async throws -> PromptsSyncResult {
+        lock.withLock { syncs += 1 }
+        guard let data = Fixtures.data("prompts.sync.json"), let r = try? JSONDecoder().decode(OpEnvelope<PromptsSyncResult>.self, from: data).result
+        else { throw DroverError.decoding("prompts.sync fixture") }
+        return r
+    }
 }

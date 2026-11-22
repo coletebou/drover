@@ -8,6 +8,25 @@ import { fileURLToPath } from 'node:url';
 
 const FIX = new URL('../test/fixtures/', import.meta.url);
 const fixture = async (name) => JSON.parse(await readFile(new URL(name, FIX), 'utf8'));
+// The prompt spool's answers: the shared synthetic fixtures (native/Fixtures, full envelopes) the Apple clients test too.
+const SHARED = new URL('../../../Fixtures/', import.meta.url);
+const shared = async (name) => JSON.parse(await readFile(new URL(name, SHARED), 'utf8')).result;
+const MINE = new Set(['typed', 'queued', 'drover', 'headless']);
+
+/** prompts.list as the daemon filters it: the via set (default Mine, `all`, or a list), every word of q, before, limit. */
+export async function fakePromptsList(args = {}) {
+  const res = await shared('prompts.list.json');
+  const via = args.via === 'all' ? null : Array.isArray(args.via) ? new Set(args.via) : MINE;
+  const words = String(args.q ?? '').toLowerCase().split(/\s+/).filter(Boolean);
+  let list = res.prompts.filter((p) => (!via || via.has(p.via)) && words.every((w) => p.text.toLowerCase().includes(w)));
+  if (args.before) {
+    const i = list.findIndex((p) => p.id === args.before);
+    if (i < 0) throw new Error(`before: no prompt ${args.before} on any host that answered`);
+    list = list.slice(i + 1);
+  }
+  const limit = Math.max(1, Math.min(2000, Number(args.limit) || 200));
+  return { ...res, prompts: list.slice(0, limit), more: list.length > limit };
+}
 
 export const FAKE_TOKEN = 'test-token-not-secret';
 export const FAKE_WIDGET_TOKEN = 'test-widget-token-not-secret';
@@ -19,6 +38,8 @@ function isLoopback(origin) {
 export async function startFakeDaemon({ token = FAKE_TOKEN, port = 0, host = '127.0.0.1', allowOrigins = [], pairTtlMs = 120_000, pairPollMs = 1500, onPair = () => {}, summaryFixture = 'native-summary.json', streamMs = 20 } = {}) {
   const messages = [];
   const answers = [];
+  const promptQueries = [];  // prompts.list args, in order
+  const syncs = [];          // prompts.sync args
   const clients = new Set();
   let seq = 0;
   const pairs = new Map();   // requestId -> { requestId, code, client, device, expiresAt, state }
@@ -140,6 +161,9 @@ export async function startFakeDaemon({ token = FAKE_TOKEN, port = 0, host = '12
         result = args.since === n.cursor ? { cursor: n.cursor, items: [] } : n;
       } else if (op === 'sessions.transcript') result = await fixture('sessions-transcript.json');
       else if (op === 'sessions.message') { messages.push(args); result = { ok: true, queuedBehindTurn: false, event: 'ev-demo' }; }
+      else if (op === 'prompts.list') { promptQueries.push(args); result = await fakePromptsList(args); }
+      else if (op === 'prompts.status') result = await shared('prompts.status.json');
+      else if (op === 'prompts.sync') { syncs.push(args); result = await shared('prompts.sync.json'); }
       else return json(res, 400, { ok: false, error: `unknown op ${op}` }, cors);
       return json(res, 200, { ok: true, result, ms: 0 }, cors);
     } catch (e) {
@@ -159,6 +183,8 @@ export async function startFakeDaemon({ token = FAKE_TOKEN, port = 0, host = '12
     port: actual,
     messages,
     answers,
+    promptQueries,
+    syncs,
     pairs,
     pairCalls,
     decide,

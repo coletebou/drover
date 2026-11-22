@@ -14,6 +14,7 @@ export const SESSION = Object.freeze({
   NOTIF_SEEN: 'notifSeen',     // string[]: item ids already shown (capped)
   DRAFT: 'draft',              // { host, id, name, text, at }: context menu hand-off to the side panel
   PANEL_TARGET: 'panelTarget', // { host, id, name, engine }: the session the side panel shows
+  PANEL_MODE: 'panelMode',     // 'chat' | 'prompts': which section the side panel shows
   NOTIF_DIALOGS: 'notifDialogs', // { [notificationId]: { id, host, hash, keys, at } }: what a dialog alert's buttons answer
 });
 

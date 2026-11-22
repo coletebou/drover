@@ -235,6 +235,77 @@ data: "line"}
   }
 }
 """#,
+        "prompts.list.json": #"""
+{
+  "ok": true,
+  "ms": 41,
+  "cache": null,
+  "result": {
+    "ms": 38,
+    "prompts": [
+      { "v": 1, "id": "p_0d1e2f3a4b5c6d7e", "ts": "2026-11-21T22:03:11.000Z", "host": "demo-mac", "engine": "claude", "session": "00000000-demo-4000-8000-000000000001", "cwd": "~/code/demo", "project": "demo", "label": "work", "via": "typed", "text": "Make the demo parser keep line numbers in its errors, then run the tests.", "route": "local" },
+      { "v": 1, "id": "p_1a2b3c4d5e6f7081", "ts": "2026-11-21T21:58:40.000Z", "host": "demo-box", "engine": "codex", "session": "019a0000-demo-7000-8000-000000000002", "cwd": "~/code/webapp", "project": "webapp", "label": "work", "via": "queued", "text": "Review the login form for accessibility:\n\n- labels\n- focus order\n- error messages read by a screen reader", "route": "demo-box" },
+      { "v": 1, "id": "p_2b3c4d5e6f708192", "ts": "2026-11-21T21:40:02.000Z", "host": "demo-mac", "engine": "claude", "session": "00000000-demo-4000-8000-000000000004", "cwd": "~/code/docs", "project": "docs", "label": "work", "via": "drover", "text": "continue", "route": "local" },
+      { "v": 1, "id": "p_3c4d5e6f708192a3", "ts": "2026-11-21T20:12:55.000Z", "host": "demo-spare", "engine": "claude", "session": null, "cwd": "~/notes", "project": "notes", "label": "personal", "via": "headless", "text": "Sort the notes into projects, people and reference; leave anything unsure in an inbox folder.", "route": null, "source": "sink:personal" },
+      { "v": 1, "id": "p_4d5e6f708192a3b4", "ts": "2026-11-21T19:30:00.000Z", "host": "demo-mac", "engine": "claude", "session": "00000000-demo-4000-8000-000000000002", "cwd": "~/code/demo", "project": "demo", "label": "work", "via": "peer", "from": "demo-review", "text": "The review found two nits in the lexer; see the notes at the end of the diff.", "route": "local", "future": { "anything": true } }
+    ],
+    "more": true,
+    "perHost": [
+      { "host": "demo-mac", "ok": true, "count": 3, "ms": 12, "more": true },
+      { "host": "demo-box", "ok": true, "count": 1, "ms": 30, "more": false },
+      { "host": "demo-spare", "ok": false, "count": 1, "source": "sink:personal", "more": false }
+    ],
+    "coverage": {
+      "searched": ["demo-mac", "demo-box"],
+      "notCovered": [{ "host": "demo-spare", "reason": "down at the last probe" }],
+      "partial": [{ "host": "demo-spare", "reason": "from the personal sink clone (as of its last pull)" }]
+    }
+  }
+}
+"""#,
+        "prompts.status.json": #"""
+{
+  "ok": true,
+  "ms": 6,
+  "cache": null,
+  "result": {
+    "host": "demo-mac",
+    "enabled": true,
+    "daemon": true,
+    "files": 31,
+    "records": 1204,
+    "oldest": "2026-10-21T08:00:00.000Z",
+    "newest": "2026-11-21T22:03:11.000Z",
+    "lastScan": "2026-11-21T22:04:00.000Z",
+    "lastMs": 85,
+    "lastError": null,
+    "scanning": false,
+    "sources": 412,
+    "config": { "file": "~/.config/drover/prompts.json", "found": true, "errors": [] },
+    "sinks": [
+      { "name": "personal", "type": "git", "labels": ["personal", "default"], "lastSync": "2026-11-21T22:00:00.000Z", "lastAttempt": "2026-11-21T22:00:00.000Z", "lastError": null, "nextAttempt": null, "failures": 0, "pending": 2, "syncing": false },
+      { "name": "work", "type": "git", "labels": ["work"], "lastSync": null, "lastAttempt": "2026-11-21T21:30:00.000Z", "lastError": "push failed: remote rejected", "nextAttempt": "2026-11-21T22:34:00.000Z", "failures": 2, "pending": 40, "syncing": false }
+    ]
+  }
+}
+"""#,
+        "prompts.sync.json": #"""
+{
+  "ok": true,
+  "ms": 2210,
+  "cache": null,
+  "result": {
+    "host": "demo-mac",
+    "scanned": 412,
+    "added": 3,
+    "sinks": [
+      { "name": "personal", "type": "git", "ok": true, "added": 3, "pushed": true, "ms": 1800 },
+      { "name": "work", "type": "git", "ok": false, "error": "push failed: remote rejected", "nextAttempt": "2026-11-21T22:36:00.000Z", "ms": 300 }
+    ],
+    "ms": 2205
+  }
+}
+"""#,
         "sessions.list.json": #"""
 {
   "ok": true,

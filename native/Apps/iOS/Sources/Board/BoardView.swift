@@ -1,7 +1,7 @@
 import SwiftUI
 import UIKit
 
-/// The board: what is waiting on you, what is working, host health and the manager.
+/// Agents › Lanes: what is waiting on you, what is working, host health and the manager.
 struct BoardView: View {
     @Environment(AppModel.self) private var model
     @ScaledMetric(relativeTo: .body) private var rowMin: CGFloat = 44
@@ -10,7 +10,9 @@ struct BoardView: View {
         @Bindable var model = model
         NavigationSplitView {
             sidebar(selection: $model.boardSelection)
-                .navigationTitle("Board")
+                .navigationTitle("Agents")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .principal) { AgentsPicker() } }
         } detail: {
             if let ref = model.boardSelection {
                 // A new identity per session, so chat, screen and draft state never carry over.

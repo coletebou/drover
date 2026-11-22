@@ -7,7 +7,10 @@ import Observation
 @MainActor
 @Observable
 final class AppModel {
-    enum Tab: String, Hashable, CaseIterable { case board, sessions, manager, settings }
+    /// The tab bar follows the workspaces every client shares (docs/specs/2026-11-21-cohesion-overhaul.md): one Agents
+    /// tab shows `board` (Agents › Lanes) or `sessions` (Agents › List), picked at its top; then Prompts, Manager,
+    /// Settings. `board` and `sessions` stay separate values so deep links and `--mock-tab` keep their meaning.
+    enum Tab: String, Hashable, CaseIterable { case board, sessions, prompts, manager, settings }
 
     enum Connection: Equatable {
         case unconfigured
@@ -19,7 +22,9 @@ final class AppModel {
     }
 
     // Navigation
-    var selectedTab: Tab = .board
+    var selectedTab: Tab = .board { didSet { if selectedTab == .board || selectedTab == .sessions { lastAgentsTab = selectedTab } } }
+    /// The Agents view shown last (Lanes or List): tapping the Agents tab goes back to it.
+    private(set) var lastAgentsTab: Tab = .board
     var boardSelection: SessionRef?
     var sessionsSelection: SessionRef?
     /// Daemon address from a `drover://pair?url=` link. Settings fills it in, pairs and clears it.
@@ -42,6 +47,9 @@ final class AppModel {
     /// Requests answered here or closed elsewhere (id -> what the card says instead of its buttons), until the board
     /// drops them: the daemon's board can lag an answer by seconds, and must not invite a second one meanwhile.
     private(set) var settledApprovals: [String: String] = [:]
+
+    /// The Prompts tab.
+    let prompts = PromptsStore()
 
     // Configuration
     private(set) var api: any DroverAPI
@@ -67,6 +75,13 @@ final class AppModel {
         self.api = api ?? AppModel.makeAPI(vault: vault, settings: settings) ?? UnconfiguredDroverAPI()
         self.summary = isMock ? nil : SummaryCache.load()
         self.connection = isMock || AppModel.makeAPI(vault: vault, settings: settings) != nil ? .connecting : .unconfigured
+        prompts.app = self
+    }
+
+    /// The tab bar's selection: Lanes and List are one Agents tab (it reopens the one shown last).
+    var tabBarSelection: Tab {
+        get { selectedTab == .sessions ? .board : selectedTab }
+        set { selectedTab = newValue == .board ? lastAgentsTab : newValue }
     }
 
     static func preview() -> AppModel { AppModel(api: MockDroverAPI(delay: .zero)) }
@@ -131,6 +146,7 @@ final class AppModel {
     func reconnect() {
         guard !isMock else { return }
         cancelLive()
+        prompts.reset()
         if let api = AppModel.makeAPI(vault: vault, settings: settings) {
             self.api = api
             connection = .connecting
@@ -270,13 +286,14 @@ final class AppModel {
         }
     }
 
-    /// Handles `drover://session/<id>?host=<h>`, `drover://board`, `drover://manager`, `drover://settings`,
+    /// Handles `drover://session/<id>?host=<h>`, `drover://board`, `drover://prompts`, `drover://manager`, `drover://settings`,
     /// `drover://pair?url=<base URL>`.
     @discardableResult
     func handle(url: URL) -> Bool {
         guard let route = DeepLink(url: url) else { return false }
         switch route {
         case .board: selectedTab = .board
+        case .prompts: selectedTab = .prompts
         case .manager: selectedTab = .manager
         case .settings: selectedTab = .settings
         case .session(let ref): open(ref)
@@ -375,7 +392,7 @@ enum LiveEventKind: Equatable {
 
 /// Parsed `drover://` deep links (CONTRACT.md "Apple identifiers").
 enum DeepLink: Equatable {
-    case board, manager, settings
+    case board, prompts, manager, settings
     case session(SessionRef)
     /// `drover://pair?url=<percent-encoded base URL>`: Settings with the address filled in, pairing.
     case pair(URL)
@@ -386,6 +403,7 @@ enum DeepLink: Equatable {
         let parts = url.pathComponents.filter { $0 != "/" }
         switch host {
         case "board", "": self = .board
+        case "prompts": self = .prompts
         case "manager": self = .manager
         case "settings": self = .settings
         case "session":
