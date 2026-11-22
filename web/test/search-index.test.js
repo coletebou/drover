@@ -140,6 +140,13 @@ describe('indexing', () => {
   });
 });
 
+describe('kind-filtered vector leg', () => {
+  test('the hashes a kinds filter allows come from the covering (kind, hash) index, not a scan of every chunk', () => {
+    const plan = store.db.prepare("EXPLAIN QUERY PLAN SELECT DISTINCT c.hash AS hash FROM chunks c WHERE 1 = 1 AND c.kind IN ('reflection')").all().map((r) => r.detail).join(' | ');
+    assert.match(plan, /COVERING INDEX chunks_kind_hash/, plan);
+  });
+});
+
 describe('robustness', () => {
   test('one input the model rejects is skipped alone; the rest of its batch is embedded; a down runtime marks nothing', async () => {
     const f = path.join(roots.claude, '-Users-x-code-webapp', 'poison.jsonl');

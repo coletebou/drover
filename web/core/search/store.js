@@ -97,6 +97,10 @@ export class Store {
     if (!this.db.prepare("SELECT 1 FROM pragma_table_info('sources') WHERE name = 'cwd_state'").get()) this.db.exec('ALTER TABLE sources ADD COLUMN cwd_state TEXT;');
     if (!this.db.prepare("SELECT 1 FROM pragma_table_info('chunks') WHERE name = 'pending'").get()) this.db.exec('ALTER TABLE chunks ADD COLUMN pending INTEGER;');
     this.db.exec('CREATE INDEX IF NOT EXISTS chunks_cwd ON chunks(cwd);');
+    // A kind-filtered search (kinds: ['reflection']) collects the hashes its vector leg may rank. Without this
+    // covering index SQLite visits every chunk row through chunks_hash to find them (0.7 s warm, 3.9 s cold on a
+    // 340k-chunk index); with it the lookup is an index range read (0.01 s).
+    this.db.exec('CREATE INDEX IF NOT EXISTS chunks_kind_hash ON chunks(kind, hash);');
     if (!this.db.prepare("SELECT 1 FROM pragma_table_info('reflections') WHERE name = 'host'").get()) {
       // The next pass is a full export, so every item's host and cwd reach its chunk (an unchanged item is otherwise skipped).
       this.db.exec('ALTER TABLE reflections ADD COLUMN host TEXT; ALTER TABLE reflections ADD COLUMN cwd TEXT;');
