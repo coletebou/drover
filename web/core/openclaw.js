@@ -438,7 +438,9 @@ export async function check({ live = false } = {}) {
   const allow = new Set(profile?.egress?.allow ?? []);
   if (cfg) {
     for (const h of urlHosts(cfg)) add('config', h, profile ? allow.has(h) : null, profile && !allow.has(h) ? `not in profile ${profile.name}'s egress.allow` : 'configured endpoint');
-    for (const [k, want] of [['update.checkOnStart', false], ['telemetry.enabled', false], ['tools.web.fetch.enabled', false]]) {
+    // Phone-home switches only. Web fetch is not one: the manager is given it on purpose (the shipped
+    // openclaw.json turns it on, Cole's call of 2026-10-22), so a check that wanted it off failed every install.
+    for (const [k, want] of [['update.checkOnStart', false], ['telemetry.enabled', false]]) {
       const v = k.split('.').reduce((x, p) => x?.[p], cfg);
       add('switch', k, v === want, `is ${JSON.stringify(v)}`);
     }
