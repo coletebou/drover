@@ -142,6 +142,20 @@ describe('a command sink', () => {
     assert.deepEqual((await runs()).at(-1), { day: '2026-11-21', h: 'box-c', ids: ['p_a000000000000004'], whole: 3 }, 'only the new record; the day copy grows');
   });
 
+  test('{dayfiles}: one run for every changed day, each day file whole', async () => {
+    const d = host('box-d');
+    const seen = path.join(tmp, 'dayfiles-out.jsonl'), t2 = path.join(tmp, 'tool2.mjs');
+    await writeFile(t2, `import { appendFileSync, readFileSync } from 'node:fs';\nconst [h, ...files] = process.argv.slice(2);\nappendFileSync(${J(seen)}, JSON.stringify({ h, days: files.map((f) => f.split('/').pop()), lines: files.map((f) => readFileSync(f, 'utf8').trim().split('\\n').length) }) + '\\n');\n`);
+    const many = { name: 'batch', type: 'command', labels: ['*'], argv: [process.execPath, t2, '{host}', '{dayfiles}'] };
+    await d.add(rec('box-a', 11), rec('box-a', 12), rec('box-a', 13, 'x', '2026-11-22'), rec('box-a', 14, 'x', '2026-11-23'));
+    const [r] = await d.sinks.syncAll({ sinks: [many] });
+    assert.equal(r.ok, true, r.error); assert.deepEqual([r.added, r.runs], [4, 1]);
+    const got = (await readFile(seen, 'utf8')).trim().split('\n').map((l) => JSON.parse(l));
+    assert.deepEqual(got, [{ h: 'box-d', days: ['2026-11-21.jsonl', '2026-11-22.jsonl', '2026-11-23.jsonl'], lines: [2, 1, 1] }]);
+    const [again] = await d.sinks.syncAll({ sinks: [many] }, { force: true });
+    assert.equal(again.runs, 0, 'nothing new: no run');
+  });
+
   test('a failing command keeps its records for the next try', async () => {
     await c.add(rec('box-a', 5));
     await writeFile(fail, '');

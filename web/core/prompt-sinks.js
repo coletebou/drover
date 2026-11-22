@@ -9,7 +9,8 @@
 //            two hosts never write the same file, so a pull never conflicts. The clone is also what the front reads
 //            for a host that did not answer.
 //   command  runs its argv (no shell) once per day that gained records, with {file} replaced by a file holding just
-//            those new records, {dayfile} by this sink's whole copy of that day, {day} and {host}. An encrypted
+//            those new records, {dayfile} by this sink's whole copy of that day, {day} and {host}; or {dayfiles}, an argument that
+//            becomes every changed day's copy, for one run per sync. An encrypted
 //            append (a sync tool's "push --append <file>") is the intended use.
 //
 // A sink takes the records whose label it lists ("*" for all). Its read position in each spool day file is kept in
@@ -32,7 +33,9 @@ const HOST_DIR = (h) => String(h ?? '').replace(/[^A-Za-z0-9._-]/g, '_').replace
 const DAY_FILE = /^(\d{4}-\d{2}-\d{2})\.jsonl$/;
 const ID_IN = /"id":"(p_[0-9a-f]{16})"/;
 export const DEFAULT_SYNC_MINUTES = 30;
-const LOCAL_MS = 30_000, NET_MS = 120_000, COMMAND_MS = 120_000;
+// COMMIT_MS: add and commit run the owner's git hooks (a fleet's global hooks may scan the staged diff for secrets), and
+// a first sync stages the whole history (tens of MB): 30 s was not enough on a loaded machine.
+const LOCAL_MS = 30_000, NET_MS = 120_000, COMMAND_MS = 120_000, COMMIT_MS = 600_000;
 const BACKOFF_MS = 60_000, BACKOFF_MAX_MS = 6 * 3600_000;
 
 /** The prompts config file: DROVER_PROMPTS_CONFIG, else prompts.json in DROVER_CONFIG_DIR (~/.config/drover). */
@@ -247,8 +250,8 @@ export class Sinks {
       if (lines.length) { await appendFile(file, lines.join('\n') + '\n'); added += lines.length; }
     }
     if (added) {
-      await this.#git(repo, ['add', '--', hostRel]);
-      await this.#git(repo, ['-c', `commit.gpgsign=${sink.sign ? 'true' : 'false'}`, 'commit', '-q', '-m', `prompts: ${this.host} +${added}`, '--', hostRel]);
+      await this.#git(repo, ['add', '--', hostRel], { timeoutMs: COMMIT_MS });
+      await this.#git(repo, ['-c', `commit.gpgsign=${sink.sign ? 'true' : 'false'}`, 'commit', '-q', '-m', `prompts: ${this.host} +${added}`, '--', hostRel], { timeoutMs: COMMIT_MS });
     }
     // Delivered to the clone: the spool positions move now, the push below (or the next sync's) carries them out.
     for (const d of days) st.offsets[d.day] = d.end;
@@ -259,7 +262,7 @@ export class Sinks {
     if (hasCommits) {
       for (let attempt = 0; ; attempt++) {
         if (remoteHas || attempt > 0) await this.#pullRebase(repo, branch);
-        try { await this.#git(repo, ['push', '-q', 'origin', `${ref}:${ref}`], { timeoutMs: NET_MS }); pushed = true; break; }
+        try { await this.#git(repo, ['push', '-q', 'origin', `${ref}:${ref}`], { timeoutMs: COMMIT_MS }); pushed = true; break; }   // pre-push hooks scan too
         catch (e) { if (attempt >= 1 || !/rejected|non-fast-forward|fetch first/i.test(e.message)) throw e; }
       }
       st.unpushed = 0; st.lastPush = new Date().toISOString();
@@ -282,6 +285,29 @@ export class Sinks {
     const base = path.join(this.root, sink.name);
     const mirror = path.join(base, this.hostDir);
     let added = 0, runs = 0;
+    // {dayfiles}: one run for every day that gained records, the argument replaced by each day's whole copy (a
+    // backfill of months is then one push, not one per day). The days move on together once that run succeeds.
+    if (sink.argv.includes('{dayfiles}')) {
+      const files = [];
+      for (const d of days) {
+        if (!d.records.length) continue;
+        await mkdir(mirror, { recursive: true, mode: 0o700 });
+        const dayfile = path.join(mirror, `${d.day}.jsonl`);
+        const have = await idsIn(dayfile);
+        const fresh = d.records.filter((l) => !have.has(l.match(ID_IN)?.[1]));
+        if (fresh.length) await appendFile(dayfile, fresh.join('\n') + '\n', { mode: 0o600 });
+        files.push(dayfile); added += d.records.length;
+      }
+      if (files.length) {
+        const sub = { '{host}': this.host };
+        const argv = sink.argv.flatMap((a) => (a === '{dayfiles}' ? files : [a.replace(/\{host\}/g, () => sub['{host}'])]));
+        await run(argv[0], argv.slice(1), { timeoutMs: Math.max(COMMAND_MS, files.length * 15_000), env: this.env });
+        runs = 1;
+      }
+      for (const d of days) st.offsets[d.day] = d.end;
+      await this.saveState(sink.name, st);
+      return { added, runs };
+    }
     for (const d of days) {
       if (!d.records.length) { st.offsets[d.day] = d.end; continue; }
       await mkdir(mirror, { recursive: true, mode: 0o700 });

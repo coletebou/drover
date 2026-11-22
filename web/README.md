@@ -789,6 +789,8 @@ directory alone ("prompts: <host> +N"), pulls with rebase and pushes; never a fo
 files, so hosts sharing a remote never conflict. The clone is also a read source: `prompts.list` shows a host that did
 not answer from it, as of its last pull. A `command` sink runs its argv (no shell) once per day that gained records,
 `{file}` replaced by a file of just those records (`{dayfile}`: the sink's whole copy of that day, `{day}`, `{host}`).
+An argument `{dayfiles}` instead runs it once per sync with every changed day's copy as separate arguments (a backfill
+of months is one run; an encrypted sync tool that pushes per run then pushes once).
 A sink moves past a record only once it reached it; a failing sink retries after 1 minute, then 2, 4, up to 6 hours
 (`prompts.sync` tries at once). Sinks sync every `syncEveryMinutes` (default 30) and on `prompts.sync`.
 
