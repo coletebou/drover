@@ -57,8 +57,13 @@ test('projection: faces sorted far to near after the grid; nothing behind the ca
   assert.ok(proj.items.slice(0, firstFace).every((i) => i.layer === 0), 'the grid is drawn first');
   const L1 = proj.items.filter((i) => i.layer === 1);
   for (let i = 1; i < L1.length; i++) assert.ok(L1[i - 1].z >= L1[i].z, 'painter order');
-  // The center of the screen looks at the core.
-  assert.equal(pickAt(proj, 200, 150 - 25), 'core');
+  // The camera looks at the core: its faces sit near the middle of the screen, and a point on one picks the core.
+  const coreFaces = proj.items.filter((i) => i.kind === 'face' && i.id === 'core');
+  assert.ok(coreFaces.length > 0);
+  const near = coreFaces.find((f) => { const c = f.pts.reduce((a, p) => [a[0] + p[0] / f.pts.length, a[1] + p[1] / f.pts.length], [0, 0]); return pickAt(proj, c[0], c[1]) === 'core'; });
+  assert.ok(near, 'a point on the core picks the core');
+  const cc = near.pts.reduce((a, p) => [a[0] + p[0] / near.pts.length, a[1] + p[1] / near.pts.length], [0, 0]);
+  assert.ok(Math.abs(cc[0] - 200) < 40 && Math.abs(cc[1] - 150) < 60, 'the core is near the middle');
   // Each agent's projected top face picks as that agent (when nothing nearer covers its center).
   let hits = 0;
   for (const it of proj.items) if (it.kind === 'face' && it.id?.startsWith('agent:')) { const c = it.pts.reduce((s, p) => [s[0] + p[0] / it.pts.length, s[1] + p[1] / it.pts.length], [0, 0]); if (pickAt(proj, c[0], c[1])?.startsWith('agent:')) hits++; }

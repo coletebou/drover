@@ -47,7 +47,7 @@ export function layout(board, { showIdle = true, now = 0, frontHost = 'local', l
   // The manager is the core, never a monolith: its strip (engine openclaw, id manager) stays out of the hosts.
   const strips = (board?.strips ?? []).filter((s) => s && s.engine !== 'openclaw' && s.id !== 'manager' && (showIdle || s.lane !== 'idle'));
   const names = new Map();
-  for (const h0 of board?.hosts ?? []) { const h = h0?.ui ? { ...h0, name: h0.ui } : h0; if (h?.name) names.set(h.name, { name: h.name, label: h0.name ?? h.name, up: h.up !== false, stale: Boolean(h.stale), error: h.error ?? null }); }
+  for (const h0 of board?.hosts ?? []) { const h = h0?.ui ? { ...h0, name: h0.ui } : h0; if (h?.name) names.set(h.name, { name: h.name, label: h.name === 'local' && localLabel ? localLabel : h0.name ?? h.name, up: h.up !== false, stale: Boolean(h.stale), error: h.error ?? null }); }
   for (const s of strips) if (!names.has(s.host ?? 'local')) names.set(s.host ?? 'local', { name: s.host ?? 'local', label: (s.host ?? 'local') === 'local' && localLabel ? localLabel : s.host ?? 'local', up: true });
   const hostList = [...names.values()].sort((a, b) => Number(b.name === frontHost) - Number(a.name === frontHost) || a.name.localeCompare(b.name));
   const byHost = new Map(hostList.map((h) => [h.name, []]));
@@ -171,7 +171,7 @@ export function buildScene(lay, { t = 0, selected = null, hovered = null, labels
 const PITCH_MIN = 0.08, PITCH_MAX = 1.45;
 /** An orbit camera framing a layout: { yaw, pitch, dist, target, fov } now and the goal it eases toward. */
 export function createCamera(lay = { span: 10 }) {
-  const home = { yaw: 0.55, pitch: 0.62, dist: clamp(lay.span * 2.1, 12, 160), target: [0, 0.6, 0] };
+  const home = { yaw: 0.55, pitch: 0.7, dist: clamp(lay.span * 2.7, 14, 200), target: [0, 0.6, 0] };   // the whole ring in view, the nearest disc too
   return { ...home, target: [...home.target], fov: (50 * Math.PI) / 180, goal: { ...home, target: [...home.target] }, home, drift: true };
 }
 /** Back to the framing createCamera chose (the goal, so it eases there). */
