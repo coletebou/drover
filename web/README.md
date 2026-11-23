@@ -180,6 +180,47 @@ Drover was called apx-web (CLI `apxw`) until 2026-10-15. The compatibility shim 
   lines. It keeps an hour-long `files.wait` from looking idle, and when the write fails (the caller's ssh session is
   gone) the waits it left end at once instead of polling for nobody. Everything else in flight still runs to its end.
 
+## Mailbox
+
+Some machines take no inbound ssh (a work laptop whose policy forbids Remote Login). A `sessions.message`
+to one of them used to fail at the connection. When the failure is the connection itself, the sender keeps
+the message and the call returns instead of throwing (`core/api.js` `messageOrQueue`, `core/mailbox.js`):
+
+```json
+{ "ok": false, "queued": true, "mailbox": "<mid>", "host": "macbook", "why": "macbook is not reachable from here (...); the message waits in this host's mailbox until macbook collects it (it must set DROVER_MAILBOX_PULL)" }
+```
+
+The truth file records the same send with `delivery.queued: true` and `delivery.via: "mailbox"`.
+
+Queued only when `isUnreachable` matches: `drover rpc exited 255`, `drover rpc is not running`, or the
+ssh write failed before the request was sent (`: write failed (`). A remote that answered, including
+"session not found", and a call that timed out, are returned as they are. Queueing those could deliver
+twice or hide a refusal. Messages to a Grok bot and to the OpenClaw manager are not queued; those paths
+return the call's own result.
+
+The unreachable host can still dial out. It sets `DROVER_MAILBOX_PULL` to every alias other hosts use for
+it (`macbook,laptop`), comma-separated. Its daemon then asks each known fleet host (`mailbox.take`),
+delivers each message with `sessions.message` on itself, and acks it (`mailbox.ack`) on the host that kept
+it. The first pull is 15 seconds after start, then every `DROVER_MAILBOX_EVERY_MS` (default 60 seconds,
+never under 10). Unset, the puller does not run. A host whose Drover has no `mailbox.take` ("unknown op")
+is skipped quietly; any other take error is logged and that host is skipped for this pass.
+
+`take` returns messages addressed to one of the names given, not yet acked, oldest first, at most 50, and
+drops anything older than 7 days. `mailbox.status` has no age cutoff: a week-old row can still show in
+`waiting` and will never be collected. `waiting` is `{ mid, to, id, ts }`. `delivered` is the last 20
+closed messages, each with `ok` and `error`. `pull` is the names this host collects for.
+
+A delivery is tried once. The puller writes every id it attempted to `mailbox-delivered.jsonl` in its state
+dir, success or failure, and a later pull acks a repeat without delivering it again. A failed delivery shows
+`ok: false` and the error (cut at 300 characters) on the sender's `mailbox.status`; it is not retried. An ack
+that fails to reach the sender is logged. The puller still will not deliver that id again; the next pass
+sends the same ack. The sender's box is `$DROVER_STATE/mailbox.jsonl` (append-only, mode 0600): one `msg`
+line per queued message, one `ack` line when it is closed.
+
+Ops, all local to the host that holds the box: `mailbox.take` `{ for: ["macbook"] }`, `mailbox.ack`
+`{ acks: [{ mid, ok, error }] }`, `mailbox.status`. The puller is the caller. `drover op mailbox.status`
+on the sender shows what is still waiting.
+
 ## Handoff successors
 
 A long-running Claude Code session can hand its work to a fresh one, which then hands off again: generation 3 of a
@@ -311,6 +352,29 @@ key or any part of it.
 - It runs where the launch runs: a launch on another host writes that host's files. A host on older Drover code
   ignores `trust`, starts the agent at the dialog as before, and its result has no `trust`.
 - The launch result and its `launch` event carry `trust`: `{ engine, key, also, file, changed }`, or `{ engine, skipped }`.
+
+## Credential routes
+
+A pool entry works only on the endpoint it was issued for (one cloud partition, one provider account).
+`profiles.json` `credentials.pool[]` may set `route` on an entry, and a Claude launch profile may set
+`route` for the endpoint its settings authenticate on (`core/credpool.js`). A launch on a routed profile
+then only gets entries on that route, or entries that name no route. That holds for `auto`, for an
+explicit credential id, and for the headless failover that picks the next entry after a 429. An explicit
+id on another route is refused before anything starts. An entry or a profile with no route matches
+everything, which is how the pool behaved before routes existed.
+
+A profile route may be read from the daemon environment, for a profile whose endpoint differs by host:
+`$NAME`, or `${NAME:-default}` when the variable is unset. A `$NAME` with no default that is unset means
+no route, so every entry fits. Anything else that starts with `$` is refused. A route is letters, digits,
+`_` or `-`, at most 40 characters, the same shape as a credential id.
+
+A route no entry serves (a subscription login, or a name nobody claimed) gets no pool credential at all.
+The launch then inherits the daemon environment, the same as `credential: "none"`.
+
+`credentials.status` returns `recommendationByRoute` (what `auto` would pick now for a launch on each
+route) and `profileRoutes` (the route each Claude profile resolves to on this host). It still returns no
+secret values. State (counters, the round-robin cursor, throttle history) stays in
+`$DROVER_STATE/credentials.json`. Active handles are in memory and are lost on a daemon restart.
 
 ## Finding the session a launch named
 
@@ -528,7 +592,10 @@ in All, and what waits on you is in every scope. The choice is kept in localStor
 
 A tile with no pane (a headless session, one in a terminal outside tmux) shows its agent's last reply as Markdown
 (`sessions.lastReply`, asked for the tiles on screen only: every 8 s while it works, every minute otherwise), else
-its board tail. A host whose daemon has no `tmux.captureMany` is read with `tmux.capture`, a few panes at a time,
+its board tail. `sessions.lastReply` reads the transcript from the tail (`core/claude.js` `lastAssistantText`):
+the last 384 KB, then four times further back, up to 8 MB, when that tail holds no assistant text (a working
+session's last words can sit behind tool output and request records). A read never starts on a cut line.
+Past 8 MB with no assistant text, the call returns nothing and the tile uses the board tail. A host whose daemon has no `tmux.captureMany` is read with `tmux.capture`, a few panes at a time,
 without color. Click selects, a second click or `z` zooms the tile to the whole view, Enter or a double click opens
 the drawer, Esc unzooms, arrows or `h j k l` move, `+` `-` (or the slider) set the density, 1x1 up to 6x5. Pure
 halves: `ui/wall-model.js` and `ui/pane-content.js` (tests: `test/ui-wall.test.js`, `test/pane-content.test.js`).
@@ -712,6 +779,11 @@ changes); when a session is there both ways, the plain copy is the newer one and
 sessions of machines that are down or gone, and a copy also found on its live machine folds into one hit. A tenant
 search (`repoIdentity`) admits only the answering host's own files, never an archived copy.
 
+Both keyword queries keep `chunks_fts` as the outer table with `CROSS JOIN` (`core/search/query.js`). A
+plain `JOIN` plus a kind filter let SQLite 3.51 (what `node:sqlite` shipped) walk `chunks_kind_hash` and
+run `MATCH` once per chunk of that kind. A reflections-only search then took minutes and held the daemon
+(2026-11-22). Keep the full-text table outermost in both keyword legs.
+
 Where a plugin serves it (`search.remote` in `core/plugins.js`), search kind `brain` adds the Badland brain's
 entries, fetched at query time and never indexed (`core/search/remote.js`). Only a front asks it, and only for a
 call that says `remote: true`: the MCP server, `drover search`, `drover op` and the web UI add it, so a search a host
@@ -813,7 +885,18 @@ machine:
 A `git` sink keeps its own clone in `$STATE/prompt-sinks/<name>` on its branch (made as an orphan when the remote has
 none) and writes `<dir>/<host>/<day>.jsonl`, appending only records that file does not hold, commits that host's
 directory alone ("prompts: <host> +N"), pulls with rebase and pushes; never a force push. Each host writes only its own
-files, so hosts sharing a remote never conflict. The clone is also a read source: `prompts.list` shows a host that did
+files, so hosts sharing a remote never conflict. A commit a hook refused leaves the new lines in the clone.
+The next sync does not append those ids again; it stages the host directory and commits whatever the staged
+diff still carries, so the message's `+N` counts lines in that commit. `add` and `commit` are allowed 10
+minutes: the owner's git hooks scan the staged diff, and a first sync can stage the whole history. Locks a
+dead run left in this clone (`index.lock`, `HEAD.lock`, `config.lock`, `shallow.lock`, `packed-refs.lock`)
+are removed at the start of the next sync. Only this daemon writes the clone, and one sink never syncs
+twice at once. Records are redacted again on the way into a sink, with the rules in force then, so a record
+collected before a rule existed does not leave as it was. A PEM private key goes out as one
+`[redacted private key]`, the `BEGIN` and `END` lines included. GitLab tokens beside `glpat-` are redacted
+the same way: `gldt-`, `glft-`, `glrt-`, `glptt-`, `glsoat-`, `glcbt-`, `glimt-`, `glagent-` and `gloas-`,
+each with at least 16 more characters (deploy, feed, runner, pipeline trigger, SCIM, CI build, incoming
+mail, agent, OAuth secret). The clone is also a read source: `prompts.list` shows a host that did
 not answer from it, as of its last pull. A `command` sink runs its argv (no shell) once per day that gained records,
 `{file}` replaced by a file of just those records (`{dayfile}`: the sink's whole copy of that day, `{day}`, `{host}`).
 An argument `{dayfiles}` instead runs it once per sync with every changed day's copy as separate arguments (a backfill
@@ -883,6 +966,8 @@ value already in the environment wins. The settings a fleet usually sets:
 | `DROVER_DOTFILES` | `~/.dotfiles` | the repository that holds the truth file (`claude/drover-events.jsonl`) and the fleet host list |
 | `DROVER_UPDATE_HINT` | "pull its Drover checkout and restart its daemon" | what an error tells you to do about a host on older code |
 | `DROVER_HANDOFF_CHAINS` | `HANDOFF_CHAIN_STATE_DIR`, else `~/.claude/state/handoff-chain` | where the handoff chains' session markers are (Handoff successors) |
+| `DROVER_MAILBOX_PULL` | unset | comma-separated aliases this host collects mail under (Mailbox). Unset, the puller does not run |
+| `DROVER_MAILBOX_EVERY_MS` | `60000` | how often that puller asks the fleet. Never under 10 seconds. The first pull is 15 seconds after the daemon starts |
 
 
 ## Transcripts in every view
@@ -1465,7 +1550,7 @@ ops, so no MCP tool and no ssh rpc can approve a pairing.
 ```
 bin/drover      CLI: serve (alias up) | open | status | clients | widget-token | pair | bots | ask | rpc | mcp | op | ops | search | prompts | stacks | embed | import-survey | import-legacy
 bin/drover-embed-setup  builds llama-server (pinned) and installs EmbeddingGemma 2 for search
-core/           api.js (op table) and adapters: tmux, claude, codex, hosts, events, memory (incl. the reflections CLI), launch, effort, trust (launch trust), remote, terminals, filewait (files.wait), session-filter (sessions.list filters), lineage (handoff successors); plugins (the plugin loader), owner (DROVER_OWNER), env (settings and secrets files)
+core/           api.js (op table) and adapters: tmux, claude, codex, hosts, events, memory (incl. the reflections CLI), launch, effort, trust (launch trust), credpool (credential routes), mailbox (messages for hosts with no inbound ssh), remote, terminals, filewait (files.wait), session-filter (sessions.list filters), lineage (handoff successors); plugins (the plugin loader), owner (DROVER_OWNER), env (settings and secrets files)
 core/search/    the search index: extract, chunk, store (node:sqlite), indexer, embed (llama-server), query
 core/prompts.js the prompt spool (collector, labels, prompts.* ops); core/prompt-sinks.js its git and command sinks
 core/ask/       asks (docs/ask.md): model (events, fold, codes, texts), parse (the reply grammar), policy (quiet hours, rate, pause), router (the hub), ops, caller (the asking session), channels/ (telegram, sms, imessage)
