@@ -16,7 +16,7 @@ export const WORKSPACES = [
   { id: 'prompts', label: 'Prompts', question: 'What did I ask, where, and when?', subs: [{ id: 'mine', label: 'Mine', view: 'prompts' }, { id: 'all', label: 'All', view: 'prompts-all', rollup: false }] },
   { id: 'work', label: 'Work', question: 'What is shipping?', subs: [{ id: 'pulls', label: 'Pulls', view: 'prs' }, { id: 'features', label: 'Features', view: 'features' }] },
   { id: 'fleet', label: 'Fleet', question: 'Which machines are up and what runs on them?', subs: [{ id: 'hosts', label: 'Hosts', view: 'fleet' }, { id: 'stacks', label: 'Stacks', view: 'stacks' }, { id: 'launch', label: 'Launch', view: 'launch' }] },
-  { id: 'find', label: 'Find', question: 'Where did that happen?', subs: [{ id: 'search', label: 'Search', view: 'search' }, { id: 'memory', label: 'Memory', view: 'memory' }, { id: 'events', label: 'Events', view: 'events', rollup: false }, { id: 'files', label: 'Files', view: 'files' }] },
+  { id: 'find', label: 'Find', question: 'Where did that happen?', subs: [{ id: 'search', label: 'Search', view: 'search' }, { id: 'memory', label: 'Memory', view: 'memory' }, { id: 'skills', label: 'Skills', view: 'skills' }, { id: 'events', label: 'Events', view: 'events', rollup: false }, { id: 'files', label: 'Files', view: 'files' }] },
   { id: 'settings', label: 'Settings', question: 'How does Drover behave?', subs: [{ id: 'general', label: 'Settings', view: 'settings' }] },
 ];
 export const DEFAULT_WS = 'agents';
@@ -34,7 +34,7 @@ export const ALIASES = {
   spool: ['prompts', 'mine'], requests: ['prompts', 'mine'],
   prs: ['work', 'pulls'], pr: ['work', 'pulls'], pulls: ['work', 'pulls'], features: ['work', 'features'], mrs: ['work', 'mrs'], mr: ['work', 'mrs'],
   hosts: ['fleet', 'hosts'], stacks: ['fleet', 'stacks'], docker: ['fleet', 'stacks'], launch: ['fleet', 'launch'], profiles: ['fleet', 'launch'],
-  search: ['find', 'search'], memory: ['find', 'memory'], reflections: ['find', 'memory'], events: ['find', 'events'], files: ['find', 'files'],
+  search: ['find', 'search'], memory: ['find', 'memory'], reflections: ['find', 'memory'], learned: ['find', 'skills'], 'learned-skills': ['find', 'skills'], events: ['find', 'events'], files: ['find', 'files'],
 };
 
 const copy = (list) => list.map((w) => ({ ...w, subs: w.subs.map((s) => ({ ...s })) }));

@@ -304,6 +304,11 @@ select { padding-right: 24px; }
 .notice.ok { border-left-color: var(--moss); background: var(--moss-bg); }
 .screen { font-family: var(--mono); font-size: var(--fs-0); line-height: 1.45; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: var(--r); padding: 10px 12px; white-space: pre-wrap; word-break: break-word; max-height: 60vh; overflow: auto; }
 .screen.tall { max-height: none; }
+/* A unified diff (ui/line-diff.js): the Learned skills view's version and draft comparisons. */
+.screen.diff .diff-add { display: inline-block; min-width: 100%; background: var(--moss-bg); color: var(--moss); }
+.screen.diff .diff-del { display: inline-block; min-width: 100%; background: var(--brick-bg); color: var(--brick); }
+.screen.diff .diff-ctx { color: var(--ink-2); }
+.screen.diff .diff-hunk { color: var(--steel); }
 
 /* ----------------------------------------------------------------- drawer */
 /* Explicit placement: when .main is display:none on phones, auto-placement would

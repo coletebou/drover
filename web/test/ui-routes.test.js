@@ -9,7 +9,7 @@ const go = (hash, list = WORKSPACES, last = {}) => { const r = resolve(parseHash
 test('seven workspaces in the spec\'s order, each sub-view naming a view', () => {
   assert.deepEqual(WORKSPACES.map((w) => w.id), ['manager', 'agents', 'prompts', 'work', 'fleet', 'find', 'settings']);
   assert.deepEqual(WORKSPACES.find((w) => w.id === 'agents').subs.map((s) => s.id), ['lanes', 'list', 'windows', 'wall', 'space']);
-  assert.deepEqual(WORKSPACES.find((w) => w.id === 'find').subs.map((s) => s.id), ['search', 'memory', 'events', 'files']);
+  assert.deepEqual(WORKSPACES.find((w) => w.id === 'find').subs.map((s) => s.id), ['search', 'memory', 'skills', 'events', 'files']);
   for (const w of WORKSPACES) for (const s of w.subs) assert.ok(s.view && s.label, `${w.id}/${s.id}`);
 });
 
@@ -56,7 +56,7 @@ test('plugin views join the workspace they name, else the one their after belong
     { id: 'late', label: 'Late', after: 'launch' },
   ]);
   assert.deepEqual(list.find((w) => w.id === 'work').subs.map((s) => s.id), ['pulls', 'mrs', 'features', 'odd']);
-  assert.deepEqual(list.find((w) => w.id === 'find').subs.map((s) => s.id), ['search', 'memory', 'brain', 'events', 'files']);
+  assert.deepEqual(list.find((w) => w.id === 'find').subs.map((s) => s.id), ['search', 'memory', 'brain', 'skills', 'events', 'files']);
   assert.deepEqual(list.find((w) => w.id === 'fleet').subs.map((s) => s.id), ['hosts', 'stacks', 'launch', 'late']);
   assert.equal(WORKSPACES.find((w) => w.id === 'work').subs.length, 2, 'the base table is not changed');
   assert.deepEqual(go('#/mrs/42', list), ['work', 'mrs', ['42'], '#/work/mrs/42']);

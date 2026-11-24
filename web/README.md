@@ -530,7 +530,7 @@ the aliases and plugin placement are one pure module, `ui/routes.js` (tests: `te
 | 3 | Prompts | Mine · All |
 | 4 | Work | Pulls · Features, then plugin views (merge requests) |
 | 5 | Fleet | Hosts · Stacks · Launch |
-| 6 | Find | Search · Memory · Events · Files |
+| 6 | Find | Search · Memory · Skills · Events · Files |
 | 7 | Settings | |
 
 - **Addresses** are `#/<workspace>/<sub-view>[/params]` (`#/agents/windows/work%3A3`). Every old hash still works:
@@ -1069,6 +1069,23 @@ and `apply` (a batch of done/drop/reopen/edit ops by exact id; needs `repo` or `
 carry the caller's actor, so the truth file records `mcp`, and the CLI gets it as `--agent`. Reads
 keep to the host's identity unless `anyIdentity`. `DROVER_REFLECTIONS_BIN` points at another CLI
 (default `~/.dotfiles/scripts/reflections`).
+
+## Learned skills
+
+Learned skills are the skills Claude Code and Codex agents write for themselves, kept by the dotfiles
+`skill-workshop` CLI: a full copy is saved before every change, every change can be undone (one by its `c-…` id, or
+every change of a background review by its `r-…` run id), and in propose mode background reviews wait as drafts.
+Ops `skills.workshop.*` front the CLI on the host the call names: reads `list` (live skills most used first, archived
+skills, drafts, the mode; `available: false` on a host without the CLI), `changes`, `read` (a live file, a saved
+version or a draft), `versions`, `drafts`, `usage`, `mode`; writes `undo`, `restore`, `archive`, `applyDraft`,
+`discardDraft`, `setMode`. Writes reach the CLI as `--actor user` (the owner, acting from a Drover client or through an
+agent on the owner's behalf) without the session markers the daemon may have inherited, and the truth file's op event
+names the Drover caller (`mcp` from an agent). MCP: `drover_learned_skills`. The web UI's Find › Skills
+(`#/find/skills`) lists the skills, drafts, archived skills and recent changes, opens a skill with its files, history
+(what each change did as a diff, Undo) and saved versions (diff against the live text, Restore), diffs a draft
+against the skill it replaces (Apply, Discard), and switches the learning mode (auto, propose, off; synced across the
+machines that share the store). `DROVER_SKILL_WORKSHOP_BIN` points at another CLI (default
+`~/.dotfiles/scripts/skill-workshop`).
 
 ## Grok bots
 
