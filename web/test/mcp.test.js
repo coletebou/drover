@@ -71,7 +71,7 @@ describe('tools/list', () => {
       for (const [k, p] of Object.entries(t.inputSchema.properties)) assert.equal(typeof p.description, 'string', `${t.name}.${k} needs a description`);
       assert.equal(t.run, undefined);
     }
-    for (const expected of ['drover_fleet', 'drover_sessions', 'drover_session_transcript', 'drover_send', 'drover_tmux_windows', 'drover_capture', 'drover_tmux_send', 'drover_launch', 'drover_headless', 'drover_state', 'drover_events_tail', 'drover_event_append', 'drover_feature_upsert', 'drover_memory', 'drover_handoff_write', 'drover_reflections', 'drover_terminals']) {
+    for (const expected of ['drover_fleet', 'drover_sessions', 'drover_session_transcript', 'drover_send', 'drover_tmux_windows', 'drover_capture', 'drover_tmux_send', 'drover_launch', 'drover_headless', 'drover_state', 'drover_events_tail', 'drover_event_append', 'drover_feature_upsert', 'drover_memory', 'drover_handoff_write', 'drover_reflections', 'drover_learned_skills', 'drover_terminals']) {
       assert.ok(names.has(expected), `missing ${expected}`);
     }
   });
@@ -167,6 +167,61 @@ describe('tools/call', () => {
       [{ action: 'close', ids: ['x'] }, /must be one of list, repos, search, semantic/],
     ]) { const r = await call(args); assert.equal(r.isError, true, JSON.stringify(args)); assert.match(r.content[0].text, msg); }
     assert.equal(dispatch.calls.length, 0);
+  });
+
+  test('drover_learned_skills: every action maps onto its skills.workshop op; writes carry actor mcp, reads do not', async () => {
+    const dispatch = fakeDispatch();
+    const s = createServer({ dispatch, log: quiet });
+    const call = (args) => s.handleMessage(req(1, 'tools/call', { name: 'drover_learned_skills', arguments: args }));
+    for (const a of [
+      { action: 'list', host: 'devbox' },
+      { action: 'changes', limit: 5, skill: 'demo', run: 'r-abcd2345' },
+      { action: 'read', name: 'demo', file: 'references/x.md', version: '20261124T013451Z-ab2c' },
+      { action: 'read', draft: 'd-abcd2345' },
+      { action: 'versions', name: 'demo' },
+      { action: 'drafts', skill: 'demo' },
+      { action: 'usage', all: true, days: 7 },
+      { action: 'mode' },
+      { action: 'undo', id: 'c-abcd2345', host: 'devbox' },
+      { action: 'restore', name: 'demo', version: '20261124T013451Z-ab2c', reason: 'back' },
+      { action: 'archive', name: 'demo', reason: 'folded', absorbedInto: 'other' },
+      { action: 'applyDraft', id: 'd-abcd2345' },
+      { action: 'discardDraft', id: 'd-abcd2345' },
+      { action: 'setMode', mode: 'off' },
+    ]) { const r = await call(a); assert.equal(r.result.isError, false, JSON.stringify(a)); }
+    assert.deepEqual(dispatch.calls, [
+      { op: 'skills.workshop.list', args: { host: 'devbox' } },
+      { op: 'skills.workshop.changes', args: { limit: 5, run: 'r-abcd2345', skill: 'demo' } },
+      { op: 'skills.workshop.read', args: { name: 'demo', file: 'references/x.md', version: '20261124T013451Z-ab2c' } },
+      { op: 'skills.workshop.read', args: { draft: 'd-abcd2345' } },
+      { op: 'skills.workshop.versions', args: { name: 'demo' } },
+      { op: 'skills.workshop.drafts', args: { skill: 'demo' } },
+      { op: 'skills.workshop.usage', args: { all: true, days: 7 } },
+      { op: 'skills.workshop.mode', args: {} },
+      { op: 'skills.workshop.undo', args: { id: 'c-abcd2345', host: 'devbox', actor: 'mcp' } },
+      { op: 'skills.workshop.restore', args: { name: 'demo', version: '20261124T013451Z-ab2c', reason: 'back', actor: 'mcp' } },
+      { op: 'skills.workshop.archive', args: { name: 'demo', reason: 'folded', absorbedInto: 'other', actor: 'mcp' } },
+      { op: 'skills.workshop.applyDraft', args: { id: 'd-abcd2345', actor: 'mcp' } },
+      { op: 'skills.workshop.discardDraft', args: { id: 'd-abcd2345', actor: 'mcp' } },
+      { op: 'skills.workshop.setMode', args: { mode: 'off', actor: 'mcp' } },
+    ]);
+  });
+
+  test('drover_learned_skills refuses missing arguments before dispatch, and its ops get no generated tools of their own', async () => {
+    const dispatch = fakeDispatch();
+    const s = createServer({ dispatch, log: quiet });
+    const call = async (args) => (await s.handleMessage(req(1, 'tools/call', { name: 'drover_learned_skills', arguments: args }))).result;
+    for (const [args, msg] of [
+      [{ action: 'undo' }, /"id" is required for action "undo"/],
+      [{ action: 'read' }, /"name" is required for action "read"/],
+      [{ action: 'archive', name: 'demo' }, /"reason" is required for action "archive"/],
+      [{ action: 'setMode' }, /"mode" is required for action "setMode"/],
+      [{ action: 'setMode', mode: 'on' }, /must be one of auto, propose, off/],
+      [{ action: 'delete', name: 'demo' }, /must be one of list, changes, read/],
+    ]) { const r = await call(args); assert.equal(r.isError, true, JSON.stringify(args)); assert.match(r.content[0].text, msg); }
+    assert.equal(dispatch.calls.length, 0);
+    const names = (await s.handleMessage(req(2, 'tools/list'))).result.tools.map((t) => t.name);
+    assert.deepEqual(names.filter((n) => /skill/.test(n)), ['drover_learned_skills'], 'camelCase ops (applyDraft) count as covered too');
   });
 
   test('drover_fleet composes host.list + host.facts (+ host.probe when asked) and survives a failing part', async () => {

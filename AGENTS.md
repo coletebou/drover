@@ -35,7 +35,7 @@ this file is what an agent needs on top of it. `CLAUDE.md` only imports this fil
 | Path | Holds | Its changes can break |
 |---|---|---|
 | `web/core/api.js`, `core/ops-meta.js` | the op table every client calls, and its MCP/schema metadata | web UI, TUI, MCP server, every native client (`native/CONTRACT.md`) |
-| `web/core/` adapters (`tmux`, `claude`, `codex`, `hosts`, `events`, `memory`, `launch`, `effort`, `trust`, `remote`, `terminals`, `filewait`, `session-filter`, `lineage`, `owner`, `env`) | per-engine and per-feature logic | the op(s) each adapter backs |
+| `web/core/` adapters (`tmux`, `claude`, `codex`, `hosts`, `events`, `memory`, `skills`, `launch`, `effort`, `trust`, `remote`, `terminals`, `filewait`, `session-filter`, `lineage`, `owner`, `env`) | per-engine and per-feature logic | the op(s) each adapter backs |
 | `web/core/search/` | the sqlite + llama-server embedding search index | `drover search`/`drover grep`, the Search view |
 | `web/core/bots/` | the Grok bot gateway: OAuth, tools, tenant access, policy (what leaves for a bot, redacted) | `web/server/botgate.js`, bot-facing data exposure |
 | `web/core/docker.js`, `docker-format.js` | docker stacks discovery/formatting | `drover stacks`, the Stacks view |

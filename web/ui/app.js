@@ -27,6 +27,7 @@ import launch from './views/launch.js';
 import features from './views/features.js';
 import prs from './views/prs.js';
 import memory from './views/memory.js';
+import skills from './views/skills.js';
 import events from './views/events.js';
 import fleet from './views/fleet.js';
 import stacks from './views/stacks.js';
@@ -37,7 +38,7 @@ import search from './views/search.js';
 
 // Every view a sub-view names (routes.js WORKSPACES); a plugin's views (core/plugins.js ui.views) join at boot
 // (loadPluginViews), each in the workspace its `workspace` names, else the one its `after` belongs to.
-const VIEWS = [manager, board, sessions, tmux, wall, space, promptsMine, promptsAll, prs, features, fleet, stacks, launch, search, memory, events, files, settings];
+const VIEWS = [manager, board, sessions, tmux, wall, space, promptsMine, promptsAll, prs, features, fleet, stacks, launch, search, memory, skills, events, files, settings];
 const byId = new Map(VIEWS.map((v) => [v.id, v]));
 const $ = (id) => document.getElementById(id);
 const main = $('main'), tabsEl = $('tabs'), subtabsEl = $('subtabs'), hostStrip = $('hoststrip'), hostSelect = $('hostSelect'), qInput = $('q'), liveEl = $('live'), liveText = $('liveText'), toastsEl = $('toasts'), stage = $('stage');
