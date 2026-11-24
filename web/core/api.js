@@ -11,6 +11,7 @@ import * as codex from './codex.js';
 import * as hosts from './hosts.js';
 import * as events from './events.js';
 import * as memory from './memory.js';
+import * as skills from './skills.js';
 import * as lineage from './lineage.js';
 import * as launchMod from './launch.js';
 import { effortGiven, effortLevels } from './effort.js';
@@ -714,6 +715,22 @@ export const local = {
   async 'reflections.mark'({ op, ids, note, actor }) { return memory.reflectionMark(op, ids, { note, actor }); },
   async 'reflections.edit'(args) { return memory.reflectionEdit(args); },
   async 'reflections.apply'({ ops, repo, anyRepo, note, actor }) { return memory.reflectionsApply(ops, { repo, anyRepo, note, actor }); },
+
+  // ---- learned skills (core/skills.js, the dotfiles skill-workshop CLI). Writes reach the CLI as --actor user; the
+  // truth file's op event names the Drover caller (the owner from a client, mcp from an agent).
+  async 'skills.workshop.list'() { return skills.list(); },
+  async 'skills.workshop.changes'({ limit, run, skill } = {}) { return skills.changes({ limit, run, skill }); },
+  async 'skills.workshop.read'({ name, file, version, draft } = {}) { return skills.read({ name, file, version, draft }); },
+  async 'skills.workshop.versions'({ name } = {}) { return skills.versions({ name }); },
+  async 'skills.workshop.drafts'({ skill } = {}) { return skills.drafts({ skill }); },
+  async 'skills.workshop.usage'({ all, days } = {}) { return skills.usage({ all, days }); },
+  async 'skills.workshop.mode'() { return skills.mode(); },
+  async 'skills.workshop.archive'({ name, reason, absorbedInto } = {}) { return skills.archive({ name, reason, absorbedInto }); },
+  async 'skills.workshop.restore'({ name, version, reason } = {}) { return skills.restore({ name, version, reason }); },
+  async 'skills.workshop.undo'({ id } = {}) { return skills.undo({ id }); },
+  async 'skills.workshop.applyDraft'({ id } = {}) { return skills.applyDraft({ id }); },
+  async 'skills.workshop.discardDraft'({ id } = {}) { return skills.discardDraft({ id }); },
+  async 'skills.workshop.setMode'({ mode } = {}) { return skills.setMode({ mode }); },
 
   // ---- Grok bots (core/bots): read-only, but for read receipts. Approving a bot, revoking it and setting a Routine are
   // main-token HTTP routes (server/http.js /api/bots/*), never ops: an op is reachable through MCP and ssh rpc.
@@ -1459,7 +1476,7 @@ export const CACHE_POLICY = {
   'tmux.windows': 5_000, 'tmux.sessions': 10_000, 'sessions.list': 10_000, 'sessions.get': 10_000,
   'host.facts': 60_000, 'host.identity': 600_000, 'host.list': 60_000, 'launch.profiles': 60_000,
   'events.state': 5_000, 'events.tail': 5_000, 'memory.overview': 30_000, 'memory.repos': 300_000,
-  'reflections.list': 30_000, 'reflections.repos': 30_000, 'terminals.list': 5_000, 'headless.list': 3_000,
+  'reflections.list': 30_000, 'reflections.repos': 30_000, 'skills.workshop.list': 15_000, 'skills.workshop.changes': 15_000, 'skills.workshop.drafts': 15_000, 'skills.workshop.usage': 60_000, 'terminals.list': 5_000, 'headless.list': 3_000,
   'credentials.status': 3_000, 'survey.list': 10_000,
   'files.roots': 30_000, 'openclaw.status': 30_000, 'openclaw.check': 30_000, 'openclaw.feed': 10_000, 'native.summary': 5_000, 'native.board': 3_000, 'openclaw.threads': 3_000,
   'docker.stacks': 30_000, 'hermes.status': 10_000,
@@ -1471,6 +1488,8 @@ const INVALIDATES = {
   'events.append': ['events.'], 'events.importLegacy': ['events.'], 'features.upsert': ['events.'],
   'memory.handoff.write': ['memory.', 'events.'], 'reflections.add': ['reflections.', 'memory.'], 'reflections.mark': ['reflections.', 'memory.'],
   'reflections.edit': ['reflections.', 'memory.'], 'reflections.apply': ['reflections.', 'memory.'],
+  'skills.workshop.archive': ['skills.'], 'skills.workshop.restore': ['skills.'], 'skills.workshop.undo': ['skills.'],
+  'skills.workshop.applyDraft': ['skills.'], 'skills.workshop.discardDraft': ['skills.'], 'skills.workshop.setMode': ['skills.'],
   'terminals.open': ['terminals.'], 'terminals.close': ['terminals.'],
   'credentials.throttle': ['credentials.'], 'survey.run': ['survey.', 'events.'],
   'tmux.answer': ['tmux.', 'fleet.', 'events.', 'native.'], 'sessions.answer': ['tmux.', 'fleet.', 'events.', 'native.'],
