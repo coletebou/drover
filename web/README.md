@@ -376,6 +376,33 @@ route) and `profileRoutes` (the route each Claude profile resolves to on this ho
 secret values. State (counters, the round-robin cursor, throttle history) stays in
 `$DROVER_STATE/credentials.json`. Active handles are in memory and are lost on a daemon restart.
 
+## Launch commands and host defaults
+
+A Claude launch profile may set `command`, the program (and its leading arguments) to run instead of `claude`:
+a wrapper that starts Claude Code itself, for example a launcher that points it at another endpoint and adds its
+own `--settings`. Claude's argv follows it unchanged (profile `argv`, `--model`, `--effort`, `--resume=`,
+`--name=`, then `--` and the prompt), in tmux windows and headless sessions alike, and the launch event, the
+result and the launch view's preview show the real command. A leading `~` is the user's home. It must be a
+non-empty array of non-empty strings; anything else, or a `command` on a Codex or Hermes profile, is refused
+before anything starts. A wrapper that reads options of its own should take `--` as "the rest is Claude's", and
+the profile then ends its command with `--`, so Claude's own `--` before the prompt survives:
+
+```json
+{ "id": "claude-gateway", "label": "through the gateway launcher", "command": ["~/bin/gateway-claude", "--"],
+  "argv": ["--dangerously-skip-permissions"], "env": {}, "route": "gateway" }
+```
+
+Give such a profile a `route` no pool entry serves when the wrapper brings its own credentials, so no pool value
+is set in its environment (Credential routes).
+
+One profiles file usually serves every host, but hosts want different defaults (a work box whose Claude goes
+through a wrapper, a personal box that runs plain `claude`). `DROVER_CLAUDE_PROFILE` (likewise
+`DROVER_CODEX_PROFILE`, `DROVER_HERMES_PROFILE`), read from the daemon environment on every call, names this
+host's default: that profile becomes the only one marked `default` in `launch.profiles`, the launch view and a
+launch that names no profile. Set it in the host's own env file, not in a shared one. A name the file does not
+have is reported as `hostDefaultMissing` on that engine's section, and a launch that names no profile is refused
+rather than silently falling back; a launch that names a profile is unaffected. The file on disk is never changed.
+
 ## Finding the session a launch named
 
 A tmux launch's `name` is always the window name (`core/launch.js` `newWindow`). For an
@@ -959,6 +986,7 @@ value already in the environment wins. The settings a fleet usually sets:
 | `DROVER_OWNER`, `DROVER_OWNER_NAME` | `owner`, "the owner" | the actor the owner's own clients write as, and how prompts and prose name them |
 | `DROVER_DEFAULT_REPO` | none | the repo memory, handoff and reflection ops use when a call names none |
 | `DROVER_PROFILES` | `web/profiles.json` | launch profiles, models, the tmux session a launch opens in (`tmuxSession`, else the first of `tmuxSessions`, else `agents`), cwd suggestions and the credential pool |
+| `DROVER_CLAUDE_PROFILE`, `DROVER_CODEX_PROFILE`, `DROVER_HERMES_PROFILE` | the file's `default` | this host's default launch profile for that engine (Launch commands and host defaults); set per host, in its own env file, since the profiles file is shared |
 | `DROVER_OPENCLAW_OVERLAY` | none | a private overlay for the OpenClaw manager's profiles, roles and seeds (`openclaw-manager/README.md`) |
 | `DROVER_TENANT_PREFIX` | `tenant` | native bot tenants connect as `<prefix>-<tenant>` (Native tenants) |
 | `DROVER_SSH_EXCLUDE` | `-ssm$\|jump$\|^github\.com$` | ssh-config aliases the host list leaves out (a regular expression) |

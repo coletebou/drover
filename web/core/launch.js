@@ -37,9 +37,46 @@ const ENGINE_SECTIONS = ['claude', 'codex', 'hermes'];
  */
 export async function loadProfiles() {
   const own = JSON.parse(await readFile(PROFILES_FILE, 'utf8'));
-  if (PROFILES_FILE === SHIPPED_PROFILES || ENGINE_SECTIONS.every((e) => own[e])) return own;
+  if (PROFILES_FILE === SHIPPED_PROFILES || ENGINE_SECTIONS.every((e) => own[e])) return withHostDefaults(own);
   const shipped = JSON.parse(await readFile(SHIPPED_PROFILES, 'utf8'));
-  return { ...own, ...Object.fromEntries(ENGINE_SECTIONS.filter((e) => !own[e] && shipped[e]).map((e) => [e, shipped[e]])) };
+  return withHostDefaults({ ...own, ...Object.fromEntries(ENGINE_SECTIONS.filter((e) => !own[e] && shipped[e]).map((e) => [e, shipped[e]])) });
+}
+
+/** The variable that names this host's default profile for an engine: DROVER_CLAUDE_PROFILE, DROVER_CODEX_PROFILE, DROVER_HERMES_PROFILE. */
+export const hostDefaultVar = (engine) => `DROVER_${engine.toUpperCase()}_PROFILE`;
+
+/**
+ * One shared profiles file serves hosts that want different defaults (a work box whose Claude runs through a
+ * gateway wrapper, a personal box that runs plain `claude`). DROVER_<ENGINE>_PROFILE, read from the daemon
+ * environment at each call, names this host's default for that engine: the profile it names becomes the only one
+ * marked default, so a launch with no profile, the launch view and launch.profiles all agree. Unset, the file's
+ * own default stands. A name the file does not have is reported as hostDefaultMissing on that engine's section,
+ * and resolveProfile refuses a launch that would fall back to the file's default because of it.
+ */
+function withHostDefaults(all) {
+  const out = { ...all };
+  for (const e of ENGINE_SECTIONS) {
+    const want = envvar(`${e.toUpperCase()}_PROFILE`);
+    const sec = out[e];
+    if (!want || !Array.isArray(sec?.profiles)) continue;
+    if (!sec.profiles.some((p) => p.id === want)) { out[e] = { ...sec, hostDefaultMissing: want }; continue; }
+    out[e] = { ...sec, profiles: sec.profiles.map((p) => ({ ...p, default: p.id === want })) };
+  }
+  return out;
+}
+
+/**
+ * A Claude profile's command, checked and with a leading ~ expanded: a non-empty array of non-empty strings with no
+ * NUL, run instead of `claude` with Claude's argv after it (core/claude.js claudeCommand). Only Claude launches build
+ * their argv around it, so a Codex or Hermes profile that sets one is refused rather than silently ignored.
+ */
+function checkCommand(engine, p) {
+  if (p.command === undefined || p.command === null) return undefined;
+  if (engine !== 'claude') throw new Error(`profile ${p.id}: command is supported for Claude profiles only`);
+  if (!Array.isArray(p.command) || !p.command.length || !p.command.every((s) => typeof s === 'string' && s.length && !s.includes('\u0000'))) {
+    throw new Error(`profile ${p.id}: command must be a non-empty array of non-empty strings, the program first`);
+  }
+  return p.command.map(expandHome);
 }
 
 /** The tmux session a tmux launch that names none opens its window in, used when the profiles name none either. */
@@ -54,10 +91,12 @@ export async function resolveProfile(engine, profileId) {
   const all = await loadProfiles();
   const eng = all[engine];
   if (!eng) throw new Error(`unknown engine ${engine}`);
+  if (!profileId && eng.hostDefaultMissing) throw new Error(`${hostDefaultVar(engine)} names profile ${eng.hostDefaultMissing}, which the profiles file has no ${engine} profile for; nothing was started`);
   const p = profileId ? eng.profiles.find((x) => x.id === profileId) : eng.profiles.find((x) => x.default) ?? eng.profiles[0];
   if (!p) throw new Error(`unknown profile ${profileId} for ${engine}`);
   if (p.requires && !process.env[p.requires]) throw new Error(`profile ${p.id} requires ${p.requires} in the environment of this host`);
-  return { ...p, argv: (p.argv ?? []).map(expandHome), env: p.env ?? {} };
+  const command = checkCommand(engine, p);
+  return { ...p, argv: (p.argv ?? []).map(expandHome), env: p.env ?? {}, ...(command ? { command } : {}) };
 }
 
 const SAFE_NAME = (s) => String(s ?? '').replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'agent';
@@ -317,7 +356,7 @@ export async function launch(req, { actor = 'drover' } = {}) {
     const h = attachHeadlessClaude(entry, { profile, model, effort, resume: req.resume, env: { ...UNATTENDED_CLAUDE_ENV, PATH: agentPath, ...profile.env, ...credEnv } });
     if (cred) await credentials.acquire(cred.id, id);
     if (req.prompt) { h.send(req.prompt); entry.status = 'busy'; }
-    const ev = await append({ ...base, argv: ['claude', ...h.argv], result: { headlessId: id, sessionId: h.sessionId } }, { actor });
+    const ev = await append({ ...base, argv: [...claude.claudeCommand(profile), ...h.argv], result: { headlessId: id, sessionId: h.sessionId } }, { actor });
     return { ok: true, mode, headlessId: id, sessionId: h.sessionId, ...withEffort, ...withDone, credential: cred?.id ?? null, credentialReason, event: ev.id };
   }
   if (engine === 'hermes') {
