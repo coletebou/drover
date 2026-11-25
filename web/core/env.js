@@ -54,3 +54,15 @@ export async function loadEnvFile({ file, override = false } = {}) {
 }
 
 export function haveSecret(name) { return typeof process.env[name] === 'string' && process.env[name].length > 0; }
+
+/**
+ * What the settings this process read look like on disk now: each settings file (CONFIG_DIR/*.env, a symlink by its
+ * target) and the secrets file, by name, modification time and size, never by content. A long-lived process
+ * compares it with the one it started with: a setting added for this host, or a rotated key, changes it, while the
+ * values it loaded at start stay what they were.
+ */
+export async function settingsStamp({ configDir = CONFIG_DIR, secrets = secretsFile() } = {}) {
+  const { stat } = await import('node:fs/promises');
+  const one = async (f) => { try { const s = await stat(f); return `${path.basename(f)}:${s.mtimeMs}:${s.size}`; } catch { return `${path.basename(f)}:none`; } };
+  return (await Promise.all([...(await configFiles(configDir)), secrets].map(one))).join('|');
+}
