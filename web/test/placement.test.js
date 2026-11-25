@@ -194,6 +194,46 @@ describe('judge, choose, reasonFor', () => {
     assert.ok(j(sampleOf({ availGB: 12, swapPct: 80 })).score < a.score);
     assert.ok(j(sampleOf({ availGB: 12, load: 6 })).score < a.score);
   });
+  describe('the external host guard (core/guard.js) and macOS swap headroom', () => {
+    const guarded = (level, why = 'swap runway 20 s', over = {}) => ({ ...sampleOf({ availGB: 12, load: 1, ...over }), guard: { level, why, observe: false, headroomMB: 2048, runwayS: 20, ageS: 3 } });
+    const heavy = placement.DEFAULT_CLASSES['heavy-build'];
+    test('no cap, no effect: a storm is ignored unless the policy or the class asks about it, and the heavy-build default asks for calm', () => {
+      assert.equal(placement.DEFAULT_POLICY.maxGuardLevel, null);
+      assert.equal(placement.DEFAULT_POLICY.minSwapHeadroomGB, null);
+      assert.equal(heavy.maxGuardLevel, 'calm');
+      assert.equal(placement.DEFAULT_CLASSES['claude-session'].maxGuardLevel, undefined);
+      assert.equal(j(guarded('cliff')).eligible, true, 'a claude-session on a host with no maxGuardLevel');
+      assert.equal(j(guarded('calm'), {}, heavy).eligible, true);
+      assert.equal(j(guarded('tight'), {}, heavy).eligible, false, 'heavy-build wants calm');
+    });
+    test('a fresh reading above the cap makes the host ineligible and says why; the cap is the stricter of policy and class', () => {
+      const why = (r) => r.why.find((w) => w.startsWith('host guard'));
+      assert.equal(j(guarded('storm'), { maxGuardLevel: 'storm' }).eligible, true, 'storm is allowed by a storm cap');
+      const cliff = j(guarded('cliff'), { maxGuardLevel: 'storm' });
+      assert.deepEqual([cliff.eligible, cliff.score, why(cliff)], [false, 0, 'host guard cliff: swap runway 20 s']);
+      assert.equal(j(guarded('tight'), { maxGuardLevel: 'calm' }).eligible, false);
+      assert.equal(j(guarded('calm'), { maxGuardLevel: 'calm' }).eligible, true);
+      assert.equal(j(guarded('tight'), { maxGuardLevel: 'storm' }, heavy).eligible, false, 'the class cap (calm) is stricter than the policy cap (storm)');
+      assert.equal(j(guarded('storm'), { maxGuardLevel: 'tight' }, { ...cls, maxGuardLevel: 'storm' }).eligible, false, 'the policy cap (tight) is stricter than the class cap (storm)');
+      assert.equal(j(guarded('storm', ''), { maxGuardLevel: 'tight' }).why.at(-1), 'host guard storm', 'no why: just the level');
+      assert.equal(j(sampleOf({ availGB: 12 }), { maxGuardLevel: 'calm' }).eligible, true, 'no guard reading (stale or not configured): fail open');
+      assert.equal(j(guarded('storm'), { maxGuardLevel: 'sideways' }).eligible, true, 'a cap that is not a level is ignored');
+    });
+    test('a tight guard halves the score', () => {
+      const calm = j(guarded('calm')), tight = j(guarded('tight'));
+      assert.ok(calm.score > 0 && Math.abs(tight.score - calm.score / 2) < 0.002, `${tight.score} vs ${calm.score}`);
+      assert.equal(tight.facts.guard, 'tight');
+    });
+    test('minSwapHeadroomGB: macOS free swap-volume space plus unused swap; Linux and no setting are untouched', () => {
+      const mac = (headroomMB) => ({ ...sampleOf({ os: 'darwin', availGB: 12 }), swap: { totalMB: 4096, usedMB: 2048, usedPct: 50, dynamic: true, headroomMB } });
+      const low = j(mac(6 * 1024), { minSwapHeadroomGB: 10 });
+      assert.deepEqual([low.eligible, low.why], [false, ['swap headroom 6 GB (free disk plus unused swap), under its floor of 10 GB']]);
+      assert.equal(j(mac(12 * 1024), { minSwapHeadroomGB: 10 }).eligible, true);
+      assert.equal(j(mac(6 * 1024)).eligible, true, 'null: ignored');
+      assert.equal(j(sampleOf({ availGB: 12 }), { minSwapHeadroomGB: 10 }).eligible, true, 'Linux has no swap headroom reading');
+      assert.equal(j(mac(12 * 1024), { minSwapHeadroomGB: 10 }).facts.swapHeadroomGB, 12);
+    });
+  });
   test('choose: highest score; prefer wins a near tie only; then less load per core; reasonFor names the runner-up or every blocker', () => {
     const c = (name, score, load = 1) => ({ name, eligible: true, score, why: [], facts: { load, cores: 8, availGB: 9, totalGB: 16 } });
     assert.equal(placement.choose([c('x', 0.40), c('y', 0.43)], { prefer: 'x' }).name, 'x');
@@ -280,6 +320,42 @@ describe('fleet.place, fleet.vitals and launch.start host auto through the op ta
     await assert.rejects(api.dispatch('launch.start', { host: 'auto', engine: 'claude', prompt: 'hi' }), /nothing was started: no eligible host for claude-session: .*; before that box-b could not be reached \(ssh box-b drover rpc exited 255: ssh: connect to host box-b port 22: Connection timed out\)$/);
     assert.equal(launched.length, 1);
     await assert.rejects(api.dispatch('launch.start', { host: 'auto', engine: 'claude', prompt: 'hi' }), /nothing was started: no eligible host/, 'with fresh figures it is unreachable before any launch');
+  });
+  describe('the launch gate on this machine (core/launch-gate.js; the loop itself is in launch-gate.test.js)', () => {
+    const gate = async (line) => {
+      const f = path.join(tmp, 'gate.sh');
+      await writeFile(f, `#!/bin/sh\necho ${JSON.stringify(line)}\n`, { mode: 0o755 });
+      process.env.DROVER_LAUNCH_GATE = f;
+      return f;
+    };
+    after(() => { delete process.env.DROVER_LAUNCH_GATE; delete process.env.DROVER_LAUNCH_GATE_MAX_WAIT; });
+    test('a gate that says elsewhere moves a plain local launch to the host fleet.place picks without this one, started with force; the result says so', async () => {
+      await setLocal(sampleOf({ host: 'box-a', availGB: 12 }));
+      const launched = [];
+      answers = { 'box-b': (op, args) => (op === 'host.vitals' ? sampleOf({ host: 'box-b', availGB: 9 }) : op === 'launch.start' ? (launched.push(args), { ok: true, tmux: 'agents:@7' }) : 'ERR:unexpected'), 'box-c': null, 'mac-a': null };
+      await gate('elsewhere - host guard storm');
+      const r = await api.dispatch('launch.start', { engine: 'claude', prompt: 'hi', name: 'gated' });
+      assert.equal(r.tmux, 'agents:@7');
+      assert.deepEqual(r.gate, { decision: 'elsewhere', reason: 'host guard storm', movedTo: 'box-b' });
+      assert.equal(launched.length, 1);
+      assert.deepEqual([launched[0].prompt, launched[0].force], ['hi', true], 'the receiving host does not ask its own gate again');
+      assert.equal(launched[0].placement, undefined);
+    });
+    test('host auto whose local leg the gate sends elsewhere reports the host it ended on', async () => {
+      api._resetReservations();
+      await setLocal(sampleOf({ host: 'box-a', availGB: 15 }));
+      answers = { 'box-b': (op) => (op === 'host.vitals' ? sampleOf({ host: 'box-b', availGB: 6 }) : op === 'launch.start' ? { ok: true, tmux: 'agents:@8' } : 'ERR:unexpected'), 'box-c': null, 'mac-a': null };
+      await gate('elsewhere box-b guard cliff');
+      const r = await api.dispatch('launch.start', { host: 'auto', engine: 'claude', prompt: 'hi' });
+      assert.deepEqual([r.placement.host, r.gate.movedTo, r.tmux], ['box-b', 'box-b', 'agents:@8']);
+    });
+    test('a hold with no other eligible host, once the wait budget is spent, refuses and starts nothing', async () => {
+      await setLocal(sampleOf({ host: 'box-a', availGB: 12 }));
+      answers = { 'box-b': null, 'box-c': null, 'mac-a': null };
+      await gate('hold storm: swap runway 20 s');
+      process.env.DROVER_LAUNCH_GATE_MAX_WAIT = '0';
+      await assert.rejects(api.dispatch('launch.start', { engine: 'claude', prompt: 'hi' }), /^Error: nothing was started: host guard says storm: swap runway 20 s; no other eligible host \(no eligible host for claude-session: /);
+    });
   });
   test('placements are reserved for a few minutes, so back-to-back launches do not all land on one host', async () => {
     await setLocal(sampleOf({ host: 'box-a', availGB: 5 }));
