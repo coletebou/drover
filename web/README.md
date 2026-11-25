@@ -156,7 +156,12 @@ Drover was called apx-web (CLI `apxw`) until 2026-10-15. The compatibility shim 
 - Rollouts (`core/remote.js`): a `drover rpc` started before its host pulled new code
   answers new ops with "unknown op". The daemon then retires it, so it finishes what it
   owes and gets EOF only after its last reply, and retries on a fresh one, at most once
-  per 10 minutes per host. A retired child that hangs is killed after 150 s.
+  per 10 minutes per host. A retired child that hangs is killed after 150 s. A `drover rpc`
+  whose checkout has moved, or whose settings files (`~/.config/drover/*.env`) or secrets file
+  changed since it started, marks every reply `stale` (checked every minute,
+  `DROVER_RPC_STALE_CHECK_MS`), and the caller retires it the same way. So a host setting added
+  later, or a rotated key, reaches remote calls without restarting anything; the files are
+  compared by time and size, never by content.
 - Hermes Agent (`core/hermes.js`, checked against Hermes 2026.9.24): every Hermes surface is a client of one gateway
   per profile home (`HERMES_HOME`, default `~/.hermes`; named profiles under `profiles/<name>`), the only writer of
   `state.db`. Lists, transcripts and last replies are read-only reads of that database (a reset lineage or a compression
