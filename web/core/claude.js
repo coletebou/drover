@@ -142,11 +142,17 @@ async function readPeerToken(pid, socketPath) {
 }
 
 /**
- * Latest permission mode recorded in a session's transcript (`permission-mode`
- * entries, or `permissionMode` on user lines). Reads only the tail.
+ * Permission-mode evidence in a session's transcript tail: `user` is the mode on
+ * the newest user line (the effective mode when the person last typed), `record`
+ * the newest `permission-mode` entry. The two disagree in practice: a session
+ * resumed with --dangerously-skip-permissions writes `bypassPermissions` on its
+ * user lines but keeps appending `permission-mode` records that say `auto`
+ * (Claude Code 2.1.330, 2026-11-25), so the newest match of either kind is not
+ * the session's mode.
  */
-export async function latestPermissionMode(transcript, { tailBytes = 512 * 1024 } = {}) {
-  if (!transcript) return null;
+export async function permissionEvidence(transcript, { tailBytes = 512 * 1024 } = {}) {
+  const out = { user: null, record: null };
+  if (!transcript) return out;
   let fh;
   try {
     fh = await open(transcript, 'r');
@@ -154,9 +160,20 @@ export async function latestPermissionMode(transcript, { tailBytes = 512 * 1024 
     const start = Math.max(0, size - tailBytes);
     const buf = Buffer.alloc(size - start);
     await fh.read(buf, 0, buf.length, start);
-    const all = [...buf.toString('utf8').matchAll(/"permissionMode":"([A-Za-z]+)"/g)];
-    return all.length ? all.at(-1)[1] : null;
-  } catch { return null; } finally { await fh?.close(); }
+    for (const line of buf.toString('utf8').split('\n')) {
+      const m = line.match(/"permissionMode":"([A-Za-z]+)"/);
+      if (!m) continue;
+      if (/"type":"user"/.test(line)) out.user = m[1];
+      else out.record = m[1];
+    }
+  } catch { /* unreadable: no evidence */ } finally { await fh?.close(); }
+  return out;
+}
+
+/** Latest permission mode in a transcript: the newest user line's, else the newest record's. */
+export async function latestPermissionMode(transcript, opts) {
+  const { user, record } = await permissionEvidence(transcript, opts);
+  return user ?? record;
 }
 
 /**
@@ -203,13 +220,18 @@ async function defaultModeFromSettings() {
 }
 
 /**
- * Best evidence of a live session's permission class: the transcript's latest
- * mode (tracks shift+tab changes), else its launch flags, else settings default.
+ * Best evidence of a live session's permission class: the newest user line's mode,
+ * else a skip-permissions launch flag, else the newest permission-mode record (tracks
+ * shift+tab changes), else other launch flags, else the settings default.
  */
 export async function sessionModeClass(session) {
   let argv = { mode: null, bypassAvailable: false };
   if (session?.pid) { try { argv = modeFromArgv((await run('ps', ['-o', 'args=', '-p', String(session.pid)], { timeoutMs: 3000 })).stdout); } catch { /* gone */ } }
-  const mode = (await latestPermissionMode(session?.transcript)) ?? argv.mode ?? (await defaultModeFromSettings());
+  const ev = await permissionEvidence(session?.transcript);
+  // The user line is what the person last ran under; a skip-permissions launch outranks the
+  // stale permission-mode records a resumed session keeps writing (see permissionEvidence).
+  const mode = ev.user ?? (argv.mode === 'bypassPermissions' ? argv.mode : null) ?? ev.record ?? argv.mode
+    ?? (await defaultModeFromSettings());
   return { mode, cls: modeClass(mode, { bypassAvailable: argv.bypassAvailable }) };
 }
 
