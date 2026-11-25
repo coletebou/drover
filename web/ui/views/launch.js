@@ -176,7 +176,9 @@ export default {
     }
     function preview() {
       const eng = v.engine; const p = currentProfiles().find((x) => x.id === f.profile.value);
-      const argv = [eng === 'codex' ? 'codex' : eng === 'hermes' ? 'hermes' : 'claude', ...(eng === 'hermes' ? ['chat'] : []), ...(p?.argv ?? [])];
+      // A Claude profile's command runs instead of `claude` (core/claude.js claudeCommand).
+      const lead = eng === 'codex' ? ['codex'] : eng === 'hermes' ? ['hermes', 'chat'] : (Array.isArray(p?.command) && p.command.length ? p.command : ['claude']);
+      const argv = [...lead, ...(p?.argv ?? [])];
       const model = f.model.value;
       const effort = chosenEffort();
       const prompt = f.prompt.value.trim();

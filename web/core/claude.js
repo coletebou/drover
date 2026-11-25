@@ -470,13 +470,23 @@ export function effortArgv(effort) {
 function resumeArg(resume) { return `--resume=${resume}`; }
 
 /**
- * Build the argv for an interactive claude launch from a resolved profile: profile argv, model, effort, resume,
+ * What a Claude launch runs: the profile's `command` (a wrapper that starts Claude Code itself, such as a launcher
+ * that points it at another endpoint, with its own leading arguments), else `claude`. resolveProfile
+ * (core/launch.js) has already checked it and expanded a leading ~. Everything after it is Claude's own argv.
+ */
+export function claudeCommand(profile) {
+  const c = profile?.command;
+  return Array.isArray(c) && c.length ? [...c] : ['claude'];
+}
+
+/**
+ * Build the argv for an interactive claude launch from a resolved profile: the command (claudeCommand), profile argv, model, effort, resume,
  * name, then -- and the prompt. `name` becomes the session's display name (`--name=<name>`, bound like
  * `--resume`), which is what the registry records and what findSession matches: without it Claude Code names
  * the session after its cwd (`<dir>-<suffix>`), so a launch's own name only reached the tmux window.
  */
 export function interactiveArgv(profile, { model, effort, resume, name, prompt, extra = [] } = {}) {
-  const argv = ['claude', ...(profile.argv ?? [])];
+  const argv = [...claudeCommand(profile), ...(profile.argv ?? [])];
   if (model) argv.push('--model', model);
   argv.push(...effortArgv(effort));
   if (resume) argv.push(resumeArg(resume));
@@ -506,7 +516,10 @@ export class HeadlessClaude {
     this.cwd = cwd; this.onEvent = onEvent; this.onExit = onExit;
     const argv = headlessArgv(profile, { model, effort, resume, sessionId: this.sessionId });
     this.argv = argv;
-    this.child = startLines('claude', argv, {
+    // The program and its leading arguments: `claude`, or the profile's command, with Claude's argv after them.
+    const [bin, ...lead] = claudeCommand(profile);
+    this.command = [bin, ...lead];
+    this.child = startLines(bin, [...lead, ...argv], {
       cwd, env: { ...process.env, ...(env ?? {}) },
       onLine: (l) => { let d; try { d = JSON.parse(l); } catch { d = { type: 'raw', text: l }; } this.onEvent?.(d); },
       onStderr: (d) => this.onEvent?.({ type: 'stderr', text: d }),
