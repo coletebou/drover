@@ -27,6 +27,7 @@ import * as channels from '../core/bots/channels.js';
 import * as routineSetup from '../core/bots/routine-setup.js';
 import * as subscriptions from '../core/bots/subscriptions.js';
 import * as clients from '../core/clients.js';
+import { startStallWatchdog } from '../core/stall-watchdog.js';
 import { markDaemon as markSearchDaemon, startService as startSearch } from '../core/search/service.js';
 import { markDaemon as markPromptsDaemon, startService as startPrompts } from '../core/prompts.js';
 import * as plugins from '../core/plugins.js';
@@ -209,6 +210,8 @@ export async function startServer({ port = 7337, bind = '127.0.0.1' } = {}) {
   openclaw.onProgress(({ event, data }) => broadcast(event, data));
   // It outlives its answers, so it serves a stale read at once and refreshes it behind (the CLI reads it again first).
   cache.markLongLived();
+  // A hung event loop gets the daemon ended so launchd or systemd restarts it (core/stall-watchdog.js).
+  const stopStallWatchdog = startStallWatchdog();
   const token = await loadOrCreateToken();
   const widgetToken = await loadOrCreateWidgetToken();
   const server = createServer(async (req, res) => {
@@ -362,6 +365,7 @@ export async function startServer({ port = 7337, bind = '127.0.0.1' } = {}) {
   // Codex notifications -> SSE
   codex.onNotification((method, params) => broadcast('codex', { method, params }));
 
+  server.on('close', stopStallWatchdog);
   await new Promise((resolve, reject) => { server.on('error', reject); server.listen(port, bind, resolve); });
   const addr = server.address();
   return { server, token, url: `http://${bind}:${addr.port}/`, openUrl: `http://${bind}:${addr.port}/#token=${token}` };
@@ -481,6 +485,8 @@ function startAlerts() {
   notifier.daemon = true;
   const offPush = subscriptions.start({ notifier });
   const offFan = notifier.on((items) => { broadcast('alerts', { items, ts: Date.now() }); lightSoon(200); });
+  // Alerts sent while no daemon was up were recorded but never shown: show them now (core/notify.js replayOffline).
+  notifier.replayOffline().catch(() => {});
   const offAppend = events.onAppend((ev) => {
     notifier.ingestEvent(ev).catch(() => {});
     // The board's "asked" marker (Notification hook and agent asks).

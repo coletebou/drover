@@ -16,6 +16,7 @@ import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { envvar } from './envvars.js';
+import { guardRank } from './guard.js';
 import { DEFAULT_THRESHOLDS, memoryIsShort, mergeThresholds, PRESSURE_RANK, vitalsSwitch } from './vitals.js';
 
 const HOST_RE = /^[A-Za-z0-9_.-]{1,80}$/;
@@ -121,7 +122,7 @@ export const DEFAULT_CLASSES = Object.freeze({
   // A Hermes session's TUI plus its share of the profile's gateway (about 50 MiB and 40 MiB resident when idle,
   // measured 2026-10-25); the model runs remotely. Room for tool runs on top.
   'hermes-session': { needMemGB: 1.5, needCores: 0.5 },
-  'heavy-build': { needMemGB: 6, needCores: 4, minFreeDiskGB: 20 },
+  'heavy-build': { needMemGB: 6, needCores: 4, minFreeDiskGB: 20, maxGuardLevel: 'calm' },
   'macos-only': { needMemGB: 2, needCores: 1, os: 'darwin', maxPressure: 'warn' },
 });
 export function classesOf(catalog) {
@@ -136,10 +137,14 @@ export function classesOf(catalog) {
  * after the new workload, caps on load (per core and absolute), the worst memory pressure (macOS) or stall share
  * (Linux PSI) it may be at, swap caps, and the free space its work volume (diskPath, else the root or data volume) needs.
  * maxSwapIoPerSec caps pages swapped out; pages in plus out count against it only while memory is short.
+ * maxGuardLevel (calm, tight or storm; null ignores the external host guard, core/guard.js) is the worst level of a
+ * fresh guard reading the host may be at, and a class's own maxGuardLevel (heavy-build: calm) applies too, the stricter
+ * of the two winning. minSwapHeadroomGB (macOS, where swap has no size to cap) is the least free swap-volume space plus
+ * unused swap it may have left; null ignores it. A host whose guard reads tight scores half.
  */
 export const DEFAULT_POLICY = Object.freeze({
   classes: null, weight: 1, reserveMemGB: 2, maxLoadPerCore: 1.5, maxLoad: null, maxPressure: 'normal', maxPsiSome60: 25,
-  maxSwapPct: 90, maxSwapGB: null, maxSwapIoPerSec: 500, minFreeDiskGB: 5, diskPath: null,
+  maxSwapPct: 90, maxSwapGB: null, maxSwapIoPerSec: 500, minFreeDiskGB: 5, diskPath: null, maxGuardLevel: null, minSwapHeadroomGB: null,
 });
 
 function workDisk(v, mount) {
@@ -153,7 +158,7 @@ function workDisk(v, mount) {
  * Whether a host can take one more workload of a class, and how well: { eligible, score, why, facts }. vitals is the
  * host's sample (host.vitals), null when it could not be read. The score is weight x (0.6 memory headroom + 0.4 CPU
  * headroom), each left after the workload and the reserve as a share of the host, scaled down for heavy swap use and
- * for macOS memory pressure at warn. A host that fails any rule scores 0 and says why.
+ * for macOS memory pressure at warn and for a tight host guard. A host that fails any rule scores 0 and says why.
  */
 export function judge({ vitals, policy = {}, cls = {}, className = 'claude-session', error = null, pendingMemGB = 0, thresholds = DEFAULT_THRESHOLDS } = {}) {
   const p = { ...DEFAULT_POLICY, ...(isObj(policy) ? policy : {}) };
@@ -182,6 +187,10 @@ export function judge({ vitals, policy = {}, cls = {}, className = 'claude-sessi
   // from before in and out were split only has ioPerSec, which stays the rate.
   const swapWhy = swapStormWhy(sw, memoryIsShort(vitals.mem, thresholds), p.maxSwapIoPerSec);
   if (swapWhy) why.push(swapWhy);
+  const guard = vitals.guard && guardRank(vitals.guard.level) >= 0 ? vitals.guard : null;
+  const caps = [p.maxGuardLevel, cls.maxGuardLevel].map(guardRank).filter((r) => r >= 0);
+  if (guard && caps.length && guardRank(guard.level) > Math.min(...caps)) why.push(`host guard ${guard.level}${guard.why ? `: ${guard.why}` : ''}`);
+  if (sw?.dynamic && Number.isFinite(sw.headroomMB) && Number.isFinite(p.minSwapHeadroomGB) && sw.headroomMB / 1024 < p.minSwapHeadroomGB) why.push(`swap headroom ${r1(sw.headroomMB / 1024)} GB (free disk plus unused swap), under its floor of ${p.minSwapHeadroomGB} GB`);
   const disk = workDisk(vitals, p.diskPath);
   const minDisk = Math.max(Number(p.minFreeDiskGB) || 0, Number(cls.minFreeDiskGB) || 0);
   if (p.diskPath && !disk) why.push(`its work volume ${p.diskPath} was not measured`);
@@ -193,8 +202,9 @@ export function judge({ vitals, policy = {}, cls = {}, className = 'claude-sessi
   let factor = 1;
   if (sw && !sw.dynamic && sw.usedPct > 50) factor *= 1 - 0.5 * clamp((sw.usedPct - 50) / 50, 0, 1);
   if (pr?.kind === 'kernel' && pr.level === 'warn') factor *= 0.5;
+  if (guard?.level === 'tight') factor *= 0.5;
   const weight = Number.isFinite(Number(p.weight)) ? Number(p.weight) : 1;
-  const facts = { availGB: r1(availGB), totalGB: r1(totalGB), load, cores, ...(pr ? { pressure: pr.level ?? pr.some60 } : {}), ...(sw ? { swapPct: sw.usedPct, swapGB: r1(sw.usedMB / 1024) } : {}), ...(disk ? { disk: disk.mount, diskFreeGB: r1(disk.availGB) } : {}) };
+  const facts = { availGB: r1(availGB), totalGB: r1(totalGB), load, cores, ...(pr ? { pressure: pr.level ?? pr.some60 } : {}), ...(sw ? { swapPct: sw.usedPct, swapGB: r1(sw.usedMB / 1024) } : {}), ...(sw?.dynamic && Number.isFinite(sw.headroomMB) ? { swapHeadroomGB: r1(sw.headroomMB / 1024) } : {}), ...(guard ? { guard: guard.level } : {}), ...(disk ? { disk: disk.mount, diskFreeGB: r1(disk.availGB) } : {}) };
   const score = Math.round(weight * (0.6 * memHead + 0.4 * cpuHead) * factor * 1000) / 1000;
   return { eligible: why.length === 0, score: why.length ? 0 : score, why, facts };
 }

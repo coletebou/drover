@@ -14,6 +14,7 @@ import * as memory from './memory.js';
 import * as skills from './skills.js';
 import * as lineage from './lineage.js';
 import * as launchMod from './launch.js';
+import * as launchGate from './launch-gate.js';
 import { effortGiven, effortLevels } from './effort.js';
 import * as terminals from './terminals.js';
 import { callOn } from './remote.js';
@@ -642,7 +643,7 @@ export const local = {
   // The effort levels this host's code accepts. Also the version probe for effort: Drover code from before
   // efforts does not know this op, while it would silently ignore an effort field on launch.start.
   async 'launch.efforts'() { return effortLevels(); },
-  async 'launch.start'(args) { return launchMod.launch(args, { actor: args.actor ?? OWNER }); },
+  async 'launch.start'(args) { return launchGated(args); },
   async 'headless.list'() { return launchMod.headlessList(); },
   // Served by the daemon's one reader. Reached in any other process (a peer's rpc,
   // `drover op`), they go to the daemon too: the daemon resolves them locally.
@@ -1170,21 +1171,42 @@ async function placeHere({ class: className = 'claude-session', exclude = [], pr
 const NEVER_CONNECTED = /connect to host .* (timed out|Connection refused|No route to host)|Could not resolve hostname|Network is unreachable/i;
 
 /**
+ * Every launch that runs on this machine, whoever asked (CLI, MCP, HTTP, a peer's rpc, the local leg of host "auto"):
+ * the launch gate (core/launch-gate.js) is asked first when DROVER_LAUNCH_GATE is set, and with no gate this is exactly
+ * launchMod.launch. A gate that says elsewhere (or hold, with another machine eligible) moves the launch to the machine
+ * fleet.place picks with this one excluded; that machine starts it with force, so two guarded machines never hand a
+ * launch back and forth (its own judge already refused a host whose guard is over its cap). force: true skips the gate.
+ * The result carries gate: { decision, reason, movedTo, waitedS }.
+ */
+async function launchGated(args) {
+  const className = launchGate.launchClassName(args);
+  const adm = await launchGate.admit({ className, force: args.force, place: (o) => front['fleet.place']({ class: className, reserve: true, ...o }) });
+  if (adm.proceed) {
+    const r = await launchMod.launch(args, { actor: args.actor ?? OWNER });
+    return adm.gate ? { ...r, gate: adm.gate } : r;
+  }
+  const { placement: _p, placementExclude: _x, force: _f, ...rest } = args;
+  const r = await dispatch('launch.start', { ...rest, host: adm.place.host, force: true });
+  return { ...r, gate: adm.gate };
+}
+
+/**
  * launch.start with host "auto": fleet.place for the launch's class (placement, else the engine's session class), then
  * the launch there. A chosen host that turns out to be unreachable (its vitals were recent, the host went down since)
  * is excluded and the launch placed once more; any other failure is the caller's, since the launch may have started.
  */
 async function launchPlaced(args) {
   const { placement: placementClass, placementExclude, ...launchArgs } = args;
-  const className = placementClass || ({ codex: 'codex-session', hermes: 'hermes-session' })[launchArgs.engine] || 'claude-session';
+  const className = launchGate.launchClassName(args);
   const exclude = (Array.isArray(placementExclude) ? placementExclude : placementExclude ? [placementExclude] : []).map(String);
   let failed = null;
   for (let attempt = 0; ; attempt++) {
     const p = await front['fleet.place']({ class: className, reserve: true, ...(exclude.length ? { exclude } : {}) });
     if (!p.host) throw new Error(`nothing was started: ${p.reason}${failed ? `; before that ${failed}` : ''}`);
     try {
-      const r = p.host === 'local' ? await dispatchLocal('launch.start', launchArgs) : await dispatch('launch.start', { ...launchArgs, host: p.host });
-      return { ...r, placement: { host: p.host === 'local' ? hosts.localShortName() : p.host, class: className, reason: p.reason, ...(failed ? { retriedAfter: failed } : {}) } };
+      // The local leg keeps the class: this machine's launch gate is asked about that same one.
+      const r = p.host === 'local' ? await dispatchLocal('launch.start', { ...launchArgs, ...(placementClass ? { placement: placementClass } : {}) }) : await dispatch('launch.start', { ...launchArgs, host: p.host });
+      return { ...r, placement: { host: r.gate?.movedTo ?? (p.host === 'local' ? hosts.localShortName() : p.host), class: className, reason: p.reason, ...(failed ? { retriedAfter: failed } : {}) } };
     } catch (e) {
       if (p.host === 'local' || attempt > 0 || !NEVER_CONNECTED.test(String(e?.message ?? ''))) throw e;
       failed = `${p.host} could not be reached (${String(e.message).slice(0, 160)})`;

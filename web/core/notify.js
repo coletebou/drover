@@ -211,6 +211,21 @@ export function alertFromEvent(ev, { names = new Map() } = {}) {
   return null;
 }
 
+/**
+ * The alert an offline notify event stands for: one that emit() recorded in a process that was not the daemon (a CLI or
+ * MCP call with no daemon up, or a peer's rpc), marked offline: true, which no ring ever held. Pure.
+ */
+export function alertFromOfflineEvent(ev) {
+  return {
+    id: ev.id, ts: ev.ts, category: CATEGORY_IDS.includes(ev.category) ? ev.category : 'needs-you', kind: ev.kind ?? 'agent',
+    host: ev.hostname ?? ev.host, sessionId: ev.sessionId ?? null, target: ev.tmuxTarget ?? null, name: ev.sessionName ?? null,
+    title: ev.title || clip(ev.message, 200), body: ev.message ?? '', key: ev.key ?? null, source: ev.source ?? 'agent',
+    ...(ev.ask ? { ask: ev.ask } : {}), ...(ev.untrusted === true ? { untrusted: true } : {}), replayed: true,
+  };
+}
+
+export const REPLAY_MAX_AGE_MS = 24 * 3_600_000;
+
 // ------------------------------------------------------------------ the Notifier
 export class Notifier {
   constructor() {
@@ -284,7 +299,7 @@ export class Notifier {
       const alert = { ...a, observer: _deps.host(), ...(m ? { muted: `${m.scope} ${m.target}` } : {}) };
       if (record) {
         try {
-          const ev = await _deps.appendEvent({ type: 'notify', category: alert.category, kind: alert.kind, source: alert.source ?? 'detector', sessionId: alert.sessionId ?? null, tmuxTarget: alert.target ?? null, sessionName: alert.name ?? null, hostname: alert.host ?? null, title: alert.title, message: alert.body ?? '', key: alert.key ?? null, observer: alert.observer, ...(alert.muted ? { muted: alert.muted } : {}), ...(alert.test ? { test: true } : {}), ...(alert.meta?.number ? { mr: alert.meta.number } : {}), ...(alert.ask ? { ask: alert.ask } : {}), ...(alert.untrusted === true ? { untrusted: true } : {}) }, { actor: alert.actor ?? 'drover' });
+          const ev = await _deps.appendEvent({ type: 'notify', category: alert.category, kind: alert.kind, source: alert.source ?? 'detector', sessionId: alert.sessionId ?? null, tmuxTarget: alert.target ?? null, sessionName: alert.name ?? null, hostname: alert.host ?? null, title: alert.title, message: alert.body ?? '', key: alert.key ?? null, observer: alert.observer, ...(alert.muted ? { muted: alert.muted } : {}), ...(alert.test ? { test: true } : {}), ...(alert.meta?.number ? { mr: alert.meta.number } : {}), ...(alert.ask ? { ask: alert.ask } : {}), ...(alert.untrusted === true ? { untrusted: true } : {}), ...(this.daemon ? {} : { offline: true }) }, { actor: alert.actor ?? 'drover' });
           alert.id = ev.id; alert.ts = ev.ts;
         } catch { alert.id = `local-${_deps.now()}-${out.length}`; alert.ts = new Date(_deps.now()).toISOString(); }
       } else { alert.id = alert.id ?? `local-${_deps.now()}-${out.length}`; alert.ts = alert.ts ?? new Date(_deps.now()).toISOString(); }
@@ -349,6 +364,32 @@ export class Notifier {
     if (!this.#fresh(a) || !this.#remember(a)) return [];
     this.#fan([a]);
     return [a];
+  }
+
+  /**
+   * Daemon start: show the alerts recorded while no daemon was up. A notify sent with no daemon running (drover op
+   * notify.send from a shell, an MCP call, a peer's rpc) lands in the truth file marked offline: true and in no ring, so
+   * nobody saw it. Those that are newer than the newest alert any ring held (this one, and the previous daemon's file),
+   * at most maxAgeMs old and not yet remembered here are remembered and fanned out, never appended to the truth file
+   * again. A second restart replays nothing twice: the first replay's alerts are in the ring file by then.
+   */
+  async replayOffline({ maxAgeMs = REPLAY_MAX_AGE_MS } = {}) {
+    const now = _deps.now();
+    const disk = await ringFromDisk();
+    const known = new Set([...this.seen, ...disk.items.map((a) => a?.id)]);
+    const newest = [...this.ring, ...disk.items].reduce((n, a) => (typeof a?.ts === 'string' && a.ts > n ? a.ts : n), '');
+    const settings = await _deps.settings().catch(() => null);
+    const out = [];
+    for (const ev of await _deps.readEvents()) {
+      if (ev.type !== 'notify' || ev.offline !== true || ev.test || known.has(ev.id) || !(ev.ts > newest) || !(now - Date.parse(ev.ts) <= maxAgeMs)) continue;
+      const a = alertFromOfflineEvent(ev);
+      const m = settings ? muteFor(a, settings, now) : null;
+      if (m) a.muted = `${m.scope} ${m.target}`;
+      a.observer = _deps.host();
+      if (this.#fresh(a) && this.#remember(a)) out.push(a);
+    }
+    this.#fan(out);
+    return out;
   }
 
   /** Alerts pulled from another host's daemon (already in its WAL): remember and fan out only. */

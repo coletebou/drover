@@ -13,6 +13,7 @@ import { runCapped } from './proc.js';
 import { stateDir } from './paths.js';
 import { envvar } from './envvars.js';
 import { listRegistry } from './claude.js';
+import { readGuard, guardRank } from './guard.js';
 
 const KB_PER_GB = 1024 * 1024;
 const round = (n, d = 1) => (Number.isFinite(n) ? Math.round(n * 10 ** d) / 10 ** d : null);
@@ -268,10 +269,12 @@ export const _deps = {
   loadavg: () => os.loadavg(),
   registry: () => listRegistry(),
   host: () => (envvar('HOST') ?? os.hostname()).split('.')[0],
+  guard: () => readGuard({ now: Date.now() }),   // the external host guard's fresh reading (core/guard.js), null when there is none
 };
 
-// Per process, for rates between samples: CPU readings, swap counters, process CPU times.
-const noReadings = () => ({ cpus: null, cpusTs: 0, swapPages: null, swapTs: 0, ps: null });
+// Per process, for rates between samples: CPU readings, swap counters, process CPU times, and the last agents list
+// (reused, marked stale, on a tick that skips the ps sample while the guard says storm or cliff).
+const noReadings = () => ({ cpus: null, cpusTs: 0, swapPages: null, swapTs: 0, ps: null, trees: null });
 const last = noReadings();
 export function _resetRates() { Object.assign(last, noReadings()); }
 
@@ -332,6 +335,20 @@ async function memDarwin(errors) {
 }
 
 /**
+ * macOS swap has no ceiling: it grows into free disk until the volume is full, and then the kernel cannot grow it and
+ * starts killing processes. So what is left is the free space on the swap volume plus the swap already made and not in
+ * use, not the swap's size. The swap volume (/System/Volumes/VM) shares its APFS container with the data volume, and df
+ * reports the container's free space for every volume in it, so the data volume's figure is the swap volume's. Null on
+ * Linux (fixed swap: swapUsedPct grades it) or when the data volume was not measured (ignored, or df failed).
+ */
+export function swapHeadroom(swap, vols) {
+  if (!swap?.dynamic) return {};
+  const data = (vols ?? []).find((d) => d.mount === '/System/Volumes/Data');
+  if (!data || !Number.isFinite(data.availGB) || !Number.isFinite(swap.totalMB) || !Number.isFinite(swap.usedMB)) return {};
+  return { headroomMB: round(data.availGB * 1024 + Math.max(0, swap.totalMB - swap.usedMB), 0) };
+}
+
+/**
  * One reading of this machine. Rates (CPU busy, swap pages per second in and out, per-agent CPU) come from the
  * previous reading in this process when it is recent; otherwise CPU busy is measured over a quarter second and the
  * others are null. ignore lists mount points never to measure (a remote mount another machine already watches).
@@ -341,14 +358,20 @@ export async function sample({ ignore = [] } = {}) {
   const t0 = _deps.now(), platform = _deps.platform(), errors = [];
   const darwin = platform === 'darwin';
   const cpusA = _deps.cpus();
+  const guard = await Promise.resolve(_deps.guard()).catch(() => null);
+  // While the guard says storm or cliff the machine is paging: `ps ... args=` reads every process's argv, which pages
+  // each one's memory back in and makes the squeeze worse (the daemon itself was swapped out and hung for minutes in
+  // such a storm). So that tick skips the process sample and the session registry and reports the previous agents
+  // list, marked stale, instead of nothing.
+  const skipPs = guard !== null && guardRank(guard.level) >= guardRank('storm');
   const [memPart, vols, ps, registry] = await Promise.all([
     (darwin ? memDarwin(errors) : memLinux(errors)).catch((e) => { errors.push(`memory: ${e.message}`); return { mem: null, swap: null, swapPages: null, cpuPressure: null }; }),
     (darwin ? _deps.run('mount', []).then((r) => pickDarwinVolumes(parseDarwinMount(r.stdout))) : readOr('/proc/self/mountinfo').then((t) => pickLinuxVolumes(parseMountinfo(t))))
       .then((v) => dfVolumes(v.filter((x) => !skip.has(x.mount)), errors)).catch((e) => { errors.push(`volumes: ${e.message}`); return []; }),
-    Promise.all([_deps.run('ps', PS_ARGS), _deps.run('ps', PS_COMM).catch(() => ({ stdout: '' }))])
+    skipPs ? Promise.resolve([]) : Promise.all([_deps.run('ps', PS_ARGS), _deps.run('ps', PS_COMM).catch(() => ({ stdout: '' }))])
       .then(([r, c]) => { const comm = parsePsComm(c.stdout); return parsePs(r.stdout).map((p) => ({ ...p, comm: comm.get(p.pid) ?? null })); })
       .catch((e) => { errors.push(`ps: ${e.message}`); return []; }),
-    _deps.registry().then((list) => new Map(list.filter((r) => r.alive !== false).map((r) => [r.pid, r]))).catch(() => new Map()),
+    skipPs ? Promise.resolve(new Map()) : _deps.registry().then((list) => new Map(list.filter((r) => r.alive !== false).map((r) => [r.pid, r]))).catch(() => new Map()),
   ]);
   const now = _deps.now();
   const recent = (ts) => now - ts < 600_000;
@@ -367,8 +390,12 @@ export async function sample({ ignore = [] } = {}) {
   }
   if (sp) { last.swapPages = sp; last.swapTs = now; }
   const prev = last.ps && recent(last.ps.ts) ? last.ps : null;
-  const trees = agentTrees(ps, { registry, prev, ts: now });
-  if (ps.length) last.ps = { cpu: trees.cpu, ts: now };
+  let trees;
+  if (skipPs) trees = { agents: (last.trees?.agents ?? []).map((a) => ({ ...a, stale: true })), top: last.trees?.top ?? [] };
+  else {
+    trees = agentTrees(ps, { registry, prev, ts: now });
+    if (ps.length) { last.ps = { cpu: trees.cpu, ts: now }; last.trees = { agents: trees.agents, top: trees.top }; }
+  }
   const [l1, l5, l15] = _deps.loadavg();
   const cores = cpusA.length || 1;
   const totals = {};
@@ -376,8 +403,9 @@ export async function sample({ ignore = [] } = {}) {
   return {
     host: _deps.host(), os: darwin ? 'darwin' : platform, ts: new Date(now).toISOString(), ms: now - t0,
     cpu: { cores, load1: round(l1, 2), load5: round(l5, 2), load15: round(l15, 2), perCore: round(l1 / cores, 2), busyPct: busy, ...(memPart.cpuPressure ? { pressure: memPart.cpuPressure } : {}) },
-    mem: memPart.mem, swap: memPart.swap ? { ...memPart.swap, ...swapRates } : null,
+    mem: memPart.mem, swap: memPart.swap ? { ...memPart.swap, ...swapRates, ...swapHeadroom(memPart.swap, vols) } : null,
     disks: vols, agents: trees.agents, agentTotals: totals, top: trees.top,
+    ...(guard ? { guard: { level: guard.level, why: guard.why, observe: guard.observe, headroomMB: guard.headroomMB, runwayS: guard.runwayS, ageS: guard.ageS } } : {}),
     ...(errors.length ? { errors } : {}),
   };
 }
@@ -398,6 +426,7 @@ export const DEFAULT_THRESHOLDS = Object.freeze({
   psiMemSome60: { warn: 25, crit: 50 },       // Linux: share of the last minute some task stalled on memory
   swapUsedPct: { warn: 85, crit: 95 },        // Linux; macOS swap grows on demand, so its share means little there
   swapUsedGB: { warn: null, crit: null },     // macOS: swap files grow into the data volume
+  swapHeadroomGB: { warn: null, crit: null }, // below, macOS: free space on the swap volume plus unused swap, what the kernel can still grow into
   swapOutPerSec: { warn: 300, crit: 1500 },   // pages swapped out per second: memory pushed to disk
   swapIoPerSec: { warn: 300, crit: 1500 },    // pages in plus out per second, graded only while memory is short
   diskUsedPct: { warn: 88, crit: 95 },
@@ -490,9 +519,15 @@ export function evaluate(v, th = DEFAULT_THRESHOLDS) {
   if (v?.swap) {
     const s = v.swap;
     const bySize = grade(s.usedMB / 1024, th.swapUsedGB, 'above', ' GB');
-    if (s.dynamic) add('swap', bySize, `swap ${gb(s.usedMB)} GB used`, s.usedMB / 1024);   // macOS swap grows on demand: only its size counts
+    if (s.dynamic) add('swap', bySize, `swap ${gb(s.usedMB)} GB used`, s.usedMB / 1024);   // macOS swap grows on demand: its size alone says little (see swapheadroom)
     else add('swap', worst(grade(s.usedPct, th.swapUsedPct, 'above', '%'), bySize), `swap ${gb(s.usedMB)} of ${gb(s.totalMB)} GB used (${pct(s.usedPct)})`, s.usedPct);
+    if (s.dynamic && Number.isFinite(s.headroomMB)) add('swapheadroom', grade(s.headroomMB / 1024, th.swapHeadroomGB, 'below', ' GB'), `swap headroom ${gb(s.headroomMB)} GB (free disk plus unused swap)`, s.headroomMB / 1024);
     if (Number.isFinite(s.inPerSec) && Number.isFinite(s.outPerSec)) add('swapio', ...swapRate(s.inPerSec, s.outPerSec, memShort, th));
+  }
+  // The external guard's own reading (core/guard.js), graded whether or not it is only observing: it is what it saw.
+  if (v?.guard && guardRank(v.guard.level) >= 0) {
+    const r = guardRank(v.guard.level), lv = r >= guardRank('storm') ? 'crit' : r >= guardRank('tight') ? 'warn' : 'ok';
+    add('guard', { level: lv, limit: null }, `host guard ${v.guard.level}${v.guard.why ? `: ${v.guard.why}` : ''}`, r);
   }
   const ignore = Array.isArray(th.ignore) ? th.ignore : [];
   for (const d of v?.disks ?? []) {
@@ -519,7 +554,7 @@ const windowOfPane = (t) => (t ? String(t).replace(/\.%\d+$/, '') : null);
  * level, a pending level with its count, when the level was raised and when it was last said. A level must hold for
  * `sustain` samples to be raised or cleared; rising raises an alert, a critical level clearing to ok says so, easing
  * (crit to warn, warn to ok) is quiet, and a critical level is said again every renotifyHours while it lasts. A check
- * that disappears (an agent exited) is forgotten quietly; a volume that is missing from one sample keeps its state.
+ * that disappears (an agent exited, or the guard reading went stale) is forgotten quietly; a volume that is missing from one sample keeps its state.
  */
 export class Monitor {
   constructor({ host, state = {} } = {}) {
@@ -548,7 +583,7 @@ export class Monitor {
       }
       this.state.set(c.key, s);
     }
-    for (const k of [...this.state.keys()]) if (!seen.has(k) && k.startsWith('agent:')) this.state.delete(k);
+    for (const k of [...this.state.keys()]) if (!seen.has(k) && (k.startsWith('agent:') || k === 'guard')) this.state.delete(k);
     return out;
   }
 
@@ -600,7 +635,7 @@ async function appendCapped(file, line, maxBytes = HISTORY_MAX_BYTES) {
 /** One compact line per sample for the history file: the numbers a trend needs. */
 export function historyLine(v) {
   const disks = Object.fromEntries((v.disks ?? []).map((d) => [d.mount, d.usedPct]));
-  return { ts: v.ts, load1: v.cpu?.load1 ?? null, busy: v.cpu?.busyPct ?? null, memAvailPct: v.mem?.availablePct ?? null, memAvailMB: v.mem?.availableMB ?? null, pressure: v.mem?.pressure?.level ?? v.mem?.pressure?.some60 ?? null, swapMB: v.swap?.usedMB ?? null, swapIo: v.swap?.ioPerSec ?? null, swapIn: v.swap?.inPerSec ?? null, swapOut: v.swap?.outPerSec ?? null, disks, agents: v.agents?.length ?? 0, agentMB: (v.agents ?? []).reduce((n, a) => n + (a.rssMB ?? 0), 0) };
+  return { ts: v.ts, load1: v.cpu?.load1 ?? null, busy: v.cpu?.busyPct ?? null, memAvailPct: v.mem?.availablePct ?? null, memAvailMB: v.mem?.availableMB ?? null, pressure: v.mem?.pressure?.level ?? v.mem?.pressure?.some60 ?? null, swapMB: v.swap?.usedMB ?? null, swapHeadroomMB: v.swap?.headroomMB ?? null, guard: v.guard?.level ?? null, swapIo: v.swap?.ioPerSec ?? null, swapIn: v.swap?.inPerSec ?? null, swapOut: v.swap?.outPerSec ?? null, disks, agents: v.agents?.length ?? 0, agentMB: (v.agents ?? []).reduce((n, a) => n + (a.rssMB ?? 0), 0) };
 }
 
 let current = null;   // the daemon's monitor: { monitor, latest, enabled, thresholds }

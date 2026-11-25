@@ -774,6 +774,94 @@ drover op launch.start '{"host":"auto","engine":"claude","prompt":"hi"}'   # lau
 - `launch.start` with `host: "auto"` (`drover_launch` too) places, then launches there; nothing starts when no host is
   eligible. A chosen host that never accepts the ssh connection is excluded and the launch placed once more.
 - `resource` is an alert category of its own in the browser's settings (sound `fall` by default).
+- A host guard's reading, macOS swap headroom, the launch gate and the stall watchdog: see "Host guard, launch gate and
+  a daemon that hangs" below.
+
+## Host guard, launch gate and a daemon that hangs
+
+All of this is off until it is configured, and none of it knows what writes the files or runs the command: any external
+tool that honours the two contracts below is a "host guard". Everything fails open: a guard that is missing, stale or
+broken never stops work.
+
+**Guard state file** (`DROVER_GUARD_STATE`, `core/guard.js`). A JSON file the guard keeps current:
+
+```json
+{ "epoch": 1767000000, "level": "tight", "why": "swap headroom 3 GB", "observe": false,
+  "sig": { "headroom_mb": 3072, "runway_s": 420 } }
+```
+
+`epoch` is seconds since 1970; `level` is `calm`, `tight`, `storm` or `cliff`, mildest first; `why` is a sentence for
+people; `observe` says the guard only watches; `sig` carries the numbers behind the level, all optional. A file missing,
+unparseable, with no known level, or whose `epoch` is more than 30 seconds old counts as no guard.
+
+- `host.vitals` and the daemon's sample carry `guard: { level, why, observe, headroomMB, runwayS, ageS }` while the
+  reading is fresh, and the `guard` check grades it (`tight` is `warn`, `storm` and `cliff` are `crit`, `calm` is `ok`),
+  observe-only or not: it is what the guard saw.
+- While the guard reads `storm` or `cliff` the sample skips the `ps ... args=` listing and the session registry: reading
+  every process's argv pages each one's memory back in, which is the last thing a machine that is paging needs (a
+  daemon swapped out that way stopped answering for minutes). The previous agents list is reported instead, each entry
+  marked `stale: true`. The next `calm` or `tight` tick samples processes again. The history line gains `guard` and
+  `swapHeadroomMB`.
+- **macOS swap headroom.** macOS swap has no size to cap: it grows into free disk until the volume is full, and then the
+  kernel cannot grow it and kills processes. `swap.headroomMB` is what is left to grow into: the free space on the swap
+  volume (which shares its APFS container with the data volume, so the data volume's `df` figure) plus swap made and not
+  in use. The `swapHeadroomGB` threshold grades it, `below`, on macOS only, off by default:
+
+  ```json
+  { "hosts": [ { "name": "mac-a", "identity": "personal",
+      "monitor": { "enabled": true, "thresholds": { "swapHeadroomGB": { "warn": 30, "crit": 15 } } },
+      "placement": { "maxGuardLevel": "storm", "minSwapHeadroomGB": 20 } } ] }
+  ```
+
+  `swapUsedGB` still works for a catalog that sets it; on macOS the size of swap alone says little.
+- **Placement.** The host policy key `maxGuardLevel` (`calm`, `tight` or `storm`; null, the default, ignores the guard)
+  is the worst fresh reading a host may be at to take work, and a class may carry its own: `heavy-build` has
+  `maxGuardLevel: "calm"` by default. The stricter of the two wins, and a host over it is passed over with the reason
+  `host guard <level>: <why>`. `minSwapHeadroomGB` (macOS, null by default) is the least `swap.headroomMB` a host may
+  have. A host whose guard reads `tight` scores half.
+
+**Launch gate** (`DROVER_LAUNCH_GATE`, `core/launch-gate.js`). An admission command asked before this machine starts an
+agent: an absolute path to an executable, optionally followed by fixed arguments separated by spaces (split on
+whitespace, never a shell). Drover runs `<gate...> <class>` with the placement class (`claude-session`, `codex-session`,
+`hermes-session`, `heavy-build`, ...) last, gives it 5 seconds, and reads the first line of its stdout:
+
+| Answer | Meaning |
+|---|---|
+| `go` | start it here |
+| `wait <seconds> <reason...>` | ask again after that long |
+| `elsewhere <host-or-dash> <reason...>` | start it on another machine (the host is a hint; `-` for none) |
+| `hold <reason...>` | not now (exit non-zero, typically 75) |
+
+An unset gate, a missing or unrunnable executable, a timeout, or an answer that is none of these is `go`, with one line
+on stderr. It runs for every launch that starts on this machine (`drover op launch.start`, the MCP `drover_launch`
+tool, the HTTP op, a peer's rpc, and the local leg of `host: "auto"`), before anything else happens in the launch.
+
+- `wait` sleeps the shorter of what was asked and what is left of the budget, then asks again. The budget is
+  `DROVER_LAUNCH_GATE_MAX_WAIT` seconds per launch (default 90); with it spent a launch that is still told to wait goes
+  ahead.
+- `elsewhere`, and `hold` while another machine is eligible, call `fleet.place` for the same class with this machine
+  excluded (the same identity scoping as `host: "auto"`) and start the launch there; that machine starts it with
+  `force`, so two guarded machines cannot hand a launch back and forth. With no eligible machine `elsewhere` is
+  refused at once and `hold` keeps asking and looking every 10 seconds until the budget is spent, then refuses with
+  `nothing was started: host guard says <reason>; no other eligible host (<placement reason>)`.
+- The result carries `gate: { decision, reason, movedTo, waitedS }` (and `failedOpen` with why, when the gate itself
+  failed). `force: true` on `launch.start` skips the gate (`gate: { decision: "skipped" }`). A remote launch is given
+  two minutes by the caller, so a budget near that leaves no room for the launch itself.
+
+**Notifications sent while no daemon was up.** `drover op notify.send` with no daemon running (a shell, an MCP call,
+a peer's rpc) notifies in its own process, so no ring ever held the alert and nothing showed it. That process now
+marks the `notify` event it appends `offline: true`. When a daemon starts it replays those events, oldest first,
+into its ring and its listeners (SSE, so browsers and native clients see them), without appending a second event to
+the truth file: only those newer than the newest alert the previous daemon's ring held (`notify-ring.json`), at most 24
+hours old, and not already remembered (by id, and by key as live alerts are). A second restart replays nothing twice.
+
+**Stall watchdog** (`DROVER_STALL_EXIT_SECONDS`, `core/stall-watchdog.js`). launchd and systemd restart a daemon that
+exits, not one that hangs. The daemon's main thread bumps a counter in shared memory every second and a worker thread
+watches it; when it has not moved for `DROVER_STALL_EXIT_SECONDS` (default 180; `0` turns the watchdog off) the worker
+writes one line to stderr and kills the process with `SIGKILL`, so the supervisor starts a fresh daemon. (The worker
+cannot use `process.exit()`: in a worker thread that ends the worker and leaves the hung main thread running. A hung main
+thread could not run a graceful handler anyway.) Time the machine spent asleep is not a stall: when the wall clock runs
+ahead of the monotonic one by more than 5 seconds the count restarts. The worker and its timers are unref'd.
 
 ## Search
 
