@@ -182,8 +182,12 @@ export function loadProfile(name, src = SRC, overlay = envOverlay()) {
     if (o.model != null && (typeof o.model !== 'string' || !o.model)) throw new Error(`profile ${name}: automations.${a}.model must be a provider/model id`);
     if (o.thinking != null && !THINK_LEVELS.includes(o.thinking)) throw new Error(`profile ${name}: automations.${a}.thinking must be one of ${THINK_LEVELS.join(', ')}, not ${JSON.stringify(o.thinking)}`);
   }
+  // OpenClaw plugin packages this profile's template needs that OpenClaw does not bundle, by id (`@openclaw/<id>`);
+  // setup installs them at the tree's own version (ensurePlugins).
+  const plugins = p.plugins ?? [];
+  if (!Array.isArray(plugins) || plugins.some((id) => typeof id !== 'string' || !/^[a-z][a-z0-9-]{0,63}$/.test(id))) throw new Error(`profile ${name}: plugin id ${JSON.stringify(Array.isArray(plugins) ? plugins.find((id) => typeof id !== 'string' || !/^[a-z][a-z0-9-]{0,63}$/.test(id)) : plugins)} is not a package name`);
   const configRel = p.config ?? 'openclaw.json';
-  return { name, file, summary: p.summary ?? '', config: sourceFile(configRel, { src, overlay }) ?? path.join(src, configRel), env: p.env ?? {}, secrets, egress: p.egress ?? { allow: [] }, port, vars, flags, automations };
+  return { name, file, summary: p.summary ?? '', config: sourceFile(configRel, { src, overlay }) ?? path.join(src, configRel), env: p.env ?? {}, secrets, egress: p.egress ?? { allow: [] }, port, vars, flags, automations , plugins };
 }
 
 export function loadRole(name, src = SRC, overlay = envOverlay()) {
@@ -818,6 +822,32 @@ async function ocJson(lay, rt, args, opts) {
   return parseCliJson(r.stdout);
 }
 
+/**
+ * The OpenClaw plugin packages a profile names (`"plugins": ["codex"]`), installed from npm at the tree's own
+ * OpenClaw version when the gateway does not report them loaded. Needed for a plugin OpenClaw does not bundle:
+ * a scheduled job on a subscription (ChatGPT) login runs on the codex runtime, which `@openclaw/codex` provides,
+ * and without it every such job fails with 'Agent harness runtime "codex" is unavailable' (2026-11-25).
+ */
+async function ensurePlugins(lay, rt, { profile, lock, dryRun, step }) {
+  const wanted = profile.plugins ?? [];
+  if (!wanted.length) return;
+  for (const id of wanted) if (!/^[a-z][a-z0-9-]{0,63}$/.test(id)) throw new Error(`profile ${profile.name}: plugin id ${JSON.stringify(id)} is not a package name`);
+  if (dryRun) { step('plugins', 'would ensure', wanted.map((id) => `@openclaw/${id}@${lock.version}`).join(', ')); return; }
+  let listed = null, err;
+  for (let i = 0; i < 6 && !listed; i++) {
+    try { listed = (await ocJson(lay, rt, ['plugins', 'list'])).plugins; } catch (e) { err = e; await _deps.sleep(10_000); }
+  }
+  if (!Array.isArray(listed)) { step('plugins', 'not ok', `the plugin list did not answer: ${err?.message ?? 'no list'}; re-run drover manager setup`); return; }
+  for (const id of wanted) {
+    const have = listed.find((p) => p.id === id);
+    if (have && have.status === 'loaded' && have.version === lock.version) { step(`plugin ${id}`, 'unchanged', `${have.version}, ${have.origin}`); continue; }
+    const spec = `npm:@openclaw/${id}@${lock.version}`;
+    const r = await oc(lay, rt, ['plugins', 'install', spec, '--force', '--accept-capabilities', '--acknowledge-install-policy-warning'], { timeoutMs: 600_000 });
+    if (r.code !== 0) { step(`plugin ${id}`, 'error', cliError(r, ['plugins', 'install', spec])); continue; }
+    step(`plugin ${id}`, have ? 'reinstalled' : 'installed', `${spec}${have ? ` (was ${have.version ?? '?'}, ${have.status})` : ''}`);
+  }
+}
+
 /** Keep the stored exec approvals at the repo's policy (full exec, ask off): installs from the read-only era move to it here. */
 async function fixApprovals(lay, rt, { src, dryRun, step }) {
   const want = JSON.parse(renderApprovals(JSON.parse(await readFile(path.join(src, 'exec-approvals.json'), 'utf8'))));
@@ -1096,6 +1126,7 @@ export async function setup({ role: name = 'manager', profile: profileName, over
   }
   const first = existsSync(rt.mjs) ? await importApprovals(lay, rt, { src, profile, dryRun, step, prev }) : false;
   if (dryRun && !existsSync(rt.mjs)) step('approvals', 'would check', 'after the tree is installed');
+  if (dryRun) await ensurePlugins(lay, rt, { profile, lock, dryRun, step });
   const rewritten = [launcherR !== 'unchanged' && 'launcher', svcR !== 'unchanged' && 'service file'].filter(Boolean);
   const restarted = await applyService(lay, { was, now: startedWith, rewritten, restart, dryRun, step, rt, waitIdleSec, profile });
   // Every run, restart or not: a host set up before this step, or one whose linger was turned off since, gets it back.
@@ -1121,6 +1152,7 @@ export async function setup({ role: name = 'manager', profile: profileName, over
     else {
       step('gateway', 'answering', `127.0.0.1:${profile.port}`);
       if (!first) await fixApprovals(lay, rt, { src, dryRun, step });
+      await ensurePlugins(lay, rt, { profile, lock, dryRun, step });
       // Duties this manager owns get their automations (created, or re-enabled); a duty it does not own keeps
       // its automation disabled (not deleted), so moving the digest to another manager stops it here.
       // The list decides what to create, enable and disable, so one that does not answer is retried, then

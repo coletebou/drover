@@ -408,6 +408,14 @@ function fakeHost(home) {
     }
     if (has('automations', 'disable') || has('automations', 'enable')) { const j = host.jobs.find((x) => x.id === a.at(-1)); if (!j) return { code: 1, stdout: '', stderr: 'no such job' }; j.enabled = has('automations', 'enable'); return ok('{}'); }
     if (has('health')) return ok(JSON.stringify({ ok: true, plugins: { loaded: ['amazon-bedrock', 'exa'], errors: [] } }));
+    if (has('plugins', 'list')) return ok(JSON.stringify({ plugins: host.plugins ?? [] }));
+    if (has('plugins', 'install')) {
+      const spec = a[a.indexOf('install') + 1]; const m = /^npm:@openclaw\/([a-z0-9-]+)@(.+)$/.exec(spec);
+      if (!m || !has('--force', '--accept-capabilities')) return { code: 1, stdout: '', stderr: `bad install ${a.join(' ')}` };
+      host.plugins = [...(host.plugins ?? []).filter((p) => p.id !== m[1]), { id: m[1], version: m[2], status: 'loaded', origin: 'global' }];
+      host.pluginInstalls = (host.pluginInstalls ?? 0) + 1;
+      return ok('Installed plugin: ' + m[1]);
+    }
     return { code: 9, stdout: '', stderr: `fake openclaw: unexpected ${a.join(' ')}` };
   };
   const service = async (file, argv) => {
@@ -1041,6 +1049,29 @@ describe('setup in a sandbox', () => {
     host.runningNode = { ...host.runningNode, version: 'v24.22.0' };
     await install.setup(first);
     assert.deepEqual(install.readManifest(lay()).node, { path: host.runningNode.path, version: 'v24.22.0' }, 'without fnm, the node running drover is used when it is inside the range');
+    done();
+  });
+
+  test('a profile\'s plugins are installed at the tree\'s OpenClaw version when missing, and left alone when loaded', async () => {
+    await writeFile(path.join(home, '.env_secrets'), `export AWS_BEARER_TOKEN_BEDROCK=${BEARER}\nexport CLIPROXY_API_KEY=${PROXY}\nexport EXA_API_KEY=${EXA}\n`);
+    const withPlugins = { ...JSON.parse(readFileSync(path.join(install.SRC, 'profiles', 'default.json'), 'utf8')), plugins: ['codex'] };
+    const dir = await makeOverlay({ 'profiles/plugged.json': withPlugins });
+    const version = install.lockInfo().version;
+    const dry = await install.setup({ profile: 'plugged', overlay: dir, scope: 'local', dryRun: true });
+    assert.deepEqual(dry.steps.filter((x) => x.step === 'plugins').map((x) => [x.action, x.detail]), [['would ensure', `@openclaw/codex@${version}`]]);
+    assert.equal(host.pluginInstalls ?? 0, 0, 'a dry run installs nothing');
+    const r = await install.setup({ profile: 'plugged', overlay: dir, scope: 'local' });
+    assert.deepEqual(r.steps.filter((x) => x.step === 'plugin codex').map((x) => x.action), ['installed']);
+    assert.equal(host.pluginInstalls, 1);
+    const again = await install.setup({});
+    assert.deepEqual(again.steps.filter((x) => x.step === 'plugin codex').map((x) => x.action), ['unchanged'], 'a loaded plugin at the right version is not reinstalled');
+    assert.equal(host.pluginInstalls, 1);
+    host.plugins = host.plugins.map((p) => ({ ...p, version: '2000.1.1' }));
+    const stale = await install.setup({});
+    assert.deepEqual(stale.steps.filter((x) => x.step === 'plugin codex').map((x) => x.action), ['reinstalled'], 'another version is replaced by the tree\'s');
+    await assert.rejects(install.setup({ profile: 'bad', overlay: await makeOverlay({ 'profiles/bad.json': { ...withPlugins, plugins: ['../x'] } }), scope: 'local' }), /plugin id "\.\.\/x" is not a package name/);
+    const plain = await install.setup({ profile: 'default', overlay: 'none', scope: 'local' }).catch((e) => e);
+    if (!(plain instanceof Error)) assert.equal(plain.steps.some((x) => /^plugin/.test(x.step)), false, 'a profile without plugins has no plugin step');
     done();
   });
 
