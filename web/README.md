@@ -399,7 +399,7 @@ One profiles file usually serves every host, but hosts want different defaults (
 through a wrapper, a personal box that runs plain `claude`). `DROVER_CLAUDE_PROFILE` (likewise
 `DROVER_CODEX_PROFILE`, `DROVER_HERMES_PROFILE`), read from the daemon environment on every call, names this
 host's default: that profile becomes the only one marked `default` in `launch.profiles`, the launch view and a
-launch that names no profile. Set it in the host's own env file, not in a shared one. A name the file does not
+launch that names no profile. Set it in a host-local file under `~/.config/drover/` (for example `50-host.env`, next to a shared settings file): every drover process reads those, the daemon, `drover rpc` peers that remote launches go through, and MCP servers. An env file that only the daemon's service sources never reaches an rpc peer, so a launch dispatched from another host would keep the file default. A name the file does not
 have is reported as `hostDefaultMissing` on that engine's section, and a launch that names no profile is refused
 rather than silently falling back; a launch that names a profile is unaffected. The file on disk is never changed.
 
