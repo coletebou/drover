@@ -94,3 +94,26 @@ test('lastAssistantText: read from the tail, and further back when the tail is a
   assert.equal(await lastAssistantText(path.join(dir, 'missing.jsonl')), null);
   assert.equal(await lastAssistantText(null), null);
 });
+
+test('findSession answers a live session from the registry without listing every session', async () => {
+  const live = { sessionId: 'aaaa-1111', name: 'voice', pid: 4242, alive: true };
+  let fullLists = 0;
+  const sessions = async () => { fullLists++; return [live]; };
+  const registry = async () => [{ sessionId: 'aaaa-0000', name: 'voice', pid: 1, alive: false }, live];
+  for (const q of ['aaaa-1111', 'voice', 'aaaa-1']) {
+    assert.equal(await claude.findSession(q, { registry, sessions, windows: async () => [] }), live, q);
+  }
+  assert.equal(fullLists, 0, 'the claude agents listing is not needed for a running registry hit');
+});
+
+test('findSession falls back to the full list for sessions the registry does not run', async () => {
+  const ended = { sessionId: 'bbbb-2222', name: 'old', pid: 7, alive: false };
+  const cliOnly = { sessionId: 'cccc-3333', name: 'cli', pid: null, alive: true, fromCli: true };
+  let fullLists = 0;
+  const registry = async () => [ended];
+  const sessions = async () => { fullLists++; return [ended, cliOnly]; };
+  assert.equal(await claude.findSession('cli', { registry, sessions, windows: async () => [] }), cliOnly);
+  assert.equal(await claude.findSession('old', { registry, sessions, windows: async () => [] }), ended);
+  assert.equal(await claude.findSession('nope', { registry, sessions, windows: async () => [] }), null);
+  assert.equal(fullLists, 3);
+});
