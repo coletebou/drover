@@ -302,6 +302,8 @@ export async function trustFolder(engine, dir, opts = {}) {
     if (typeof dir !== 'string' || !path.isAbsolute(dir)) return { engine, skipped: 'cwd is not an absolute path' };
     // Hermes asks no folder trust question at start (2026.9.24); its first run asks about telemetry, which stays the owner's.
     if (engine === 'hermes') return { engine, skipped: 'Hermes does not ask to trust a folder' };
+    // Cursor keeps workspace trust where Drover does not write; the launch passes --trust on its command line instead.
+    if (engine === 'cursor') return { engine, skipped: 'Cursor is trusted with --trust on its command line' };
     return await (engine === 'codex' ? trustCodex : trustClaude)(dir, opts);
   } catch (e) {
     _deps.log(`${engine} ${dir}: ${e.message}`);

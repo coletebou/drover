@@ -122,7 +122,7 @@ const profile = (engine, id) => PROFILES[engine].profiles.find((p) => p.id === i
 
 // ---------------------------------------------------------------- the allowlist
 
-const LEVELS = { claude: ['low', 'medium', 'high', 'xhigh', 'max'], codex: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], hermes: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] };
+const LEVELS = { claude: ['low', 'medium', 'high', 'xhigh', 'max'], codex: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], hermes: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'], cursor: [] };
 
 describe('checkEffort', () => {
   test('each engine takes its own levels: claude low..max, codex low..ultra, hermes none..ultra', () => {
@@ -648,8 +648,8 @@ describe('where a tmux launch opens its window, and which profiles file is read'
     };
     const [file, keys] = read({ DROVER_PROFILES: '~/profiles.json' });
     assert.equal(file, path.join(home, 'profiles.json'));
-    // The file under the home was read; it predates Hermes, so the shipped hermes section is added to it.
-    assert.deepEqual(keys, [...Object.keys(PROFILES), 'hermes'], 'the file under the home was read');
+    // The file under the home was read; it predates Hermes and Cursor, so their shipped sections are added to it.
+    assert.deepEqual(keys, [...Object.keys(PROFILES), 'hermes', 'cursor'], 'the file under the home was read');
     const [shipped] = read({});
     assert.equal(shipped, path.join(import.meta.dirname, '..', 'profiles.json'));
   });

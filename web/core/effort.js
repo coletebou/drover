@@ -17,6 +17,8 @@ export const EFFORT_LEVELS = Object.freeze({
   codex: Object.freeze(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']),
   // Hermes Agent 2026.9.24: `hermes chat --reasoning LEVEL` lists none, minimal, low, medium, high, xhigh, max, ultra.
   hermes: Object.freeze(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']),
+  // Cursor CLI: no reasoning-effort flag; a model's own bracket overrides go in the model name (--model 'x[effort=high]').
+  cursor: Object.freeze([]),
 });
 
 /** Every level any engine accepts (for a schema enum); the per-engine check is checkEffort(). */
