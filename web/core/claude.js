@@ -101,9 +101,13 @@ export async function listSessions() {
   return [...byId.values()];
 }
 
-export async function findSession(idOrName, { windows = listWindows } = {}) {
-  const all = await listSessions();
+export async function findSession(idOrName, { windows = listWindows, registry = listRegistry, sessions = listSessions } = {}) {
   const hit = (s) => s.sessionId === idOrName || s.name === idOrName || s.sessionId.startsWith(idOrName);
+  // Fast path: every live interactive session (the ones with an inbox) has a registry file, read in about a
+  // millisecond. The full list also runs `claude agents` (a CLI spawn, ~120 ms), so only pay that on a miss.
+  const live = (await registry()).find((s) => running(s) && hit(s));
+  if (live) return live;
+  const all = await sessions();
   // A name or an id prefix can also match sessions that ended: a running one answers first.
   const found = all.find((s) => running(s) && hit(s)) ?? all.find(hit);
   if (found) return found;
