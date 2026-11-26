@@ -29,6 +29,13 @@
       { "id": "hermes-yolo", "label": "hermes without approval prompts (only where you trust the agent with the machine)", "argv": ["--tui", "--yolo"], "env": {} }
     ]
   },
+  "cursor": {
+    "models": [],
+    "profiles": [
+      { "id": "cursor-default", "label": "cursor-agent (the host's own Cursor login and default model; asks before it runs commands; tmux only)", "argv": [], "env": {}, "default": true },
+      { "id": "cursor-yolo", "label": "cursor-agent --force (runs commands without asking; for unattended work on the host's included Cursor usage)", "argv": ["--force"], "env": {} }
+    ]
+  },
   "tmuxSession": "agents",
   "tmuxSessions": ["agents", "main"],
   "cwdSuggestions": ["~/code", "~/.dotfiles"],

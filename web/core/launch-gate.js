@@ -42,7 +42,7 @@ export function maxWaitSeconds(env = process.env) {
 
 /** The placement class a launch is judged as: its own placement, else the engine's session class (what host "auto" uses). */
 export function launchClassName(args = {}) {
-  return args.placement || ({ codex: 'codex-session', hermes: 'hermes-session' })[args.engine] || 'claude-session';
+  return args.placement || ({ codex: 'codex-session', hermes: 'hermes-session', cursor: 'cursor-session' })[args.engine] || 'claude-session';
 }
 
 /** The gate's stdout -> { decision: 'go' } | { decision: 'wait', seconds, reason } | { decision: 'elsewhere', host, reason } | { decision: 'hold', reason }, or null when it is none of them. */

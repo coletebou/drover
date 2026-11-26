@@ -13,6 +13,7 @@ import * as tmux from './tmux.js';
 import * as claude from './claude.js';
 import * as codex from './codex.js';
 import * as hermes from './hermes.js';
+import * as cursor from './cursor.js';
 import { append } from './events.js';
 import { checkEffort, checkModelEffort } from './effort.js';
 import { loginShellPath } from './proc.js';
@@ -28,7 +29,7 @@ const SHIPPED_PROFILES = path.join(dirname(fileURLToPath(import.meta.url)), '..'
 /** The launch profiles: DROVER_PROFILES (a leading ~ is this user's home), else the shipped profiles.json. */
 export const PROFILES_FILE = expandHome(envvar('PROFILES')) || SHIPPED_PROFILES;
 /** The engines a profiles file has a section for. */
-const ENGINE_SECTIONS = ['claude', 'codex', 'hermes'];
+const ENGINE_SECTIONS = ['claude', 'codex', 'hermes', 'cursor'];
 
 /**
  * The profiles file. A custom one (DROVER_PROFILES) written before an engine existed, as a fleet's own file usually is
@@ -105,7 +106,7 @@ const SAFE_NAME = (s) => String(s ?? '').replace(/[^A-Za-z0-9_.-]+/g, '-').repla
 export const _deps = { newWindow: (opts) => tmux.newWindow(opts), HeadlessClaude: claude.HeadlessClaude, HeadlessHermes: hermes.HeadlessHermes, startCodexThread: (opts) => codex.startThread(opts), codexModelEfforts: () => codex.modelEfforts(), agentPath: () => loginShellPath(), trustFolder: (engine, dir, opts) => trustFolder(engine, dir, opts), onboardClaude: (opts) => onboardClaude(opts), answerClaudeApiKey: (opts) => answerClaudeApiKey(opts), rememberHermesPane: (title, window) => hermes.rememberPane(title, window, { home: hermes.rootHome() }) };
 
 /** The engines a launch starts; anything else is a Claude launch, as it always was. */
-const ENGINES = new Set(['claude', 'codex', 'hermes']);
+const ENGINES = new Set(['claude', 'codex', 'hermes', 'cursor']);
 
 /**
  * A tmux window cannot be watched for exit from here, so a tmux launch counts
@@ -302,6 +303,10 @@ export async function launch(req, { actor = 'drover' } = {}) {
   const agentPath = mode === 'tmux' || engine !== 'codex' ? await _deps.agentPath() : undefined;
   // A Hermes launch with no hermes to run would open a window that only says "command not found", or a headless session whose every turn fails.
   if (engine === 'hermes' && !hermes.findBin(profile.env.PATH ?? agentPath)) throw new Error(`hermes is not on this host's PATH (${hermes.hermesBin()}): install Hermes Agent there, or set DROVER_HERMES_BIN to it; nothing was started`);
+  // Cursor runs in a tmux window only (its CLI has no long-lived headless protocol Drover could hold), on the host's own
+  // Cursor login; a launch to a host without cursor-agent would open a window that only says "command not found".
+  if (engine === 'cursor' && mode !== 'tmux') throw new Error('cursor launches run in a tmux window only (mode tmux); nothing was started');
+  if (engine === 'cursor' && !cursor.findBin(profile.env.PATH ?? agentPath)) throw new Error(`cursor-agent is not on this host's PATH (${cursor.cursorBin()}): install the Cursor CLI there (curl https://cursor.com/install -fsS | bash), or set DROVER_CURSOR_BIN to it; nothing was started`);
   const base = { type: 'launch', engine, mode, profile: profile.id, model: model ?? null, ...withEffort, cwd, prompt: req.prompt ? String(req.prompt).slice(0, 2000) : null, credential: cred?.id ?? null, ...withDone };
 
   if (mode === 'tmux') {
@@ -317,6 +322,8 @@ export async function launch(req, { actor = 'drover' } = {}) {
     const sessionId = done ? randomUUID() : null;
     const argv = engine === 'claude'
       ? claude.interactiveArgv(profile, { model, effort, resume: req.resume, prompt: req.prompt, ...(req.name ? { name } : {}), ...(sessionId ? { extra: ['--session-id', sessionId] } : {}) })
+      : engine === 'cursor'
+        ? cursor.interactiveArgv(profile, { model, cwd, prompt: req.prompt, resume: req.resume, trust: !(req.trust === false || req.trust === 'false') })
       : engine === 'hermes'
         ? hermes.interactiveArgv(profile, { model, effort, cwd, prompt: req.prompt, resume: req.resume, title })
         : codex.interactiveArgv(profile, { model, effort, prompt: req.prompt, resume: req.resume });
